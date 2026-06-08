@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from trading.collectors.base import CollectedFact, CollectError, fetch_json, write_facts
+from trading.collectors.data_go_kr import DataGoKrIndexClient
 from trading.collectors.ecos import EcosClient
 from trading.collectors.fred import FredClient
 from trading.collectors.macro import MacroItem, collect_macro
@@ -112,15 +113,60 @@ def test_ecos_latest_picks_newest() -> None:
     assert res == ("20260608", "1553.2", "원")
 
 
-def test_collect_macro_fred_ok_ecos_no_client_blocked() -> None:
+def test_datagokr_latest_picks_newest() -> None:
+    def fetch(url: str) -> Any:
+        assert "idxNm=" in url and "beginBasDt=" in url
+        return {
+            "response": {
+                "header": {"resultCode": "00"},
+                "body": {
+                    "items": {
+                        "item": [
+                            {"basDt": "20260604", "idxNm": "코스피", "clpr": "8639.41"},
+                            {"basDt": "20260605", "idxNm": "코스피", "clpr": "8160.59"},
+                        ]
+                    }
+                },
+            }
+        }
+
+    res = DataGoKrIndexClient("k", fetch=fetch).latest("코스피", "20260525", "20260609")
+    assert res == ("20260605", "8160.59")
+
+
+def test_datagokr_single_item_dict() -> None:
+    def fetch(url: str) -> Any:
+        return {
+            "response": {
+                "header": {"resultCode": "00"},
+                "body": {"items": {"item": {"basDt": "20260605", "idxNm": "코스닥", "clpr": "1002.44"}}},
+            }
+        }
+
+    assert DataGoKrIndexClient("k", fetch=fetch).latest("코스닥", "20260525", "20260609") == (
+        "20260605",
+        "1002.44",
+    )
+
+
+def test_datagokr_resultcode_error() -> None:
+    def fetch(url: str) -> Any:
+        return {"response": {"header": {"resultCode": "30", "resultMsg": "KEY_NOT_REGISTERED"}}}
+
+    with pytest.raises(CollectError):
+        DataGoKrIndexClient("k", fetch=fetch).latest("코스피", "20260525", "20260609")
+
+
+def test_collect_macro_fred_ok_others_blocked() -> None:
     def fetch(url: str) -> Any:
         return {"observations": [{"date": "2026-06-04", "value": "100.0"}]}
 
-    summary = collect_macro(FredClient("k", fetch=fetch), None)
+    summary = collect_macro(FredClient("k", fetch=fetch), None)  # ecos·datagokr 없음
     assert summary.verified == 5  # FRED 5종
     assert summary.collected == 5
-    assert len(summary.blocked) == 4  # ECOS 4종 — 키 미설정(코드는 확정됨)
-    assert all("ECOS_API_KEY 미설정" in b for b in summary.blocked)
+    assert len(summary.blocked) == 6  # ECOS 4 + DATAGOKR 2 (키 미설정)
+    assert sum("ECOS_API_KEY 미설정" in b for b in summary.blocked) == 4
+    assert sum("DATA_GO_KR_API_KEY 미설정" in b for b in summary.blocked) == 2
 
 
 def test_collect_macro_ecos_code_unset_is_blocked() -> None:
