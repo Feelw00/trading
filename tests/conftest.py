@@ -15,6 +15,8 @@ FETCHED = datetime(2026, 6, 8, 18, 5, tzinfo=KST)
 def fact_kwargs() -> dict[str, Any]:
     return {
         "id": "krx.flows.foreign.2026-06-08",
+        "region": "KR",
+        "asset_class": "index",
         "metric": "kospi_foreign_net_buy_krw",
         "value": -1234500000000.0,
         "as_of": AS_OF,
