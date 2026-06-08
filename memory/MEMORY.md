@@ -1,0 +1,3 @@
+- [openclaw 통합·아키텍처](openclaw-integration-pending.md) — openclaw=exec 스케줄러(cron/heartbeat 전용) + 별도 Python 두뇌, 설치/결정 확정
+- [GitOps 완전 이식성](gitops-full-portability.md) — 모든 리소스를 git 단일 소스로, 다른 기기에 clone+bootstrap으로 즉시 이식
+- [보수적 페르소나(반-아첨)](persona-conservative-no-sycophancy.md) — 아첨/위로/무비판 동조 없이 직설·보수적, 나+시스템 페르소나 양쪽
