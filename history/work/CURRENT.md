@@ -4,29 +4,22 @@
 > 최종 갱신: 2026-06-08 (KST)
 
 ## 진행 중
-- **작업 부팅 + 수집 트리거 구축** — 완료분:
-  - `history/` 스캐폴드(work/trading 분리, CURRENT·INDEX·템플릿).
-  - 수집: `/collect`(섹터 9 + 뉴스 2 = 11) + `collect` 스킬, `collect-macro` 독립 스킬(거시지표).
-  - 부팅: `/boot` 커맨드 + `work-boot` 스킬. 부팅 시 `collect-macro` 먼저 호출(시장 백드롭) → 컨텍스트 로드.
-  - 소스 확정(COLLECT-2): 금리·환율=ECOS, 국내지수=공공데이터/KRX, 해외지수·유가=FRED, 국내종목=KIS(+MCP). 문서·.env 등록 완료.
-  - **하네스(COLLECT-3) 적용:** 수집 커맨드 `allowed-tools`에서 웹서치 제거 → 승인 소스만. `/boot` 첫 실행은 웹서치였고(오차 큼), 이제 그 경로 차단됨.
-  - **거시지표 수집 완료:** `src/trading/collectors`에 FRED·ECOS·공공데이터(data.go.kr)·공통(HTTP 재시도·SQLite landing). `python -m trading.collectors.macro` 결정론 실행 → collect-macro 스킬이 트리거(LLM 데이터 미개입). 코드·필드는 카탈로그/실호출로 확정(추측 0).
-  - **검증:** mypy 36 clean · pytest 39 passed. **거시 11건 실적재 전부 verified** — FRED(SOX·S&P·NASDAQ·WTI·Brent) / ECOS(USD/KRW 1543·기준금리 2.5%·국고채 3Y 3.882%·10Y 4.254%) / 공공데이터(KOSPI 8160.59·KOSDAQ 1002.44, EOD +1영업일).
-  - **국내 종목 시세(EOD):** KIS 앱 오류로 막혀 **공공데이터 주식시세(getStockPriceInfo)로 우회** — `DataGoKrStockClient`. 호가·수급·실시간은 KIS/토스 보류.
-  - **전종목 EOD DB (방향 전환):** 고정 대장주 universe **폐기** → **전 상장종목(2,877/일) 1콜 수집 → SQLite(`data/market.sqlite`, gitignored)**. `trading.collectors.market`(MarketStore, append-only/IGNORE). **1년 백필 완료(246일·708,913행)**.
-  - **스크리너 v1(순수코드):** `trading.screener` — 거래대금 급증 + 모멘텀(20/60일) + 신고가 근접을 **횡단면 백분위 랭크 가중합**, 유동성·보통주 게이트. **실DB 검증: 2,877 → 게이트 311 → 상위 30**, 반도체장비 테마 자연 부각. ScreenConfig로 튜닝.
-  - **멀티에이전트 섹터 분류:** 게이트 311종목 → Workflow(9 분류 + 저신뢰 재검증, 10에이전트, ~22만 토큰) → 26섹터 **다중소속** 태깅. **293 분류 / 18 미분류**(추측 안 함). `stock_sectors` 적재(365행), 스크리너 출력에 섹터 태그 결합. *(분류 데이터는 gitignored market.sqlite — 재실행 비용 있어 추후 committed export 검토.)*
-  - **DART 어댑터(현실 데이터):** `trading.collectors.dart` — corp_code 매핑(상장사 3,968) + 공시 목록(list) + 재무(fnlttSinglAcnt). 무료·공개(설계 🟢). 삼성전자 공시 47건·연결 자산 633조 live 검증. status 처리(000/013/오류). **후보 전망 분석의 grounding 소스** — LLM 기억 추론(반쪽) 대신 실데이터 근거.
-  - **boot·수집 스킬 정리:** `/boot`=거시 라이브(collect-macro) + 나머지 DB 읽기 + **콘솔 날짜 확인** + **미수집 시 알림·`/collect` 제안**(신선도 판단 검증됨). `/collect`=전종목 신규 수집. 스킬 분리: collect-macro(거시)/collect(전종목)/collect-disclosure(공시·DART)/collect-news(뉴스·소스 미확정 스텁). work-boot=DB·history 읽기 중심.
+- (없음 — 다음 후보 1번부터 착수)
 
 ## 최근 완료
-- 2026-06-08 — **M1 골격·데이터 계약 5종·journal·리플레이 하네스** → [archive](archive/2026-06-08-m1-skeleton.md)
-  (pytest 19 passed, mypy 27 files no issues)
+- 2026-06-08 — **디스커버리 파이프라인 + 데이터소스 + boot/수집 스킬** → [archive](archive/2026-06-08-discovery-pipeline.md)
+  - 수집(거시 FRED·ECOS·공공데이터 / 전종목 EOD 708k행 / 공시 DART) → 스크리너(거래대금+모멘텀+신고가) → 멀티에이전트 26섹터 분류 → 섹터 태그 후보. mypy 41 clean·pytest 48. 커밋 `d56819e`→`a98835a`.
+- 2026-06-08 — **M1 골격·데이터 계약 5종·journal·리플레이** → [archive](archive/2026-06-08-m1-skeleton.md)
+
+## 빠른 재개 (다음 세션 `/boot` 후)
+- **상태:** 디스커버리 파이프라인 작동(전종목→후보→섹터). 키 발급 완료(FRED/ECOS/DATA_GO_KR/DART). KIS·뉴스 보류.
+- **DB:** `data/market.sqlite`(gitignored) 1년치. 최신 수집일 = 2026-06-05. 새 거래일은 `/collect`로 증분.
+- **바로 보기:** `/boot` → 거시 백드롭 + 신선도 + 오늘 후보(섹터). 또는 `python -m trading.screener`.
 
 ## 다음 후보 (전종목 스크리닝 → grounded 전망)
-1. **후보 fact pack** — 후보별 공시(DART)+재무(DART)+가격맥락(DB)을 결정론적으로 모음. (현실 데이터 grounding)
-2. **grounded 분석 에이전트** — fact pack을 *읽고* 가설+무효화(ThesisRecord) 도출. 멀티에이전트 병렬. **공시에 없는 촉매 지어내기 금지**(가드).
-3. **파이프라인 디스패치** — `trading.run` ROUNDS 채우기(collect-macro/collect-market/screen/daily) + openclaw cron(하루 2회: 오전 거시 / 오후 전종목+스크리너).
+1. **후보 fact pack** — 후보별 공시(DART)+재무(DART)+가격맥락(DB) 결정론 수집. (현실 데이터 grounding)
+2. **grounded 분석 에이전트** — fact pack을 *읽고* 가설+무효화(ThesisRecord) 도출. 멀티에이전트 병렬. **공시에 없는 촉매 지어내기 금지**.
+3. **파이프라인 디스패치** — `trading.run` ROUNDS 채우기(collect-macro/collect-market/screen/daily) + openclaw cron(하루 2회).
 4. **스크리너 튜닝** — 가중치·임계치 + 하락장 절대필터·관리종목 제외.
 5. 분류 영속화(committed export) / 일일 diff(신규상장) / 뉴스 소스 확정.
 - 보류: KIS(호가·수급·실시간) / NXT(🔴) / M2 R1 게이트.
