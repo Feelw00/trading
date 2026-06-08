@@ -40,17 +40,23 @@ class MacroItem:
     cycle: str | None = None
 
 
-# 해외지수·유가는 FRED로 확정. 금리·환율은 ECOS 코드 확정 전까지 stat/item/cycle=None(blocked).
+# 해외지수·유가=FRED 시리즈ID 확정. 금리·환율=ECOS 통계표/항목 코드 확정
+# (ECOS 카탈로그 StatisticTableList/StatisticItemList로 확인, 2026-06-08 — 추측 아님).
 MACRO_ITEMS: tuple[MacroItem, ...] = (
     MacroItem("S&P500", "index_level", "index", "FRED", region="US", series_id="SP500"),
     MacroItem("NASDAQ", "index_level", "index", "FRED", region="US", series_id="NASDAQCOM"),
     MacroItem("SOX", "index_level", "index", "FRED", region="US", series_id="NASDAQSOX"),
     MacroItem("WTI", "oil", "macro", "FRED", unit="USD/bbl", series_id="DCOILWTICO"),
     MacroItem("Brent", "oil", "macro", "FRED", unit="USD/bbl", series_id="DCOILBRENTEU"),
-    MacroItem("USD/KRW", "fx", "fx", "ECOS", region="KR", unit="KRW"),
-    MacroItem("국고채3Y", "rate", "macro", "ECOS", region="KR", unit="%"),
-    MacroItem("국고채10Y", "rate", "macro", "ECOS", region="KR", unit="%"),
-    MacroItem("BOK기준금리", "rate", "macro", "ECOS", region="KR", unit="%"),
+    # ECOS: 731Y001 환율 / 817Y002 시장금리(일별) / 722Y001 한국은행 기준금리
+    MacroItem("USD/KRW", "fx", "fx", "ECOS", region="KR", unit="KRW",
+              stat_code="731Y001", item_code="0000001", cycle="D"),
+    MacroItem("국고채3Y", "rate", "macro", "ECOS", region="KR", unit="%",
+              stat_code="817Y002", item_code="010200000", cycle="D"),
+    MacroItem("국고채10Y", "rate", "macro", "ECOS", region="KR", unit="%",
+              stat_code="817Y002", item_code="010210000", cycle="D"),
+    MacroItem("BOK기준금리", "rate", "macro", "ECOS", region="KR", unit="%",
+              stat_code="722Y001", item_code="0101000", cycle="D"),
 )
 
 

@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from trading.collectors.base import CollectedFact, CollectError, fetch_json, write_facts
 from trading.collectors.ecos import EcosClient
 from trading.collectors.fred import FredClient
-from trading.collectors.macro import collect_macro
+from trading.collectors.macro import MacroItem, collect_macro
 
 KST = ZoneInfo("Asia/Seoul")
 FETCHED = datetime(2026, 6, 8, 15, 0, tzinfo=KST)
@@ -112,12 +112,21 @@ def test_ecos_latest_picks_newest() -> None:
     assert res == ("20260608", "1553.2", "원")
 
 
-def test_collect_macro_fred_ok_ecos_blocked() -> None:
+def test_collect_macro_fred_ok_ecos_no_client_blocked() -> None:
     def fetch(url: str) -> Any:
         return {"observations": [{"date": "2026-06-04", "value": "100.0"}]}
 
     summary = collect_macro(FredClient("k", fetch=fetch), None)
     assert summary.verified == 5  # FRED 5종
     assert summary.collected == 5
-    assert len(summary.blocked) == 4  # ECOS 4종 코드 미설정
-    assert all("ECOS 통계코드 미설정" in b for b in summary.blocked)
+    assert len(summary.blocked) == 4  # ECOS 4종 — 키 미설정(코드는 확정됨)
+    assert all("ECOS_API_KEY 미설정" in b for b in summary.blocked)
+
+
+def test_collect_macro_ecos_code_unset_is_blocked() -> None:
+    # 통계코드 미설정 항목은 호출 전에 blocked(추측 금지 분기)
+    item = MacroItem("X", "rate", "macro", "ECOS", region="KR")
+    summary = collect_macro(None, None, items=[item])
+    assert summary.collected == 0
+    assert len(summary.blocked) == 1
+    assert "통계코드 미설정" in summary.blocked[0]
