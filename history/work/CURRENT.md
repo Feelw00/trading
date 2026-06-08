@@ -10,15 +10,16 @@
   - 부팅: `/boot` 커맨드 + `work-boot` 스킬. 부팅 시 `collect-macro` 먼저 호출(시장 백드롭) → 컨텍스트 로드.
   - 소스 확정(COLLECT-2): 금리·환율=ECOS, 국내지수=공공데이터/KRX, 해외지수·유가=FRED, 국내종목=KIS(+MCP). 문서·.env 등록 완료.
   - **하네스(COLLECT-3) 적용:** 수집 커맨드 `allowed-tools`에서 웹서치 제거 → 승인 소스만. `/boot` 첫 실행은 웹서치였고(오차 큼), 이제 그 경로 차단됨.
-  - **미검증·블로커:** 소스 어댑터(ECOS/공공/FRED REST, KIS MCP) **아직 미구현** → 현재 `/collect`·`/boot`는 어댑터 없으면 `blocked` 보고(웹서치 우회 안 함).
+  - **어댑터 구현:** `src/trading/collectors`에 FRED(완전)·ECOS(클라이언트 완전, 통계코드 미확정→blocked)·공통(HTTP 재시도·SQLite landing). `python -m trading.collectors.macro` 결정론 실행 → collect-macro 스킬이 이걸 트리거(LLM 데이터 미개입).
+  - **검증:** mypy 35 clean · pytest 34 passed. 키 없이 실행 시 0 적재·9 blocked(환각 0). FRED 키 발급 시 해외지수·유가 즉시 동작.
 
 ## 최근 완료
 - 2026-06-08 — **M1 골격·데이터 계약 5종·journal·리플레이 하네스** → [archive](archive/2026-06-08-m1-skeleton.md)
   (pytest 19 passed, mypy 27 files no issues)
 
 ## 다음 후보
-1. **소스 어댑터 구현(하네스 본체)** — ECOS/공공데이터/FRED REST 클라이언트 + KIS MCP 연결(모의·trading off). 각 공식 문서에서 엔드포인트·FRED 시리즈ID·KIS TR_ID 확정(추측 금지). 키 발급 동반.
-2. `collect-macro`를 ECOS+공공데이터+FRED로 재작성 → `/boot` **웹서치 없이** 재검증.
-3. 클러스터/종목을 `domains.py CLUSTERS`로 코드 승격(단일소스) + openclaw cron(하루 2회·gpt-5.5) 배선.
-4. 남은 갭 해소 — 국내 투자자별 매매동향(수급) KIS TR 확인, NXT(🔴).
-5. **M2** — R1 게이트(검증, 순수코드 유지).
+1. **FRED 키 발급** → `python -m trading.collectors.macro` 실거동(해외지수·유가 적재) + `/boot` 재검증.
+2. **ECOS 통계코드 확정** — 키 발급 후 StatisticItemList 카탈로그로 환율·금리·국고채 코드 확인 → `macro.py` 레지스트리 입력(추측 금지).
+3. 공공데이터(국내지수) 어댑터 + KIS MCP(국내종목, 모의·trading off) 연결.
+4. 클러스터/종목 `domains.py CLUSTERS` 승격 + openclaw cron(하루 2회·gpt-5.5) 배선.
+5. 남은 갭 — 국내 수급 KIS TR, NXT(🔴). **M2** R1 게이트(순수코드).

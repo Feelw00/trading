@@ -16,12 +16,13 @@ description: 거시지표 수집 — 금리·환율·유가·주요지수를 실
 | S&P500·NASDAQ·SOX(필라델피아 반도체) | **FRED** |
 | WTI·Brent | **FRED** |
 
-## 절차 (하네스 — 독자 웹서치 금지)
-1. **승인 소스 어댑터로만** 각 항목 최신값 조회(위 표). **WebSearch/WebFetch 등 독자 웹서치 금지.**
-2. 스키마 1행으로 정규화 → SQLite append-only INSERT.
-3. 요약 보고: 수집 건수 / `UNVERIFIED` 건수 / 누락·`blocked` 항목.
+## 절차 (결정론적 어댑터 — 하네스)
+이 수집은 **결정론적 어댑터가 수행**한다. 스킬은 트리거·보고만 — LLM은 데이터에 손대지 않는다:
+1. `.env` 로드 후 `python -m trading.collectors.macro` 실행.
+2. 어댑터가 FRED/ECOS 조회 → `.runtime/collect/<날짜>/macro_indicators.sqlite` append-only 적재.
+3. 어댑터 출력(`적재 N건(verified) / blocked N건`)을 그대로 보고.
 
-> **하네스 규칙(COLLECT-3):** LLM은 승인된 소스 어댑터만 호출한다. 소스 실패·키 미연결 시 해당 항목을 `blocked`/`UNVERIFIED`로 기록하고 **다른 소스나 웹서치로 임의 대체하지 않는다.** 어댑터 미구현 구간은 건너뛰고 보고만 한다.
+> **하네스(COLLECT-3):** 데이터 fetch는 어댑터(승인 소스)만 한다. **독자 웹서치 금지.** 소스 실패·키 미설정·ECOS 코드 미설정 항목은 `blocked`로 출력하고 **다른 소스·웹서치로 대체하지 않는다.** ECOS 통계코드는 COLLECT-2 미확정 → 현재 blocked, 확정 후 `src/trading/collectors/macro.py` 레지스트리에 입력.
 
 ## 환각 가드 (데이터 품질 — 필수)
 - **기억으로 수치를 만들지 마라.** 실제 조회 출처만. `source`에 URL 기록.
