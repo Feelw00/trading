@@ -51,16 +51,19 @@ src/trading/
   alerts/           # P0/P1/P2 알림 → openclaw 채널(Telegram) 어댑터
   run.py            # 디스패치 엔트리포인트: python -m trading.run <round>
   watch.py          # 연속 감시 엔트리포인트: python -m trading.watch
-ops/openclaw/       # cron 잡 정의 + 등록 스크립트(openclaw cron add ...), heartbeat 설정
+ops/openclaw/       # openclaw 설정을 코드로: cron/heartbeat/채널 정의(선언적), openclaw.json 템플릿(비밀 op://), idempotent sync 스크립트
+ops/bootstrap.sh    # 새 기기 프로비저닝: openclaw 설치(핀 Node 22.22)+poetry+config 적용+cron 등록+.env(1Password)
 tests/
 fixtures/replay/    # 6/2~6/8 주간 리플레이 픽스처
 docs/               # trading-system-design, OPEN_QUESTIONS, SECRETS, claude-code-prompts, PROGRESS, PROPOSALS
+.runtime/openclaw/  # 트레이딩 전용 openclaw 런타임(OPENCLAW_HOME) — bootstrap가 생성, gitignored
 ```
 
 ## openclaw 운영 메모
 - openclaw는 **Node 22.22 격리본**(`~/.openclaw/bin/openclaw`, install-cli.sh로 설치).
   **Node 23에서 돌리지 말 것** — `node:sqlite`의 `statement.columns` 부재로 상태 마이그레이션 실패. (전역 asdf node 23.9.0과 무관)
-- openclaw 설정/상태는 `~/.openclaw`(repo 밖). **repo에 openclaw 소스를 두지 마라** — openclaw는 외부 의존(플랫폼)이다.
+- **GitOps·완전 이식성**: repo가 시스템의 단일 소스. 다른 기기에 `clone → ops/bootstrap.sh → 1Password로 .env → 가동`. (OPEN_QUESTIONS INFRA-1/2)
+- **트레이딩 전용 openclaw 인스턴스**: 개인 `~/.openclaw`와 분리된 프로젝트 `OPENCLAW_HOME`(`.runtime/openclaw`, gitignored, bootstrap가 생성). openclaw 설정은 손으로 두지 말고 `ops/openclaw/`에 선언적 코드로. **repo에 openclaw 소스(플랫폼)는 두지 마라** — 버전 핀 + bootstrap 설치로 의존.
 - cron 잡은 `ops/openclaw/`의 등록 스크립트로 관리. KST 정시는 `--cron "<expr>" --tz Asia/Seoul`.
 - 순수-코드 디스패치 잡은 `--tools exec --light-context` + 결정론적 프롬프트로 `python -m trading.run …`만 실행.
 

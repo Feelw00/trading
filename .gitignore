@@ -14,6 +14,8 @@ secrets/
 *.token
 .kis_token*
 .op/
+# 트레이딩 전용 openclaw 런타임(OPENCLAW_HOME) — bootstrap가 생성(상태·자격증명 포함)
+.runtime/
 
 # =============================================================================
 # 표준 Python 위생 (민감 데이터 아님)

@@ -1,0 +1,14 @@
+[
+  {
+    "id": "sample.evt.2026-06-02.0001",
+    "type": "flow_anomaly",
+    "entities": ["KOSPI"],
+    "summary_1line": "[SAMPLE/FAKE] 외국인 순매도 확대 — 가짜 샘플 값",
+    "binary_ref": null,
+    "evidence": ["sample.fact.kospi_close.2026-06-02"],
+    "market_scope": ["KR.index"],
+    "as_of": "2026-06-02T16:00:00+09:00",
+    "fetched_at": "2026-06-02T16:01:00+09:00",
+    "source": "sample_fake"
+  }
+]

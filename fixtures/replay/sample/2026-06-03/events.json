@@ -1,0 +1,14 @@
+[
+  {
+    "id": "sample.evt.2026-06-03.0001",
+    "type": "earnings",
+    "entities": ["SK하이닉스"],
+    "summary_1line": "[SAMPLE/FAKE] 실적 코멘트 — 가짜 샘플 값",
+    "binary_ref": null,
+    "evidence": ["sample.fact.kospi_close.2026-06-03"],
+    "market_scope": ["KR.semis"],
+    "as_of": "2026-06-03T16:00:00+09:00",
+    "fetched_at": "2026-06-03T16:02:00+09:00",
+    "source": "sample_fake"
+  }
+]

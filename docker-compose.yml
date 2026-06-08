@@ -1,0 +1,16 @@
+# 로컬 개발용 PostgreSQL (append-only 저널 백엔드 — M2부터 사용).
+# 비밀값은 .env 에서 주입 (docs/SECRETS.md). M1 테스트는 이 DB를 요구하지 않는다.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-stock}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME}
+      POSTGRES_DB: ${POSTGRES_DB:-stock}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

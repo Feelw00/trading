@@ -31,6 +31,19 @@
 
 ---
 
+## 인프라 / 이식성
+
+### 🟢 INFRA-1 — 트레이딩 전용 openclaw 인스턴스 격리 (결정됨)
+- **결정(2026-06-08):** 트레이딩은 개인 `~/.openclaw`(개인 auth·cron·스킬)와 **분리된 전용 openclaw 인스턴스**를 쓴다. 프로젝트 `OPENCLAW_HOME`(예: repo의 `.runtime/openclaw`, gitignored)에 상태/자격증명을 두고 openclaw 바이너리는 공유. 개인 환경과 안 섞여 git 100% 관리·이식 가능.
+
+### 🟢 INFRA-2 — GitOps 완전 이식성 (결정됨)
+- **결정(2026-06-08, 운영자 요구):** repo가 시스템의 **단일 소스**. 다른 기기에 `git clone → ops/bootstrap.sh → 1Password로 .env → 즉시 가동`.
+- openclaw 설정(cron/heartbeat/채널/openclaw.json 템플릿)을 런타임에 손으로 두지 말고 **`ops/openclaw/`에 선언적 코드**로 두고 idempotent sync 스크립트로 적용.
+- `ops/bootstrap.sh`: openclaw 설치(핀 Node 22.22) + poetry install + openclaw config 적용 + cron 등록 + `.env`(1Password/op).
+- **git 제외는 단 둘**: 비밀값(1Password), 생성 런타임 상태(`.runtime/`). 버전 핀(Node 22.22, Python 3.13, openclaw, `poetry.lock`) 필수.
+
+---
+
 ## 외부 의존 (Phase 1, 미해결 — 부록 A)
 - 🔴 KRX 정보데이터시스템: 시세·투자자별 매매동향 접근 방식/인증
 - 🔴 NXT 프리·애프터마켓 데이터: 소스·접근
