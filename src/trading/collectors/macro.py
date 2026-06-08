@@ -49,7 +49,7 @@ MACRO_ITEMS: tuple[MacroItem, ...] = (
     MacroItem("WTI", "oil", "macro", "FRED", unit="USD/bbl", series_id="DCOILWTICO"),
     MacroItem("Brent", "oil", "macro", "FRED", unit="USD/bbl", series_id="DCOILBRENTEU"),
     # ECOS: 731Y001 환율 / 817Y002 시장금리(일별) / 722Y001 한국은행 기준금리
-    MacroItem("USD/KRW", "fx", "fx", "ECOS", region="KR", unit="KRW",
+    MacroItem("USD/KRW(매매기준율)", "fx", "fx", "ECOS", region="KR", unit="KRW",
               stat_code="731Y001", item_code="0000001", cycle="D"),
     MacroItem("국고채3Y", "rate", "macro", "ECOS", region="KR", unit="%",
               stat_code="817Y002", item_code="010200000", cycle="D"),
