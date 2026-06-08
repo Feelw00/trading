@@ -16,14 +16,15 @@
   - **전종목 EOD DB (방향 전환):** 고정 대장주 universe **폐기** → **전 상장종목(2,877/일) 1콜 수집 → SQLite(`data/market.sqlite`, gitignored)**. `trading.collectors.market`(MarketStore, append-only/IGNORE). **1년 백필 완료(246일·708,913행)**.
   - **스크리너 v1(순수코드):** `trading.screener` — 거래대금 급증 + 모멘텀(20/60일) + 신고가 근접을 **횡단면 백분위 랭크 가중합**, 유동성·보통주 게이트. **실DB 검증: 2,877 → 게이트 311 → 상위 30**, 반도체장비 테마 자연 부각. ScreenConfig로 튜닝.
   - **멀티에이전트 섹터 분류:** 게이트 311종목 → Workflow(9 분류 + 저신뢰 재검증, 10에이전트, ~22만 토큰) → 26섹터 **다중소속** 태깅. **293 분류 / 18 미분류**(추측 안 함). `stock_sectors` 적재(365행), 스크리너 출력에 섹터 태그 결합. *(분류 데이터는 gitignored market.sqlite — 재실행 비용 있어 추후 committed export 검토.)*
+  - **DART 어댑터(현실 데이터):** `trading.collectors.dart` — corp_code 매핑(상장사 3,968) + 공시 목록(list) + 재무(fnlttSinglAcnt). 무료·공개(설계 🟢). 삼성전자 공시 47건·연결 자산 633조 live 검증. status 처리(000/013/오류). **후보 전망 분석의 grounding 소스** — LLM 기억 추론(반쪽) 대신 실데이터 근거.
 
 ## 최근 완료
 - 2026-06-08 — **M1 골격·데이터 계약 5종·journal·리플레이 하네스** → [archive](archive/2026-06-08-m1-skeleton.md)
   (pytest 19 passed, mypy 27 files no issues)
 
-## 다음 후보 (전종목 스크리닝)
-1. **LLM 전망 분석**(R2~R7) — 섹터 태그된 상위 후보의 촉매·실적·테마(DART·뉴스 결합) → 가설+무효화(ThesisRecord). 파이프라인의 다음 핵심.
-2. **스크리너 튜닝** — 가중치·임계치 + 절대 필터(하락장 가드)·관리종목 제외.
-3. **분류 영속화 결정** — stock_sectors를 committed export(JSON)로 둘지(재실행 비용 회피) — 이전 "SQLite git 공유" 보류 건과 함께.
-4. **일일 diff** — 신규상장·변경 감지 → 분류 증분.
+## 다음 후보 (전종목 스크리닝 → grounded 전망)
+1. **후보 fact pack** — 후보별 공시(DART)+재무(DART)+가격맥락(DB)을 결정론적으로 모음. (현실 데이터 grounding)
+2. **grounded 분석 에이전트** — fact pack을 *읽고* 가설+무효화(ThesisRecord) 도출. 멀티에이전트 병렬. **공시에 없는 촉매 지어내기 금지**(가드).
+3. **스크리너 튜닝** — 가중치·임계치 + 하락장 절대필터·관리종목 제외.
+4. 분류 영속화(committed export) / 일일 diff(신규상장).
 - 보류: 뉴스 2데스크 / KIS(호가·수급·실시간) / openclaw cron / NXT(🔴) / M2 R1 게이트.

@@ -59,6 +59,27 @@ def fetch_json(
     raise CollectError(f"fetch failed: {url}") from last
 
 
+def fetch_bytes(
+    url: str,
+    *,
+    timeout: float = 30.0,
+    retries: int = 3,
+    backoff: float = 0.5,
+    opener: Opener = _urlopen,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> bytes:
+    """GET → raw bytes(ZIP 등). 일시 오류는 백오프 재시도, 최종 실패는 CollectError."""
+    last: Exception | None = None
+    for attempt in range(retries):
+        try:
+            return opener(url, timeout)
+        except OSError as exc:
+            last = exc
+            if attempt < retries - 1:
+                sleeper(backoff * (2**attempt))
+    raise CollectError(f"fetch failed: {url}") from last
+
+
 class CollectedFact(BaseModel):
     """수집 landing 1행. SQLite ``facts`` 테이블과 1:1. 값은 원시 문자열(타입화는 R2).
 
@@ -151,6 +172,7 @@ __all__ = [
     "FACTS_DDL",
     "Opener",
     "default_db_path",
+    "fetch_bytes",
     "fetch_json",
     "now_kst",
     "write_facts",
