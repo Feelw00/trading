@@ -154,20 +154,25 @@ def screen(store: MarketStore, config: ScreenConfig | None = None) -> ScreenResu
     return ScreenResult(as_of, len(survivors), cands[: cfg.top_n])
 
 
+SECTOR_SOURCE = "llm-cls-v1"
+
+
 def main() -> int:
     store = MarketStore()
     res = screen(store)
+    secmap = store.sector_map(SECTOR_SOURCE)
     store.close()
     if not res.candidates:
         print("후보 없음 (DB 비었거나 게이트 통과 종목 없음)")
         return 0
     print(f"스크리너 as_of={res.as_of} · 게이트 통과 {res.universe}종목 · 상위 {len(res.candidates)}")
-    print(f"{'#':>3} {'종목':<14}{'점수':>6}{'거래대금배':>9}{'단기%':>8}{'장기%':>8}{'신고가':>8}")
+    print(f"{'#':>3} {'종목':<12}{'점수':>5}{'거래대금배':>8}{'단기%':>7}{'장기%':>7}{'신고가':>7}  섹터")
     for i, c in enumerate(res.candidates, 1):
         g = c.signals
+        secs = ",".join(secmap.get(c.srtn_cd, [])) or "미분류"
         print(
-            f"{i:>3} {c.name:<14}{c.score:>6.2f}{g.tr_value_surge:>9.1f}"
-            f"{g.mom_short * 100:>7.1f}%{g.mom_long * 100:>7.1f}%{g.high_proximity:>8.3f}"
+            f"{i:>3} {c.name:<12}{c.score:>5.2f}{g.tr_value_surge:>8.1f}"
+            f"{g.mom_short * 100:>6.1f}%{g.mom_long * 100:>6.1f}%{g.high_proximity:>7.3f}  {secs}"
         )
     return 0
 

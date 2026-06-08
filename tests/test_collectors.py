@@ -209,6 +209,21 @@ def test_marketstore_upsert_idempotent(tmp_path: Path) -> None:
     store.close()
 
 
+def test_marketstore_upsert_sectors(tmp_path: Path) -> None:
+    store = MarketStore(tmp_path / "m.sqlite")
+    items: list[dict[str, Any]] = [
+        {"srtn_cd": "005930", "name": "삼성전자", "sectors": ["semiconductor"], "confidence": 0.95},
+        {"srtn_cd": "373220", "name": "LG에너지솔루션", "sectors": ["battery_cell", "battery_materials"], "confidence": 0.8},
+        {"srtn_cd": "999999", "name": "무명", "sectors": [], "confidence": 0.2},  # 미분류
+    ]
+    n = store.upsert_sectors(items, source="llm-cls-v1", as_of="20260605")
+    assert n == 4  # 1 + 2 + 1(unclassified)
+    counts = dict(store.sector_counts("llm-cls-v1"))
+    assert counts["battery_cell"] == 1 and counts["unclassified"] == 1
+    assert store.upsert_sectors(items, source="llm-cls-v1", as_of="20260605") == 0  # idempotent
+    store.close()
+
+
 def test_datagokr_resultcode_error() -> None:
     def fetch(url: str) -> Any:
         return {"response": {"header": {"resultCode": "30", "resultMsg": "KEY_NOT_REGISTERED"}}}

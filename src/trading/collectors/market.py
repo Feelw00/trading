@@ -39,6 +39,19 @@ _SRC = (
 )
 _INSERT = f"INSERT OR IGNORE INTO daily_quotes ({','.join(_COLS)}) VALUES ({','.join('?' * len(_COLS))})"
 
+# 섹터 분류(멀티에이전트 결과) — 다중소속이라 (종목×섹터) 한 행. 미분류는 'unclassified'.
+SECTORS_DDL = """
+CREATE TABLE IF NOT EXISTS stock_sectors (
+  srtn_cd TEXT NOT NULL, name TEXT, sector TEXT NOT NULL, confidence REAL,
+  source TEXT, as_of TEXT,
+  UNIQUE(srtn_cd, sector, source)
+)
+"""
+_SECTORS_INSERT = (
+    "INSERT OR IGNORE INTO stock_sectors (srtn_cd, name, sector, confidence, source, as_of) "
+    "VALUES (?,?,?,?,?,?)"
+)
+
 
 def _row_values(row: dict[str, Any]) -> tuple[Any, ...]:
     return tuple(row.get(k) for k in _SRC)
@@ -51,6 +64,7 @@ class MarketStore:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path))
         self._conn.execute(MARKET_DDL)
+        self._conn.execute(SECTORS_DDL)
 
     def upsert(self, rows: Sequence[dict[str, Any]]) -> int:
         """INSERT OR IGNORE. 신규 적재된 행 수 반환(중복·덮어쓰기 없음)."""
@@ -87,6 +101,41 @@ class MarketStore:
             (min_bas_dt,),
         )
         return cur.fetchall()
+
+    def upsert_sectors(
+        self, items: Sequence[dict[str, Any]], *, source: str, as_of: str
+    ) -> int:
+        """멀티에이전트 분류 결과 적재. 다중소속은 섹터별 행, 미분류는 'unclassified'."""
+        rows: list[tuple[Any, ...]] = []
+        for it in items:
+            secs = it.get("sectors") or []
+            conf, cd, nm = it.get("confidence"), it.get("srtn_cd"), it.get("name")
+            if not secs:
+                rows.append((cd, nm, "unclassified", conf, source, as_of))
+            else:
+                rows.extend((cd, nm, s, conf, source, as_of) for s in secs)
+        before = self._conn.total_changes
+        self._conn.executemany(_SECTORS_INSERT, rows)
+        self._conn.commit()
+        return self._conn.total_changes - before
+
+    def sector_map(self, source: str) -> dict[str, list[str]]:
+        """{srtn_cd: [sector,...]} — 미분류 제외."""
+        cur = self._conn.execute(
+            "SELECT srtn_cd, sector FROM stock_sectors WHERE source=? AND sector != 'unclassified'",
+            (source,),
+        )
+        out: dict[str, list[str]] = {}
+        for r in cur:
+            out.setdefault(str(r[0]), []).append(str(r[1]))
+        return out
+
+    def sector_counts(self, source: str) -> list[tuple[str, int]]:
+        cur = self._conn.execute(
+            "SELECT sector, COUNT(*) FROM stock_sectors WHERE source=? GROUP BY sector ORDER BY 2 DESC",
+            (source,),
+        )
+        return [(str(r[0]), int(r[1])) for r in cur]
 
     def close(self) -> None:
         self._conn.close()
