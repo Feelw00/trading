@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from trading.collectors.base import CollectedFact, CollectError, fetch_json, write_facts
-from trading.collectors.data_go_kr import DataGoKrIndexClient
+from trading.collectors.data_go_kr import DataGoKrIndexClient, DataGoKrStockClient
 from trading.collectors.ecos import EcosClient
 from trading.collectors.fred import FredClient
 from trading.collectors.macro import MacroItem, collect_macro
@@ -147,6 +147,31 @@ def test_datagokr_single_item_dict() -> None:
         "20260605",
         "1002.44",
     )
+
+
+def test_datagokr_stock_latest() -> None:
+    def fetch(url: str) -> Any:
+        assert "likeSrtnCd=005930" in url and "getStockPriceInfo" in url
+        return {
+            "response": {
+                "header": {"resultCode": "00"},
+                "body": {
+                    "items": {
+                        "item": [
+                            {"basDt": "20260604", "srtnCd": "005930", "itmsNm": "삼성전자",
+                             "mrktCtg": "KOSPI", "clpr": "71000", "fltRt": "-2.1", "trqu": "12345678"},
+                            {"basDt": "20260605", "srtnCd": "005930", "itmsNm": "삼성전자",
+                             "mrktCtg": "KOSPI", "clpr": "70000", "fltRt": "-1.4", "trqu": "11111111"},
+                        ]
+                    }
+                },
+            }
+        }
+
+    q = DataGoKrStockClient("k", fetch=fetch).latest("005930", "20260525", "20260609")
+    assert q is not None
+    assert q.bas_dt == "20260605" and q.clpr == "70000"
+    assert q.name == "삼성전자" and q.market == "KOSPI" and q.trqu == "11111111"
 
 
 def test_datagokr_resultcode_error() -> None:
