@@ -10,8 +10,9 @@
 - **스케줄링은 openclaw 기능만 사용** — openclaw `cron`/`heartbeat` 전용. 자체 스케줄러·system cron·launchd 금지.
 - **트레이딩 로직은 별도 Python 두뇌.** openclaw cron/heartbeat가 슬롯마다
   `python -m trading.run <round>`(연속 감시는 `python -m trading.watch`)를 exec로 트리거.
-- 순수-코드 경로(R0/R1/R5.5/이벤트 감시기)는 cron 에이전트가 `--tools exec --light-context`로 디스패치 —
+- 순수-코드 경로(R1/R5.5/이벤트 감시기)는 cron 에이전트가 `--tools exec --light-context`로 디스패치 —
   **LLM은 트리거 전용, 데이터·판단엔 절대 미개입**.
+- **R0(수집)만 예외: LLM 수집 채택(OPEN_QUESTIONS COLLECT-1).** 단 하네스(COLLECT-3)로 LLM은 승인된 소스 어댑터만 호출, 독자 웹서치 금지 + 환각 가드 적용.
 - 라운드 간 전달은 **DB(append-only)/파일로만** (프롬프트 체이닝 금지, 설계서 §3).
 - 모델: R2/R3=OpenAI API, R4/R5/R7=`claude -p` 서브프로세스 — **Python 두뇌가 직접 호출**(openclaw provider 라우팅 미사용).
 - 알림(P0/P1/P2)은 openclaw 채널(Telegram).
@@ -20,8 +21,9 @@
 1. 외부 데이터 소스의 API 엔드포인트·인증·응답 포맷을 추측해서 구현하지 마라.
    모르는 소스는 어댑터 인터페이스 + 스텁 구현 + `docs/OPEN_QUESTIONS.md` 등록으로 처리한다.
    존재하지 않는 엔드포인트를 그럴듯하게 지어내는 것이 이 프로젝트 최대 리스크다.
-2. R0(수집)/R1(검증)/R5.5(선택기)/이벤트 감시기의 **계산·판단 로직에 LLM을 넣지 마라**. 순수 코드다.
+2. R1(검증)/R5.5(선택기)/이벤트 감시기의 **계산·판단 로직에 LLM을 넣지 마라**. 순수 코드다.
    (openclaw cron이 스크립트를 exec하기 위한 "트리거"로서의 LLM 에이전트 턴만 허용 — 데이터엔 접근하지 않는다.)
+   **R0(수집)은 예외 — 운영자 결정으로 LLM 수집 채택(OPEN_QUESTIONS COLLECT-1). 단 하네스(COLLECT-3): LLM은 승인된 소스 어댑터만 호출하고 독자 웹서치 금지, 환각 가드(출처·as_of 필수, 미검증=UNVERIFIED, 추측 금지) 적용.**
 3. 시장가 주문 코드를 어떤 형태로도 작성하지 마라. 주문 관련 코드는 지정가·조건부(청산)만 존재한다.
 4. 비밀값(API 키·계좌)을 코드·로그·테스트 픽스처에 넣지 마라.
    전부 환경변수 + `.env.example` + 1Password(`docs/SECRETS.md`). 모델명도 하드코딩 금지(.env 주입).
