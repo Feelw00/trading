@@ -123,5 +123,17 @@ class DataGoKrStockClient:
             trqu=row.get("trqu"),
         )
 
+    def all_by_date(self, bas_dt: str) -> list[dict[str, Any]]:
+        """해당 거래일의 전 상장종목 행(원시 dict). 비거래일이면 빈 리스트. 전종목 ≈ 1콜."""
+        params = {
+            "serviceKey": self._key,
+            "resultType": "json",
+            "numOfRows": "5000",
+            "pageNo": "1",
+            "basDt": bas_dt,
+        }
+        rows = _rows(self._fetch(f"{STOCK_ENDPOINT}?{urlencode(params)}"))
+        return [r for r in rows if isinstance(r, dict)]
+
 
 __all__ = ["DataGoKrIndexClient", "DataGoKrStockClient", "StockQuote"]

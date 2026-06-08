@@ -14,6 +14,7 @@ from trading.collectors.data_go_kr import DataGoKrIndexClient, DataGoKrStockClie
 from trading.collectors.ecos import EcosClient
 from trading.collectors.fred import FredClient
 from trading.collectors.macro import MacroItem, collect_macro
+from trading.collectors.market import MarketStore
 
 KST = ZoneInfo("Asia/Seoul")
 FETCHED = datetime(2026, 6, 8, 15, 0, tzinfo=KST)
@@ -172,6 +173,40 @@ def test_datagokr_stock_latest() -> None:
     assert q is not None
     assert q.bas_dt == "20260605" and q.clpr == "70000"
     assert q.name == "삼성전자" and q.market == "KOSPI" and q.trqu == "11111111"
+
+
+def test_datagokr_all_by_date() -> None:
+    def fetch(url: str) -> Any:
+        assert "basDt=20260605" in url
+        return {
+            "response": {
+                "header": {"resultCode": "00"},
+                "body": {
+                    "items": {
+                        "item": [
+                            {"basDt": "20260605", "srtnCd": "005930", "itmsNm": "삼성전자", "clpr": "329000"},
+                            {"basDt": "20260605", "srtnCd": "000660", "itmsNm": "SK하이닉스", "clpr": "2070000"},
+                        ]
+                    }
+                },
+            }
+        }
+
+    rows = DataGoKrStockClient("k", fetch=fetch).all_by_date("20260605")
+    assert len(rows) == 2 and rows[0]["srtnCd"] == "005930"
+
+
+def test_marketstore_upsert_idempotent(tmp_path: Path) -> None:
+    store = MarketStore(tmp_path / "m.sqlite")
+    rows: list[dict[str, Any]] = [
+        {"basDt": "20260605", "srtnCd": "005930", "itmsNm": "삼성전자", "mrktCtg": "KOSPI", "clpr": "329000"},
+        {"basDt": "20260605", "srtnCd": "000660", "itmsNm": "SK하이닉스", "mrktCtg": "KOSPI", "clpr": "2070000"},
+    ]
+    assert store.upsert(rows) == 2
+    assert store.upsert(rows) == 0  # 중복 → IGNORE
+    assert store.count() == 2
+    assert store.dates() == ["20260605"]
+    store.close()
 
 
 def test_datagokr_resultcode_error() -> None:
