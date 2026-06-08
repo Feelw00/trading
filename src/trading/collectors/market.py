@@ -67,6 +67,27 @@ class MarketStore:
         cur = self._conn.execute("SELECT DISTINCT bas_dt FROM daily_quotes ORDER BY bas_dt")
         return [str(r[0]) for r in cur]
 
+    def latest_date(self) -> str | None:
+        row = self._conn.execute("SELECT MAX(bas_dt) FROM daily_quotes").fetchone()
+        return str(row[0]) if row and row[0] else None
+
+    def nth_recent_date(self, n: int) -> str | None:
+        """n번째로 최근인 거래일(신호 lookback 컷오프). 부족하면 가장 오래된 날."""
+        cur = self._conn.execute(
+            "SELECT DISTINCT bas_dt FROM daily_quotes ORDER BY bas_dt DESC LIMIT ?", (n,)
+        )
+        dates = [str(r[0]) for r in cur]
+        return dates[-1] if dates else None
+
+    def rows_since(self, min_bas_dt: str) -> list[tuple[Any, ...]]:
+        """[min_bas_dt~] 행: (srtn_cd, name, market, bas_dt, clpr, hipr, tr_prc, mrkt_tot_amt)."""
+        cur = self._conn.execute(
+            "SELECT srtn_cd, name, market, bas_dt, clpr, hipr, tr_prc, mrkt_tot_amt "
+            "FROM daily_quotes WHERE bas_dt >= ? ORDER BY srtn_cd, bas_dt",
+            (min_bas_dt,),
+        )
+        return cur.fetchall()
+
     def close(self) -> None:
         self._conn.close()
 
