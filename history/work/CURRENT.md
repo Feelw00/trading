@@ -17,6 +17,7 @@
   - **스크리너 v1(순수코드):** `trading.screener` — 거래대금 급증 + 모멘텀(20/60일) + 신고가 근접을 **횡단면 백분위 랭크 가중합**, 유동성·보통주 게이트. **실DB 검증: 2,877 → 게이트 311 → 상위 30**, 반도체장비 테마 자연 부각. ScreenConfig로 튜닝.
   - **멀티에이전트 섹터 분류:** 게이트 311종목 → Workflow(9 분류 + 저신뢰 재검증, 10에이전트, ~22만 토큰) → 26섹터 **다중소속** 태깅. **293 분류 / 18 미분류**(추측 안 함). `stock_sectors` 적재(365행), 스크리너 출력에 섹터 태그 결합. *(분류 데이터는 gitignored market.sqlite — 재실행 비용 있어 추후 committed export 검토.)*
   - **DART 어댑터(현실 데이터):** `trading.collectors.dart` — corp_code 매핑(상장사 3,968) + 공시 목록(list) + 재무(fnlttSinglAcnt). 무료·공개(설계 🟢). 삼성전자 공시 47건·연결 자산 633조 live 검증. status 처리(000/013/오류). **후보 전망 분석의 grounding 소스** — LLM 기억 추론(반쪽) 대신 실데이터 근거.
+  - **boot·수집 스킬 정리:** `/boot`=거시 라이브(collect-macro) + 나머지 DB 읽기 + **콘솔 날짜 확인** + **미수집 시 알림·`/collect` 제안**(신선도 판단 검증됨). `/collect`=전종목 신규 수집. 스킬 분리: collect-macro(거시)/collect(전종목)/collect-disclosure(공시·DART)/collect-news(뉴스·소스 미확정 스텁). work-boot=DB·history 읽기 중심.
 
 ## 최근 완료
 - 2026-06-08 — **M1 골격·데이터 계약 5종·journal·리플레이 하네스** → [archive](archive/2026-06-08-m1-skeleton.md)
@@ -25,6 +26,7 @@
 ## 다음 후보 (전종목 스크리닝 → grounded 전망)
 1. **후보 fact pack** — 후보별 공시(DART)+재무(DART)+가격맥락(DB)을 결정론적으로 모음. (현실 데이터 grounding)
 2. **grounded 분석 에이전트** — fact pack을 *읽고* 가설+무효화(ThesisRecord) 도출. 멀티에이전트 병렬. **공시에 없는 촉매 지어내기 금지**(가드).
-3. **스크리너 튜닝** — 가중치·임계치 + 하락장 절대필터·관리종목 제외.
-4. 분류 영속화(committed export) / 일일 diff(신규상장).
-- 보류: 뉴스 2데스크 / KIS(호가·수급·실시간) / openclaw cron / NXT(🔴) / M2 R1 게이트.
+3. **파이프라인 디스패치** — `trading.run` ROUNDS 채우기(collect-macro/collect-market/screen/daily) + openclaw cron(하루 2회: 오전 거시 / 오후 전종목+스크리너).
+4. **스크리너 튜닝** — 가중치·임계치 + 하락장 절대필터·관리종목 제외.
+5. 분류 영속화(committed export) / 일일 diff(신규상장) / 뉴스 소스 확정.
+- 보류: KIS(호가·수급·실시간) / NXT(🔴) / M2 R1 게이트.
