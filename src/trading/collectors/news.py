@@ -352,6 +352,20 @@ class NewsStore:
         )
         return [_row_to_news_item(r) for r in cur]
 
+    def by_ids(self, ids: Sequence[str]) -> list[NewsItem]:
+        """정확한 id 집합으로 조회 — R4가 이벤트 evidence 기사를 끌어올 때."""
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        cur = self._conn.execute(
+            "SELECT n.id, n.source, n.query, n.title, n.url, n.publisher, "
+            "n.published_at, n.fetched_at, n.snippet, n.lang, n.trust, n.verified, "
+            "(SELECT GROUP_CONCAT(e2.entity) FROM news_entities e2 WHERE e2.news_id = n.id) "
+            f"FROM news_items n WHERE n.id IN ({placeholders})",
+            list(ids),
+        )
+        return [_row_to_news_item(r) for r in cur]
+
     def recent(self, *, limit: int = 500) -> list[NewsItem]:
         """최근 적재 뉴스(entity 무관) — 발행일 최신순(미상 뒤). R1 게이트·R2 배치 입력용."""
         cur = self._conn.execute(

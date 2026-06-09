@@ -43,6 +43,27 @@ class AffectedStock(BaseModel):
     relevance: Score
 
 
+class LensVerdict(BaseModel):
+    """R4 적대검증 렌즈 1개 결과(PROPOSALS P-4 §4 — 강도/종목연결/시점정합)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    lens: NonEmptyStr            # strength | linkage | timing
+    survived: bool               # 적대 공격에서 살아남음(refute 실패=촉매 유효)
+    reason: NonEmptyStr
+
+
+class Verification(BaseModel):
+    """R4 적대검증 종합 — 선별된 고강도·single_stock 촉매에만 부착(저강도·broad는 None)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    verified_by: NonEmptyStr                    # "r4:claude" 등
+    confirmed: bool                             # 다수 렌즈 생존 → 생존 촉매
+    lens_verdicts: list[LensVerdict] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class EventRecord(BaseRecord):
     type: EventType
     entities: list[NonEmptyStr] = Field(default_factory=list)
@@ -56,6 +77,16 @@ class EventRecord(BaseRecord):
     catalyst_strength: Score | None = None        # 사건 시장 임팩트(종목 독립)
     novelty: Score | None = None                  # 신규성(재탕 디스카운트)
     affected: list[AffectedStock] = Field(default_factory=list)  # 영향종목+연결강도
+    # --- P-4 R4 적대검증 (선별된 고강도·single_stock에만; 그 외 None) ---
+    verification: Verification | None = None
 
 
-__all__ = ["AffectedStock", "EventRecord", "EventType", "Score", "Scope"]
+__all__ = [
+    "AffectedStock",
+    "EventRecord",
+    "EventType",
+    "LensVerdict",
+    "Score",
+    "Scope",
+    "Verification",
+]
