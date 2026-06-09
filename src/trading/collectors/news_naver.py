@@ -5,7 +5,7 @@
   헤더: X-Naver-Client-Id / X-Naver-Client-Secret
   응답: {total, items:[{title, originallink, link, description, pubDate(RFC822)}]}
     title·description은 <b> 태그/엔티티 포함 → 코어 normalize 가 strip.
-    publisher 필드 없음 → originallink 도메인에서 발행처 추정.
+    publisher 필드 없음 → originallink 도메인에서 발행처 추정(코어 publisher_from_url 공용).
 인증 실패·한도초과는 HTTP 오류 → fetch_json 재시도 후 CollectError(빈 결과 날조 금지).
 """
 
@@ -16,41 +16,11 @@ from typing import Any
 from urllib.parse import urlencode
 
 from trading.collectors.base import fetch_json
-from trading.collectors.news import RawNews
+from trading.collectors.news import RawNews, publisher_from_url
 
 NAVER_NEWS_URL = "https://openapi.naver.com/v1/search/news.json"
 
 JsonFetch = Callable[[str], Any]
-
-# originallink 도메인 → 발행처(신뢰 랭킹은 코어 _TRUST 가 이름으로 매칭). 미상은 host 그대로.
-_DOMAIN_PUBLISHER: dict[str, str] = {
-    "yna.co.kr": "연합뉴스",
-    "hankyung.com": "한국경제",
-    "mk.co.kr": "매일경제",
-    "chosun.com": "조선일보",
-    "joongang.co.kr": "중앙일보",
-    "donga.com": "동아일보",
-    "edaily.co.kr": "이데일리",
-    "mt.co.kr": "머니투데이",
-    "sedaily.com": "서울경제",
-    "fnnews.com": "파이낸셜뉴스",
-    "news.naver.com": "네이버뉴스",
-}
-
-
-def _host(url: str) -> str:
-    m = url.split("://", 1)[-1].split("/", 1)[0].lower()
-    return m[4:] if m.startswith("www.") else m
-
-
-def _publisher(url: str) -> str | None:
-    host = _host(url)
-    if not host:
-        return None
-    for dom, name in _DOMAIN_PUBLISHER.items():
-        if host == dom or host.endswith("." + dom):
-            return name
-    return host
 
 
 def _parse_pubdate(raw: object) -> datetime | None:
@@ -90,7 +60,7 @@ class NaverNewsSource:
                 RawNews(
                     title=str(it.get("title", "")),
                     url=url,
-                    publisher=_publisher(url),
+                    publisher=publisher_from_url(url),
                     published_at=_parse_pubdate(it.get("pubDate")),
                     snippet=str(it["description"]) if it.get("description") else None,
                     lang="ko",
