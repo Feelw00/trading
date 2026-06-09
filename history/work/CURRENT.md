@@ -4,7 +4,12 @@
 > 최종 갱신: 2026-06-09 (KST)
 
 ## 진행 중
-- **P-4 경제 뉴스 촉매 파이프라인** (PROPOSALS P-4, 👍채택). 브랜치 `feat/news-catalyst-pipeline`(P-3 위 스택). **R0~R4 + cron 자동화 완료** — ✅계약/쿼리플랜/R1(`a57f742`)·✅스코어러결정 `a969d34`·✅R2코어 `e7bd1ac`·✅R2영속화+배선 `3f39344`·✅R4 적대검증 `ab60336`·✅**cron 슬롯**. **남은 P-4(선택):** ⬜인덱싱(P-3 FTS 확장) → ⬜R3 페르소나가 `EventStore.for_srtn` 소비(다운스트림). **PR 올릴 준비됨(6커밋 스택).**
+- **R3 페르소나 분석** (설계서 §3, P-4 다운스트림). 브랜치 `feat/r3-personas`. 코어·스토어·러너·cron·테스트·라이브 완료 — 커밋·PR 대기. **다음:** ⬜R5 합성(생존 논제→플레이북·OrderDraft) 또는 ⬜인덱싱(FTS5) 또는 ⬜설계서 R4(thesis-kill, 촉매검증과 별개).
+- ~~**P-4 경제 뉴스 촉매 파이프라인**~~ ✅ **main 머지 완료**(PR #12·#14, `b522d2e`). R0~R4 + cron 9슬롯.
+
+## 최근 완료
+- 2026-06-09 — **R3 페르소나 분석**(설계서 §3 — P-4 촉매를 소비하는 다운스트림): `rounds/r3.py` — 촉매 보유 종목 1개당 3페르소나(수급/사이클/매크로) **입력격리 병렬**. 격리는 `_CATALYST_PERSONA`로 촉매 분배(수급→flow_demand·rumor / 사이클→실적·가이던스·공급망·제품·M&A·경영 / 매크로→거시·정책·법률) + 페르소나별 데이터(사이클=재무 YoY, 매크로=거시 백드롭). `ThesisRecord` 생성, **invalidation 필수**(누락 시 strict 프롬프트로 1회 재생성, 재실패 폐기). horizon/confidence/direction 범위가드. **미수집 핵심지표(투자자별 매매·신용·공매도·DRAM가격·캐펙스 🔴)는 "보류"+저confidence**(추측 금지, discuss 스킬 철학). `journal/theses.py` `ThesisStore`(append-only·version·srtn_cd/persona 조회) + `reason_news.py` 러너(EventStore affected 종목 → factpack+촉매+거시 → R3 → ThesisStore) + `trading.run` **`reason-theses` 라운드** + cron `reason-am/pm`(06:55/16:55). **라이브 검증**(haiku, 2종목): 논제 3 적재 — **수급 페르소나가 정확히 "보류"**(현대백화점 flat·conf 0.15, 무효화에 "수급데이터 공개 시 재검증"), 사이클이 재무 grounded short(오프라인 -14%·부채+13% / 매출+6% vs 영업이익+102%=마진 이미 실현, 관측가능 무효화). LLM에러는 graceful(persona_errors, 러너가 출력). pytest 161(+7: r3 5·thesis_store 2)·mypy strict clean(49). cron 11잡. **튜닝메모**: haiku 페르소나 호출 가끔 JSON 파싱 실패 → 재시도/모델 상향 검토.
+- 2026-06-09 — **P-4 cron 슬롯 배선**(파이프라인 자동화 완성): — ✅계약/쿼리플랜/R1(`a57f742`)·✅스코어러결정 `a969d34`·✅R2코어 `e7bd1ac`·✅R2영속화+배선 `3f39344`·✅R4 적대검증 `ab60336`·✅**cron 슬롯**. **남은 P-4(선택):** ⬜인덱싱(P-3 FTS 확장) → ⬜R3 페르소나가 `EventStore.for_srtn` 소비(다운스트림). **PR 올릴 준비됨(6커밋 스택).**
 
 ## 최근 완료
 - 2026-06-09 — **P-4 cron 슬롯 배선**(파이프라인 자동화 완성): `ops/openclaw/cron_jobs.py`에 뉴스 촉매 파이프라인 슬롯 추가 — am `collect-news`(06:20)→`score-news`(06:30)→`verify-catalysts`(06:45), pm(16:20/32/45). 총 9잡. **핵심 정합성**: R2/R4 LLM 라운드도 **`mode=exec`** — openclaw는 `python -m trading.run`만 exec하고 **claude -p는 Python 두뇌가 내부 직접 호출**(NEWS-R2/SCHED-3, provider 라우팅 미사용). cron_jobs/README docstring에 명시. `sync.py` dry-run round 정합성 통과. test_dispatch `_EXPECTED`+2(기존 레지스트리 테스트). pytest 154(불변)·mypy clean(46). **운영 메모**: cron 환경에 `R2_MODEL`(저단가) 주입 필요 / score 장기실행 시 verify와 시각겹침 가능 → 운영하며 조정.

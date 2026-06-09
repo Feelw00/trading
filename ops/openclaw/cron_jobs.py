@@ -30,11 +30,13 @@ JOBS: tuple[CronJob, ...] = (
     CronJob("news-am", "20 6 * * 1-5", "collect-news", comment="R0 수집 — 해외·밤사이 뉴스(3계층)"),
     CronJob("score-am", "30 6 * * 1-5", "score-news", comment="R1 게이트→R2 분류·스코어(내부 claude -p, R2_MODEL)"),
     CronJob("verify-am", "45 6 * * 1-5", "verify-catalysts", comment="R4 적대검증(고강도·single_stock 선별, 내부 claude -p)"),
+    CronJob("reason-am", "55 6 * * 1-5", "reason-theses", comment="R3 페르소나 분석(촉매 보유 종목, 내부 claude -p ×3)"),
     CronJob("daily-eod", "0 8 * * 1-5", "daily-eod", comment="전종목→섹터분류→스크리너→fact pack(전일 EOD)"),
     # --- 오후(마감) ---
     CronJob("news-pm", "20 16 * * 1-5", "collect-news", comment="R0 수집 — 국내 마감 뉴스(네이버 중심)"),
     CronJob("score-pm", "32 16 * * 1-5", "score-news", comment="R1 게이트→R2 분류·스코어(macro-pm와 시각 분리)"),
     CronJob("verify-pm", "45 16 * * 1-5", "verify-catalysts", comment="R4 적대검증(선별)"),
+    CronJob("reason-pm", "55 16 * * 1-5", "reason-theses", comment="R3 페르소나 분석"),
     CronJob("macro-pm", "30 16 * * 1-5", "collect-macro", comment="마감 거시"),
 )
 
