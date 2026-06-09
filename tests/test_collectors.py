@@ -34,6 +34,17 @@ def test_fetch_json_retries_then_succeeds() -> None:
     assert calls["n"] == 2
 
 
+def test_fetch_json_passes_headers_to_opener() -> None:
+    seen: dict[str, Any] = {}
+
+    def opener(url: str, timeout: float, headers: dict[str, str] | None = None) -> bytes:
+        seen["headers"] = headers
+        return b'{"ok": true}'
+
+    fetch_json("http://x", opener=opener, headers={"X-Naver-Client-Id": "id"})
+    assert seen["headers"] == {"X-Naver-Client-Id": "id"}
+
+
 def test_fetch_json_exhausts_to_collecterror() -> None:
     def opener(url: str, timeout: float) -> bytes:
         raise OSError("down")
