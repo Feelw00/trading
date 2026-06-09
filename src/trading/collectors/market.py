@@ -102,6 +102,17 @@ class MarketStore:
         )
         return cur.fetchall()
 
+    def latest_quote(self, srtn_cd: str) -> tuple[str, str | None, str | None, str | None] | None:
+        """종목 최신일 (bas_dt, market, clpr, mrkt_tot_amt). 없으면 None."""
+        row = self._conn.execute(
+            "SELECT bas_dt, market, clpr, mrkt_tot_amt FROM daily_quotes "
+            "WHERE srtn_cd=? ORDER BY bas_dt DESC LIMIT 1",
+            (srtn_cd,),
+        ).fetchone()
+        if row is None:
+            return None
+        return (str(row[0]), row[1], row[2], row[3])
+
     def upsert_sectors(
         self, items: Sequence[dict[str, Any]], *, source: str, as_of: str
     ) -> int:
