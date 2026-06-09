@@ -11,11 +11,13 @@ import sys
 
 from trading.collectors.market import MarketStore
 from trading.collectors.news import (
+    FOREIGN_THEMES,
     NewsSource,
     NewsStore,
     build_query_plan,
     collect_news,
 )
+from trading.domains import Sector
 from trading.screener import ScreenConfig, screen
 
 DEFAULT_TOP_N = 15
@@ -49,12 +51,17 @@ def run(top_n: int = DEFAULT_TOP_N) -> int:
     if not res.candidates:
         print("뉴스 수집 스킵 — 스크리너 후보 없음")
         return 0
-    plan = build_query_plan([(c.srtn_cd, c.name) for c in res.candidates])
+    # 3계층(P-4 §3): L1 후보종목 + L2 26섹터(테마-광범위 촉매) + L3 거시(FOREIGN_THEMES).
+    sectors = list(Sector)
+    plan = build_query_plan([(c.srtn_cd, c.name) for c in res.candidates], sectors=sectors)
     sources = build_sources_from_env()
     store = NewsStore()  # 단일 영속 data/news.sqlite — 시계열 통합 (P-3)
     summary = collect_news(sources, plan, store, limit=SEARCH_LIMIT)
     store.close()
-    print(f"뉴스 수집 as_of={res.as_of}: 적재 {summary.stored}건 (dedup후 {summary.collected})")
+    print(
+        f"뉴스 수집 as_of={res.as_of} (쿼리플랜 L1={len(res.candidates)}·L2={len(sectors)}·"
+        f"L3={len(FOREIGN_THEMES)}): 적재 {summary.stored}건 (dedup후 {summary.collected})"
+    )
     for b in summary.blocked[:8]:
         print(f"  blocked: {b}")
     return 0

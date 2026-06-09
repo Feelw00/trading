@@ -12,6 +12,7 @@ from trading.run import ROUNDS, main
 _EXPECTED = {
     "collect-macro", "collect-market", "collect-news",
     "classify-sectors", "screen", "factpack", "daily-eod",
+    "score-news", "verify-catalysts",
 }
 
 

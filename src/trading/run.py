@@ -46,6 +46,18 @@ def _factpack() -> int:
     return 0
 
 
+def _score_news() -> int:
+    from trading import score_news
+
+    return score_news.run()
+
+
+def _verify_catalysts() -> int:
+    from trading import verify_news
+
+    return verify_news.run()
+
+
 def _daily_eod() -> int:
     """EOD 디스커버리 파이프라인: 전종목 수집 → 섹터분류 → 스크리너 → fact pack. 첫 실패에서 중단."""
     for step in (_collect_market, _classify_sectors, _screen, _factpack):
@@ -62,6 +74,8 @@ ROUNDS: dict[str, Callable[[], int]] = {
     "classify-sectors": _classify_sectors,
     "screen": _screen,
     "factpack": _factpack,
+    "score-news": _score_news,
+    "verify-catalysts": _verify_catalysts,
     "daily-eod": _daily_eod,
 }
 
