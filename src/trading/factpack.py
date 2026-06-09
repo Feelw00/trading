@@ -17,7 +17,7 @@ from typing import Protocol
 from trading.collectors.base import KST, now_kst
 from trading.collectors.dart import DartClient
 from trading.collectors.market import MarketStore
-from trading.collectors.news import NewsStore
+from trading.collectors.news import DEFAULT_NEWS_DB, NewsStore
 from trading.contracts.factpack import DisclosureItem, FactPack, FinancialLine, PriceContext
 from trading.screener import Candidate, SECTOR_SOURCES, ScreenConfig, screen, signals_from_series
 
@@ -26,13 +26,9 @@ DISCLOSURE_LIMIT = 15
 NEWS_LIMIT = 8
 
 
-def _latest_news_db() -> Path | None:
-    """가장 최근 수집일의 news.sqlite(.runtime/collect/<날짜>/). 없으면 None."""
-    base = Path(".runtime") / "collect"
-    if not base.exists():
-        return None
-    cands = sorted(base.glob("*/news.sqlite"), key=lambda p: p.parent.name, reverse=True)
-    return cands[0] if cands else None
+def _open_news_store() -> NewsStore | None:
+    """단일 영속 뉴스 DB(data/news.sqlite, P-3). 없으면 None(빈 파일 생성 회피)."""
+    return NewsStore(DEFAULT_NEWS_DB) if DEFAULT_NEWS_DB.exists() else None
 # 재무 기간 폴백(최신→과거). DART는 미제출 기간에 status 013 → 빈 → 다음 후보로.
 FIN_REPORTS = ("11014", "11013", "11012", "11011")  # 3Q·1Q·반기·사업
 
@@ -262,8 +258,7 @@ def build_fact_pack_for(
             dart = DartClient(key) if key else _NullDart()
             corp_map = dart.corp_code_map() if isinstance(dart, DartClient) else {}
         sectors = st.sector_map_multi(SECTOR_SOURCES).get(code, [])
-        news_db = _latest_news_db()
-        news_store = NewsStore(news_db) if news_db else None
+        news_store = _open_news_store()
         try:
             pack = build_fact_pack(cand, st, dart, corp_map or {}, sectors, news_store)
         finally:
@@ -292,8 +287,7 @@ def run(top_n: int = 15) -> FactPackRun:
     secmap = store.sector_map_multi(SECTOR_SOURCES)
     dart: DartLike = DartClient(key) if key else _NullDart()
     corp_map = dart.corp_code_map() if isinstance(dart, DartClient) else {}
-    news_db = _latest_news_db()
-    news_store = NewsStore(news_db) if news_db else None
+    news_store = _open_news_store()
     out_dir = Path(".runtime") / "factpack" / _fmt_date(res.as_of)
     out_dir.mkdir(parents=True, exist_ok=True)
     written = 0
