@@ -142,6 +142,34 @@ def test_build_fact_pack_for_unknown_returns_none(tmp_path: Path) -> None:
     store.close()
 
 
+def test_build_fact_pack_includes_news(tmp_path: Path) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from trading.collectors.news import NewsStore, RawNews, normalize
+
+    kst = ZoneInfo("Asia/Seoul")
+    news_store = NewsStore(tmp_path / "news.sqlite")
+    item = normalize(
+        RawNews(title="대원제약 호재", url="https://yna.co.kr/x", publisher="연합뉴스",
+                published_at=datetime(2026, 6, 8, 9, 0, tzinfo=kst)),
+        source="naver", query="대원제약", entities=["003220"],
+    )
+    assert item is not None
+    news_store.upsert([item])
+
+    store = _store_with_quote(tmp_path)
+    corp_map = {"003220": ("00111999", "대원제약")}
+    pack = build_fact_pack(CAND, store, _FakeDart(with_disc=True), corp_map, ["pharma_bio"], news_store)
+    assert len(pack.news) == 1 and pack.news[0].title == "대원제약 호재"
+    assert pack.sources.get("news") is not None
+    # news_store 없으면 빈 뉴스(하위호환)
+    pack2 = build_fact_pack(CAND, store, _FakeDart(with_disc=True), corp_map, ["pharma_bio"])
+    assert pack2.news == []
+    news_store.close()
+    store.close()
+
+
 def test_build_fact_pack_no_disclosures_notes(tmp_path: Path) -> None:
     store = _store_with_quote(tmp_path)
     corp_map = {"003220": ("00111999", "대원제약")}

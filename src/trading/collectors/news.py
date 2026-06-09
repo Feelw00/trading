@@ -225,6 +225,20 @@ _NEWS_INSERT = (
 )
 
 
+def _row_to_news_item(r: tuple[object, ...]) -> NewsItem:
+    return NewsItem(
+        id=str(r[0]), source=str(r[1]), query=str(r[2]), title=str(r[3]), url=str(r[4]),
+        publisher=str(r[5]) if r[5] is not None else None,
+        published_at=datetime.fromisoformat(str(r[6])) if r[6] is not None else None,
+        fetched_at=datetime.fromisoformat(str(r[7])),
+        snippet=str(r[8]) if r[8] is not None else None,
+        lang=str(r[9]) if r[9] is not None else None,
+        entities=list(json.loads(str(r[10]))) if r[10] else [],
+        trust=float(str(r[11])) if r[11] is not None else 0.0,
+        verified=bool(r[12]),
+    )
+
+
 class NewsStore:
     """뉴스 landing SQLite. append-only(중복 id는 IGNORE → 실행 간 dedup)."""
 
@@ -253,6 +267,21 @@ class NewsStore:
     def count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM news_items").fetchone()
         return int(row[0]) if row else 0
+
+    def recent_for(self, entities: Sequence[str], *, limit: int = 10) -> list[NewsItem]:
+        """해당 entities(종목 srtn_cd/테마) 최근 뉴스 — 발행일 최신순(날짜 미상은 뒤)."""
+        if not entities:
+            return []
+        where = " OR ".join("entities LIKE ?" for _ in entities)
+        params: list[object] = [f'%"{e}"%' for e in entities]
+        params.append(limit)
+        cur = self._conn.execute(
+            "SELECT id, source, query, title, url, publisher, published_at, fetched_at, "
+            "snippet, lang, entities, trust, verified FROM news_items "
+            f"WHERE {where} ORDER BY (published_at IS NULL), published_at DESC LIMIT ?",
+            params,
+        )
+        return [_row_to_news_item(r) for r in cur]
 
     def close(self) -> None:
         self._conn.close()

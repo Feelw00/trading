@@ -17,11 +17,22 @@ from typing import Protocol
 from trading.collectors.base import KST, now_kst
 from trading.collectors.dart import DartClient
 from trading.collectors.market import MarketStore
+from trading.collectors.news import NewsStore
 from trading.contracts.factpack import DisclosureItem, FactPack, FinancialLine, PriceContext
 from trading.screener import Candidate, SECTOR_SOURCES, ScreenConfig, screen, signals_from_series
 
 DART_DISCLOSURE_DAYS = 90
 DISCLOSURE_LIMIT = 15
+NEWS_LIMIT = 8
+
+
+def _latest_news_db() -> Path | None:
+    """가장 최근 수집일의 news.sqlite(.runtime/collect/<날짜>/). 없으면 None."""
+    base = Path(".runtime") / "collect"
+    if not base.exists():
+        return None
+    cands = sorted(base.glob("*/news.sqlite"), key=lambda p: p.parent.name, reverse=True)
+    return cands[0] if cands else None
 # 재무 기간 폴백(최신→과거). DART는 미제출 기간에 status 013 → 빈 → 다음 후보로.
 FIN_REPORTS = ("11014", "11013", "11012", "11011")  # 3Q·1Q·반기·사업
 
@@ -122,6 +133,7 @@ def build_fact_pack(
     dart: DartLike,
     corp_map: dict[str, tuple[str, str]],
     sectors: list[str],
+    news_store: NewsStore | None = None,
 ) -> FactPack:
     """후보 1종목의 결정론 FactPack 조립. DART 결측은 notes에 기록(추측 금지)."""
     now = now_kst()
@@ -130,6 +142,9 @@ def build_fact_pack(
     sources: dict[str, str] = {"price": "data.go.kr:전종목시세(DB)"}
     disclosures: list[DisclosureItem] = []
     financials: list[FinancialLine] = []
+    news = news_store.recent_for([c.srtn_cd], limit=NEWS_LIMIT) if news_store else []
+    if news_store and news:
+        sources["news"] = "news.sqlite(COLLECT-4)"
     fin_period: str | None = None
     fallback_date = price.as_of or now.strftime("%Y%m%d")
 
@@ -174,6 +189,7 @@ def build_fact_pack(
         disclosures=disclosures,
         fin_period=fin_period,
         financials=financials,
+        news=news,
         sources=sources,
         notes=notes,
         as_of=_as_of_aware(price.as_of) or now,
@@ -246,7 +262,13 @@ def build_fact_pack_for(
             dart = DartClient(key) if key else _NullDart()
             corp_map = dart.corp_code_map() if isinstance(dart, DartClient) else {}
         sectors = st.sector_map_multi(SECTOR_SOURCES).get(code, [])
-        pack = build_fact_pack(cand, st, dart, corp_map or {}, sectors)
+        news_db = _latest_news_db()
+        news_store = NewsStore(news_db) if news_db else None
+        try:
+            pack = build_fact_pack(cand, st, dart, corp_map or {}, sectors, news_store)
+        finally:
+            if news_store:
+                news_store.close()
         return pack.model_copy(update={"notes": [*pack.notes, "단일종목 조회 — 스크리너 게이트 외일 수 있음(screen_score 무의미)"]})
     finally:
         if own:
@@ -270,14 +292,18 @@ def run(top_n: int = 15) -> FactPackRun:
     secmap = store.sector_map_multi(SECTOR_SOURCES)
     dart: DartLike = DartClient(key) if key else _NullDart()
     corp_map = dart.corp_code_map() if isinstance(dart, DartClient) else {}
+    news_db = _latest_news_db()
+    news_store = NewsStore(news_db) if news_db else None
     out_dir = Path(".runtime") / "factpack" / _fmt_date(res.as_of)
     out_dir.mkdir(parents=True, exist_ok=True)
     written = 0
     for c in res.candidates:
-        pack = build_fact_pack(c, store, dart, corp_map, secmap.get(c.srtn_cd, []))
+        pack = build_fact_pack(c, store, dart, corp_map, secmap.get(c.srtn_cd, []), news_store)
         path = out_dir / f"{c.srtn_cd}_{_safe_name(c.name)}.json"
         path.write_text(pack.model_dump_json(indent=2), encoding="utf-8")
         written += 1
+    if news_store:
+        news_store.close()
     store.close()
     return FactPackRun(res.as_of, written, str(out_dir))
 

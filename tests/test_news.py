@@ -91,6 +91,21 @@ def test_dedupe_cross_source_by_url_and_title() -> None:
     assert merged.published_at is not None and merged.published_at.hour == 7  # 가장 이른 보도
 
 
+def test_news_store_recent_for_by_entity(tmp_path: Path) -> None:
+    store = NewsStore(tmp_path / "news.sqlite")
+    early = datetime(2026, 6, 9, 7, 0, tzinfo=KST)
+    late = datetime(2026, 6, 9, 9, 0, tzinfo=KST)
+    a = _item("https://yna.co.kr/a", "삼성 뉴스 늦은", source="naver", trust_pub="연합뉴스", when=late, ent=["005930"])
+    b = _item("https://yna.co.kr/b", "삼성 뉴스 이른", source="naver", trust_pub="연합뉴스", when=early, ent=["005930"])
+    c = _item("https://yna.co.kr/c", "다른 종목", source="naver", trust_pub="연합뉴스", when=late, ent=["000660"])
+    store.upsert([x for x in (a, b, c) if x is not None])
+    got = store.recent_for(["005930"])
+    assert [n.title for n in got] == ["삼성 뉴스 늦은", "삼성 뉴스 이른"]  # 발행 최신순, 005930만
+    assert store.recent_for([]) == []
+    assert store.recent_for(["999999"]) == []  # 매칭 없음
+    store.close()
+
+
 def test_news_store_idempotent(tmp_path: Path) -> None:
     store = NewsStore(tmp_path / "news.sqlite")
     item = _item("https://yna.co.kr/z", "기사", source="naver", trust_pub="연합뉴스",
