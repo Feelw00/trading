@@ -4,7 +4,7 @@
 > 최종 갱신: 2026-06-09 (KST)
 
 ## 진행 중
-- **P-4 경제 뉴스 촉매 파이프라인** (PROPOSALS P-4, 👍채택). 마일스톤 분할 — ✅P-4.1 계약·taxonomy / ✅P-4.3 3계층 쿼리플랜 / ✅P-4.2 R1 게이트 완료. **다음:** ⬜R2 분류·스코어러(GPT-5.5, OpenAI 배선+스코어러 아키 결정②) → ⬜R4 적대검증(선별) → ⬜인덱싱(P-3 확장)·cron 슬롯.
+- **P-4 경제 뉴스 촉매 파이프라인** (PROPOSALS P-4, 👍채택). 순수코드 슬라이스 완료 — ✅P-4.1 계약·taxonomy / ✅P-4.3 3계층 쿼리플랜 / ✅P-4.2 R1 게이트 (커밋 `a57f742`, 브랜치 `feat/news-catalyst-pipeline`, P-3 위 스택). **스코어러 아키 결정됨 → 🟢 단일 GPT-5.5(OPEN_QUESTIONS NEWS-R2).** **다음:** ⬜R2 분류·스코어러(GPT-5.5 단일·스키마강제·배치 — `rounds/`, OpenAI 배선 + 모델명 .env) → ⬜R4 적대검증(claude -p, 선별) → ⬜인덱싱(P-3 확장)·cron 슬롯.
 
 ## 최근 완료
 - 2026-06-09 — **P-4.2 R1 뉴스 신선도·정합성 게이트**(순수 코드, LLM 금지 — 설계서 §3 R1 인스턴스화): `gates/news.py`. R0 적재 `NewsItem`에 플래그 **부착**(폐기 안 함 — "폐기하지 않되"). 플래그: `stale`(신선도 지평 초과)·`undated`(published_at 미상)·`future_dated`(미래=시계/파싱오류)·`low_trust`(trust<임계, COLLECT-4 UNVERIFIED). `NewsVerdict.fresh`=신선도 결함 무(stale/undated/future) → **R5 주문초안 하드게이트** 기준 / `usable`=무결. `GateConfig` 임계 전부 knob(max_age_days=3·min_trust=0.5·future_skew=60m). 플래그는 `(item,now,config)` **결정론 함수** → **영속화 안 함**(now 상대적이라 저장하면 자체가 stale). 설계서 R1 이중-소스 `conflict`(환율·지수 임계괴리)는 **FactRecord 게이트**라 뉴스 비적용(docstring 명시) — 뉴스 정합성=출처 무결성. `NewsStore.recent(limit)` 추가(R2 배치입력 공용). **라이브 검증** 325건: usable=fresh=314·stale 11(06-01~06-04 발행, DB 쿼리 정확일치)·undated/future/low_trust=0. pytest 118(+8)·mypy strict clean(40파일). **다운스트림 미연결**(R2가 소비) — 현재는 `python -m trading.gates.news` ops 리포트로만.

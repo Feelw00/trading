@@ -101,8 +101,7 @@ R7이 스코어 적중도를 사후 캘리브레이션해 `catalyst_strength` �
 **영향범위:** `contracts/event.py`(필드 추가), `domains.py`(`CatalystType`), `collectors/news.py`(3계층 `build_query_plan`),
 `rounds/`(R2 분류·스코어러, R4 검증), `gates/`(R1 뉴스 검증), `ops/openclaw/cron_jobs.py`(슬롯), 인덱싱(P-3 news DB 확장).
 
-**잔여 미결:** ① 활성테마 리스트 큐레이션 출처(임의확장 금지 — 운영자/섹터 메타) ② `catalyst_strength` 스코어러
-GPT-5.5 단일 vs 멀티에이전트 ③ R7 캘리브레이션 연동 시점(파이프라인 안정 후).
+**잔여 미결:** ① 활성테마 리스트 큐레이션 출처(임의확장 금지 — 운영자/섹터 메타 → **🟡 OPEN_QUESTIONS NEWS-L2**) ② ~~`catalyst_strength` 스코어러 GPT-5.5 단일 vs 멀티에이전트~~ → **🟢 결정: 단일 GPT-5.5(OPEN_QUESTIONS NEWS-R2)** ③ R7 캘리브레이션 연동 시점(파이프라인 안정 후).
 
 **상태:** 👍채택(운영자 지시 2026-06-09) — **부분 구현 착수.** 마일스톤 분할:
 - ✅ **P-4.1 계약·taxonomy 바닥**(2026-06-09): `domains.CatalystType`(11종) + `EventRecord` 촉매필드(`catalyst_type`·`scope`·`catalyst_strength`·`novelty`·`affected`[AffectedStock]) + `Scope` enum + `Score`(0~1) 타입. 전부 옵셔널(하위호환). 방향·확신은 §1대로 EventRecord 제외(R3 몫). 스키마 테스트 +7.
