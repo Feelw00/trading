@@ -104,4 +104,9 @@ R7이 스코어 적중도를 사후 캘리브레이션해 `catalyst_strength` �
 **잔여 미결:** ① 활성테마 리스트 큐레이션 출처(임의확장 금지 — 운영자/섹터 메타) ② `catalyst_strength` 스코어러
 GPT-5.5 단일 vs 멀티에이전트 ③ R7 캘리브레이션 연동 시점(파이프라인 안정 후).
 
-**상태:** 💡제안 — 방향 합의(2026-06-09), 구현 미착수. R0~R4 뉴스 흐름 구현 시 본 스펙을 따른다.
+**상태:** 👍채택(운영자 지시 2026-06-09) — **부분 구현 착수.** 마일스톤 분할:
+- ✅ **P-4.1 계약·taxonomy 바닥**(2026-06-09): `domains.CatalystType`(11종) + `EventRecord` 촉매필드(`catalyst_type`·`scope`·`catalyst_strength`·`novelty`·`affected`[AffectedStock]) + `Scope` enum + `Score`(0~1) 타입. 전부 옵셔널(하위호환). 방향·확신은 §1대로 EventRecord 제외(R3 몫). 스키마 테스트 +7.
+- ✅ **P-4.3 3계층 쿼리플랜**(2026-06-09): `build_query_plan(candidates, sectors, themes)` — L1 종목 + **L2 26 `Sector` 라벨**(`_sector_query` 결정론 키워드화) + L3 거시. `collect_news`가 `list(Sector)` 주입. 라이브 검증: L1=15·L2=26·L3=6(SearXNG 미설정 blocked), 295건 적재(섹터링크 260). **L2 활성 서브테마는 보류 → OPEN_QUESTIONS NEWS-L2**(임의확장 금지). 노이즈(naver sort=date)는 설계상 R2가 거름.
+- ✅ **P-4.2 R1 뉴스 신선도·정합성 게이트**(2026-06-09, 순수 코드·LLM 금지): `gates/news.py` — `NewsItem`에 플래그 **부착**(폐기 안 함). 플래그 `stale`(신선도 지평 초과)·`undated`(published_at 미상)·`future_dated`(미래·시계오류)·`low_trust`(<임계, COLLECT-4 UNVERIFIED). `NewsVerdict.fresh`(신선도 결함 무 → **R5 하드게이트** 기준)·`usable`(무결). `GateConfig`(max_age_days 3·min_trust 0.5·future_skew 60m, 전부 knob). 플래그는 `(item,now,config)` 결정론 함수 → **영속화 안 함**(now 상대적). 이중-소스 `conflict`는 환율·지수 FactRecord용이라 뉴스 비적용(docstring 명시). `NewsStore.recent()` 추가(R2도 사용). **라이브 검증**: 325건 → usable/fresh 314·stale 11(06-01~06-04 기사, DB 쿼리와 일치)·나머지 0. pytest +8.
+- ⬜ **R2 분류·스코어러**(GPT-5.5 — OpenAI 배선 + 잔여미결② 스코어러 아키 결정 필요).
+- ⬜ **R4 적대 스코어 검증**(claude -p, 선별) · ⬜ 인덱싱(P-3 확장) · ⬜ cron 슬롯.

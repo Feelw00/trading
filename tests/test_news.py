@@ -9,6 +9,7 @@ from trading.collectors.news import (
     NewsQuery,
     NewsStore,
     RawNews,
+    _sector_query,
     build_query_plan,
     collect_news,
     dedupe,
@@ -17,6 +18,7 @@ from trading.collectors.news import (
     publisher_from_url,
     strip_html,
 )
+from trading.domains import Sector
 
 KST = ZoneInfo("Asia/Seoul")
 FETCHED = datetime(2026, 6, 9, 8, 0, tzinfo=KST)
@@ -180,3 +182,35 @@ def test_build_query_plan_routes_domestic_vs_foreign() -> None:
     assert backends == {"naver", "searxng"}
     naver_q = next(q for q in plan if q.backend == "naver")
     assert naver_q.text == "대원제약" and naver_q.entities == ["003220"]
+
+
+def test_sector_query_cleans_label() -> None:
+    # 괄호 보충 제거 + 복합 라벨 1차 키워드(결정론, 새 데이터 없음)
+    assert _sector_query("반도체") == "반도체"
+    assert _sector_query("AI·SW/플랫폼") == "AI"
+    assert _sector_query("금융(은행·증권·보험)") == "금융"
+    assert _sector_query("2차전지(셀)") == "2차전지"
+    assert _sector_query("유통·소비재") == "유통"
+
+
+def test_build_query_plan_three_layers() -> None:
+    plan = build_query_plan(
+        [("003220", "대원제약")],
+        sectors=[Sector.SEMICONDUCTOR, Sector.ROBOTICS],
+        themes=["US CPI inflation"],
+    )
+    # L1 종목(naver, srtn_cd) · L2 섹터(naver, sector:) · L3 거시(searxng, theme:)
+    l1 = [q for q in plan if q.entities and q.entities[0] == "003220"]
+    l2 = [q for q in plan if q.entities and q.entities[0].startswith("sector:")]
+    l3 = [q for q in plan if q.entities and q.entities[0].startswith("theme:")]
+    assert len(l1) == 1 and len(l2) == 2 and len(l3) == 1
+    assert all(q.backend == "naver" for q in l1 + l2)
+    assert all(q.backend == "searxng" for q in l3)
+    sem = next(q for q in l2 if q.entities[0] == "sector:semiconductor")
+    assert sem.text == "반도체"
+
+
+def test_build_query_plan_no_sectors_backward_compat() -> None:
+    # sectors 미지정 → 기존 L1+L3만(하위호환)
+    plan = build_query_plan([("003220", "대원제약")], themes=["US CPI inflation"])
+    assert not [q for q in plan if q.entities and q.entities[0].startswith("sector:")]

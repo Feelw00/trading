@@ -119,8 +119,29 @@ def active_sectors() -> list[Sector]:
     return [s for s, meta in SECTORS.items() if meta.active]
 
 
+class CatalystType(str, Enum):
+    """촉매유형축 — 뉴스 사건의 **성격** 분류(섹터축 `Sector`와 직교, PROPOSALS P-4 §2).
+
+    R7 캘리브레이션이 "어떤 촉매유형 가설이 적중하나"를 학습하려면 이 라벨이 필요하다.
+    `EventType`(사건의 구조형)과 별개 축 — 같은 사건이 두 축에서 동시에 분류된다.
+    """
+
+    EARNINGS = "earnings"                  # 실적(확정 발표)
+    GUIDANCE = "guidance"                  # 가이던스·전망 변경
+    POLICY_REGULATION = "policy_regulation"  # 정책·규제
+    MA_RESTRUCTURE = "ma_restructure"      # M&A·구조조정
+    SUPPLY_CHAIN = "supply_chain"          # 공급망(수주·증설·차질)
+    FLOW_DEMAND = "flow_demand"            # 수급(투자자별·자금흐름)
+    MACRO = "macro"                        # 거시(금리·환율·유가·지정학)
+    PRODUCT_TECH = "product_tech"          # 제품·기술(신제품·기술이정표)
+    LEGAL = "legal"                        # 소송·법적분쟁
+    MANAGEMENT = "management"              # 경영진·지배구조
+    RUMOR_UNCONFIRMED = "rumor_unconfirmed"  # 미확인 소문(환각가드: UNVERIFIED)
+
+
 __all__ = [
     "AssetClass",
+    "CatalystType",
     "Region",
     "Sector",
     "SectorMeta",

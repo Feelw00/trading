@@ -20,6 +20,7 @@ from typing import Protocol
 
 from trading.collectors.base import KST, now_kst
 from trading.contracts.news import NewsItem
+from trading.domains import SECTORS, Sector
 
 # 발행처 신뢰(부분일치). 미상·기타는 기본값.
 _TRUST: tuple[tuple[str, float], ...] = (
@@ -95,11 +96,37 @@ class NewsQuery:
     entities: list[str] = field(default_factory=list)
 
 
+_PAREN = re.compile(r"\([^)]*\)")
+
+
+def _sector_query(label_ko: str) -> str:
+    """섹터 라벨(label_ko) → 네이버 검색 키워드. 괄호 보충 제거 + 복합 라벨의 1차 키워드만(결정론).
+
+    예: "AI·SW/플랫폼"→"AI", "금융(은행·증권·보험)"→"금융", "2차전지(셀)"→"2차전지".
+    새 데이터를 만들지 않고 기존 grounded 라벨에서 파생(임의 테마 확장 아님).
+    """
+    base = _PAREN.sub("", label_ko)
+    return re.split(r"[·/ ]", base, maxsplit=1)[0].strip() or label_ko
+
+
 def build_query_plan(
-    candidates: Sequence[tuple[str, str]], themes: Sequence[str] = FOREIGN_THEMES
+    candidates: Sequence[tuple[str, str]],
+    sectors: Sequence[Sector] = (),
+    themes: Sequence[str] = FOREIGN_THEMES,
 ) -> list[NewsQuery]:
-    """국내 후보명→네이버, 해외 테마→SearXNG. (srtn_cd, name) + 테마 키워드."""
+    """3계층 쿼리플랜(PROPOSALS P-4 §3) — 거르지 말고 폭넓게 적재(판단은 R2/R3에 위임).
+
+    - **L1 종목:** 후보 srtn_cd×name → 네이버(entities=[srtn_cd]).
+    - **L2 섹터·테마:** grounded 26 `Sector` 라벨 → 네이버(entities=[f"sector:{value}"]).
+      종목명 검색에 안 잡히는 테마-광범위 촉매 포착(예: 젠슨황 방한→AI 연관주).
+      활성 서브테마(반도체→HBM 등) 큐레이션 출처는 미확정(OPEN_QUESTIONS NEWS-L2).
+    - **L3 거시:** 해외 매크로·테마 → SearXNG(entities=[f"theme:{slug}"]).
+    """
     plan = [NewsQuery(text=name, backend="naver", entities=[srtn_cd]) for srtn_cd, name in candidates]
+    plan += [
+        NewsQuery(text=_sector_query(SECTORS[s].label_ko), backend="naver", entities=[f"sector:{s.value}"])
+        for s in sectors
+    ]
     plan += [NewsQuery(text=t, backend="searxng", entities=[f"theme:{_slug(t)}"]) for t in themes]
     return plan
 
@@ -322,6 +349,18 @@ class NewsStore:
             f"WHERE n.id IN (SELECT news_id FROM news_entities WHERE entity IN ({placeholders})) "
             "ORDER BY (n.published_at IS NULL), n.published_at DESC LIMIT ?",
             [*entities, limit],
+        )
+        return [_row_to_news_item(r) for r in cur]
+
+    def recent(self, *, limit: int = 500) -> list[NewsItem]:
+        """최근 적재 뉴스(entity 무관) — 발행일 최신순(미상 뒤). R1 게이트·R2 배치 입력용."""
+        cur = self._conn.execute(
+            "SELECT n.id, n.source, n.query, n.title, n.url, n.publisher, "
+            "n.published_at, n.fetched_at, n.snippet, n.lang, n.trust, n.verified, "
+            "(SELECT GROUP_CONCAT(e2.entity) FROM news_entities e2 WHERE e2.news_id = n.id) "
+            "FROM news_items n "
+            "ORDER BY (n.published_at IS NULL), n.published_at DESC LIMIT ?",
+            [limit],
         )
         return [_row_to_news_item(r) for r in cur]
 
