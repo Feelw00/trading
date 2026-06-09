@@ -4,6 +4,7 @@
   corpCode.xml  : 전 상장사 단축코드↔corp_code 매핑(ZIP→XML). DART는 자체 corp_code 사용.
   list.json     : 공시 목록(corp_code, bgn_de~end_de). 필드 report_nm/rcept_dt/rcept_no/flr_nm 등.
   fnlttSinglAcnt.json : 단일회사 주요계정 재무(연결/별도, 당기 thstrm_amount/전기 frmtrm_amount).
+  company.json  : 회사개황(단일 객체, list 아님). induty_code=KSIC 업종코드(3~5자리)·corp_cls 등.
 응답 status: "000"=정상, "013"=데이터없음(→빈), 그 외(020 한도초과·100 키오류 등)=CollectError.
 무료·공개(설계서 🟢). LLM은 여기서 가져온 실데이터만 근거로 판단(추측 금지).
 """
@@ -77,6 +78,21 @@ class DartClient:
             }
         )
         return self._rows(self._json(f"{DART_BASE}/list.json?{q}"))
+
+    def company_profile(self, corp_code: str) -> dict[str, Any]:
+        """회사개황(업종코드 induty_code·corp_cls 등). 단일 객체 응답. 데이터 없으면 빈 dict.
+
+        실호출 확인 2026-06-09: company.json은 list가 아닌 단일 dict(status+필드 평면).
+        induty_code는 KSIC 등록업종(법적)이라 다각화·테마와 어긋날 수 있음 — 매핑은 ``sectors`` 참조.
+        """
+        q = urlencode({"crtfc_key": self._key, "corp_code": corp_code})
+        data = self._json(f"{DART_BASE}/company.json?{q}")
+        status = data.get("status") if isinstance(data, dict) else None
+        if status == "000":
+            return data  # type: ignore[no-any-return]
+        if status == "013":  # 조회된 데이터 없음
+            return {}
+        raise CollectError(f"DART {status}: {data.get('message') if isinstance(data, dict) else ''}")
 
     def financials(self, corp_code: str, bsns_year: str, reprt_code: str) -> list[dict[str, Any]]:
         """단일회사 주요계정(reprt_code: 11011 사업/11012 반기/11013 1분기/11014 3분기)."""
