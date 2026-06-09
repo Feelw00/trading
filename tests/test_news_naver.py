@@ -6,7 +6,7 @@
 from typing import Any
 
 from trading.collectors.news import normalize
-from trading.collectors.news_naver import NaverNewsSource, _parse_pubdate, _publisher
+from trading.collectors.news_naver import NaverNewsSource, _parse_pubdate
 
 # 네이버 news.json 응답 픽스처(공식 포맷)
 _FIXTURE: dict[str, Any] = {
@@ -28,12 +28,6 @@ _FIXTURE: dict[str, Any] = {
         },
     ],
 }
-
-
-def test_publisher_from_domain() -> None:
-    assert _publisher("https://www.yna.co.kr/view/1") == "연합뉴스"
-    assert _publisher("https://hankyung.com/a") == "한국경제"
-    assert _publisher("https://blog.unknown.io/x") == "blog.unknown.io"  # 미상은 host
 
 
 def test_parse_pubdate_rfc822_and_empty() -> None:

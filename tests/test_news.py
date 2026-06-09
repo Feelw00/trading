@@ -14,6 +14,7 @@ from trading.collectors.news import (
     dedupe,
     norm_url,
     normalize,
+    publisher_from_url,
     strip_html,
 )
 
@@ -23,6 +24,12 @@ FETCHED = datetime(2026, 6, 9, 8, 0, tzinfo=KST)
 
 def test_strip_html_and_unescape() -> None:
     assert strip_html("<b>삼성전자</b> 신고가&hellip;  돌파") == "삼성전자 신고가… 돌파"
+
+
+def test_publisher_from_url_domain_and_fallback() -> None:
+    assert publisher_from_url("https://www.yna.co.kr/view/1") == "연합뉴스"   # 국내
+    assert publisher_from_url("https://reuters.com/markets/x") == "Reuters"  # 해외
+    assert publisher_from_url("https://blog.unknown.io/x") == "blog.unknown.io"  # 미상은 host
 
 
 def test_norm_url_strips_tracking_and_fragment() -> None:

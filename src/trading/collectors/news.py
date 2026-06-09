@@ -29,6 +29,35 @@ _TRUST: tuple[tuple[str, float], ...] = (
     ("Financial Times", 0.9), ("Wall Street Journal", 0.9), ("CNBC", 0.85),
 )
 _TRUST_DEFAULT = 0.5
+
+# URL 도메인 → 발행처(어댑터 공용). 미상은 host 그대로. trust는 _TRUST 가 이름으로 매칭.
+_DOMAIN_PUBLISHER: dict[str, str] = {
+    # 국내
+    "yna.co.kr": "연합뉴스", "hankyung.com": "한국경제", "mk.co.kr": "매일경제",
+    "chosun.com": "조선일보", "joongang.co.kr": "중앙일보", "donga.com": "동아일보",
+    "edaily.co.kr": "이데일리", "mt.co.kr": "머니투데이", "sedaily.com": "서울경제",
+    "fnnews.com": "파이낸셜뉴스", "news.naver.com": "네이버뉴스",
+    # 해외
+    "reuters.com": "Reuters", "bloomberg.com": "Bloomberg", "ft.com": "Financial Times",
+    "wsj.com": "Wall Street Journal", "cnbc.com": "CNBC", "apnews.com": "AP",
+    "nytimes.com": "New York Times",
+}
+
+
+def host_of(url: str) -> str:
+    host = url.split("://", 1)[-1].split("/", 1)[0].split("?", 1)[0].lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def publisher_from_url(url: str) -> str | None:
+    """URL → 발행처명(도메인 매칭, 미상은 host). 어댑터 공용."""
+    host = host_of(url)
+    if not host:
+        return None
+    for dom, name in _DOMAIN_PUBLISHER.items():
+        if host == dom or host.endswith("." + dom):
+            return name
+    return host
 # 해외 매크로·테마 키워드 → SearXNG(네이버 약점 보완). 큐레이션(임의 확장 금지).
 FOREIGN_THEMES: tuple[str, ...] = (
     "Federal Reserve rate decision",
@@ -286,6 +315,11 @@ def build_sources_from_env() -> dict[str, NewsSource]:
         from trading.collectors.news_naver import NaverNewsSource
 
         out["naver"] = NaverNewsSource(cid, csec)
+    searxng_url = os.environ.get("SEARXNG_URL")
+    if searxng_url:
+        from trading.collectors.news_searxng import SearxngNewsSource
+
+        out["searxng"] = SearxngNewsSource(searxng_url)
     return out
 
 
@@ -325,8 +359,10 @@ __all__ = [
     "build_sources_from_env",
     "collect_news",
     "dedupe",
+    "host_of",
     "normalize",
     "norm_url",
+    "publisher_from_url",
     "strip_html",
 ]
 
