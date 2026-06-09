@@ -13,7 +13,7 @@ description: 뉴스 수집 — 후보·시장 뉴스를 별도로 조회한다(�
 - **해외 매크로·테마 → SearXNG**(`SEARXNG_URL`). ※ 어댑터 후속 — 현재 미연결 시 blocked.
 
 ## 절차 (결정론 어댑터 — 하네스)
-1. `.env` 로드 후 `poetry run python -m trading.collectors.news [top_n]` 실행.
+1. `.env` 로드 후 `poetry run python -m trading.collect_news [top_n]` 실행(독립 커맨드).
 2. 라우터가 스크리너 후보→네이버, 테마→SearXNG로 검색 → 정규화·교차소스 dedup → `.runtime/collect/<날짜>/news.sqlite` 적재.
 3. 출력(`적재 N건 / blocked …`)을 그대로 보고. 미연결 백엔드는 blocked(빈 결과 날조 금지).
 
