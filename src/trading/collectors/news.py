@@ -273,6 +273,47 @@ def collect_news(
     return NewsCollectSummary(collected=len(merged), stored=stored, blocked=blocked)
 
 
+def build_sources_from_env() -> dict[str, NewsSource]:
+    """env 키로 가용 백엔드 구성. 미설정 백엔드는 누락 → collect_news 가 blocked 보고.
+
+    네이버: NAVER_CLIENT_ID/SECRET. SearXNG: 어댑터 후속(현재 항상 미연결).
+    """
+    import os
+
+    out: dict[str, NewsSource] = {}
+    cid, csec = os.environ.get("NAVER_CLIENT_ID"), os.environ.get("NAVER_CLIENT_SECRET")
+    if cid and csec:
+        from trading.collectors.news_naver import NaverNewsSource
+
+        out["naver"] = NaverNewsSource(cid, csec)
+    return out
+
+
+def main() -> int:
+    import sys
+
+    from trading.collectors.base import default_db_path
+    from trading.collectors.market import MarketStore
+    from trading.screener import ScreenConfig, screen
+
+    top_n = int(sys.argv[1]) if len(sys.argv) > 1 else 15
+    mstore = MarketStore()
+    res = screen(mstore, ScreenConfig(top_n=top_n))
+    mstore.close()
+    if not res.candidates:
+        print("뉴스 수집 스킵 — 스크리너 후보 없음")
+        return 0
+    plan = build_query_plan([(c.srtn_cd, c.name) for c in res.candidates])
+    sources = build_sources_from_env()
+    store = NewsStore(default_db_path("news"))
+    summary = collect_news(sources, plan, store, limit=10)
+    store.close()
+    print(f"뉴스 수집 as_of={res.as_of}: 적재 {summary.stored}건 (dedup후 {summary.collected})")
+    for b in summary.blocked[:8]:
+        print(f"  blocked: {b}")
+    return 0
+
+
 __all__ = [
     "FOREIGN_THEMES",
     "NewsCollectSummary",
@@ -281,9 +322,14 @@ __all__ = [
     "NewsStore",
     "RawNews",
     "build_query_plan",
+    "build_sources_from_env",
     "collect_news",
     "dedupe",
     "normalize",
     "norm_url",
     "strip_html",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

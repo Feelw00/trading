@@ -28,12 +28,13 @@ class CollectError(RuntimeError):
     """수집 실패(네트워크·소스 에러). 호출측은 blocked로 기록하고 대체하지 않는다."""
 
 
-# (url, timeout) -> raw bytes. 테스트에서 주입 가능.
-Opener = Callable[[str, float], bytes]
+# (url, timeout[, headers]) -> raw bytes. 테스트에서 주입 가능.
+Opener = Callable[..., bytes]
 
 
-def _urlopen(url: str, timeout: float) -> bytes:
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
+def _urlopen(url: str, timeout: float, headers: dict[str, str] | None = None) -> bytes:
+    req = urllib.request.Request(url, headers=dict(headers or {}))
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         data: bytes = resp.read()
     return data
 
@@ -46,12 +47,17 @@ def fetch_json(
     backoff: float = 0.5,
     opener: Opener = _urlopen,
     sleeper: Callable[[float], None] = time.sleep,
+    headers: dict[str, str] | None = None,
 ) -> Any:
-    """GET → JSON. 일시 오류는 지수 백오프로 재시도, 최종 실패는 CollectError."""
+    """GET → JSON. 일시 오류는 지수 백오프로 재시도, 최종 실패는 CollectError.
+
+    ``headers`` 지정 시(예: 네이버 인증) 기본 opener에 헤더 전달. 주입 opener는 헤더 없이 호출(테스트 호환).
+    """
     last: Exception | None = None
     for attempt in range(retries):
         try:
-            return json.loads(opener(url, timeout))
+            raw = opener(url, timeout) if headers is None else opener(url, timeout, headers)
+            return json.loads(raw)
         except (OSError, ValueError) as exc:  # URLError/Timeout(OSError), JSONDecodeError(ValueError)
             last = exc
             if attempt < retries - 1:
