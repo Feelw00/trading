@@ -130,6 +130,25 @@ class MarketStore:
             out.setdefault(str(r[0]), []).append(str(r[1]))
         return out
 
+    def sector_map_multi(self, sources: Sequence[str]) -> dict[str, list[str]]:
+        """여러 분류 소스 병합 — 앞 소스가 우선(종목별 first-wins). 미분류 제외.
+
+        선순위(예: 큐레이션 ``llm-cls-v1``)가 대형주·테마를 보존하고,
+        후순위(예: grounded ``dart-ksic-v1``)는 갭만 채운다.
+        """
+        out: dict[str, list[str]] = {}
+        for src in sources:
+            for cd, secs in self.sector_map(src).items():
+                out.setdefault(cd, secs)  # 먼저 들어온 소스가 이김
+        return out
+
+    def codes_with_any_row(self, source: str) -> set[str]:
+        """해당 소스로 분류 *시도*된 종목(분류·미분류 모두 포함). 재시도 스킵용."""
+        cur = self._conn.execute(
+            "SELECT DISTINCT srtn_cd FROM stock_sectors WHERE source=?", (source,)
+        )
+        return {str(r[0]) for r in cur}
+
     def sector_counts(self, source: str) -> list[tuple[str, int]]:
         cur = self._conn.execute(
             "SELECT sector, COUNT(*) FROM stock_sectors WHERE source=? GROUP BY sector ORDER BY 2 DESC",

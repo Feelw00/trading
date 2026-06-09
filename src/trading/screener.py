@@ -155,12 +155,14 @@ def screen(store: MarketStore, config: ScreenConfig | None = None) -> ScreenResu
 
 
 SECTOR_SOURCE = "llm-cls-v1"
+# 큐레이션(우선) → grounded(갭 채움) 병합. 앞 소스가 종목별 우선.
+SECTOR_SOURCES = ("llm-cls-v1", "dart-ksic-v1")
 
 
 def main() -> int:
     store = MarketStore()
     res = screen(store)
-    secmap = store.sector_map(SECTOR_SOURCE)
+    secmap = store.sector_map_multi(SECTOR_SOURCES)
     store.close()
     if not res.candidates:
         print("후보 없음 (DB 비었거나 게이트 통과 종목 없음)")
