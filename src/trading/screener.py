@@ -81,6 +81,24 @@ def _percentiles(values: list[float]) -> list[float]:
 _Survivor = tuple[str, str, str | None, float, float, float, float, float]
 
 
+def signals_from_series(recs: list[tuple[object, ...]], cfg: ScreenConfig) -> SignalSet:
+    """시세 시리즈(bas_dt 오름차순) → 신호. 게이트 무관(단일종목 조회·스크리너 공용).
+
+    recs 컬럼: (srtn_cd, name, market, bas_dt, clpr, hipr, tr_prc, mrkt_tot_amt).
+    """
+    closes = [c for c in (_f(r[4]) for r in recs) if c is not None]
+    trs = [t for t in (_f(r[6]) for r in recs) if t is not None]
+    highs = [h for h in (_f(r[5]) for r in recs) if h is not None and h > 0]
+    clpr = closes[-1] if closes else 0.0
+    tr_prc = trs[-1] if trs else 0.0
+    recent_trs = trs[-cfg.lookback_surge :]
+    surge = tr_prc / (sum(recent_trs) / len(recent_trs)) if recent_trs else 0.0
+    mom_s = clpr / closes[-(cfg.mom_short + 1)] - 1 if len(closes) > cfg.mom_short else 0.0
+    mom_l = clpr / closes[-(cfg.mom_long + 1)] - 1 if len(closes) > cfg.mom_long else 0.0
+    high_prox = clpr / max(highs) if highs else 0.0
+    return SignalSet(tr_value_surge=surge, mom_short=mom_s, mom_long=mom_l, high_proximity=high_prox)
+
+
 def _survivor(srtn_cd: str, recs: list[tuple[object, ...]], as_of: str, cfg: ScreenConfig) -> _Survivor | None:
     last = recs[-1]
     if last[3] != as_of:  # 최근일 미거래
@@ -97,17 +115,9 @@ def _survivor(srtn_cd: str, recs: list[tuple[object, ...]], as_of: str, cfg: Scr
         return None
     if mcap is not None and mcap < cfg.min_mrkt_cap:
         return None
-
-    closes = [c for c in (_f(r[4]) for r in recs) if c is not None]
-    trs = [t for t in (_f(r[6]) for r in recs) if t is not None]
-    highs = [h for h in (_f(r[5]) for r in recs) if h is not None and h > 0]
-
-    recent_trs = trs[-cfg.lookback_surge :]
-    surge = tr_prc / (sum(recent_trs) / len(recent_trs)) if recent_trs else 0.0
-    mom_s = clpr / closes[-(cfg.mom_short + 1)] - 1 if len(closes) > cfg.mom_short else 0.0
-    mom_l = clpr / closes[-(cfg.mom_long + 1)] - 1 if len(closes) > cfg.mom_long else 0.0
-    high_prox = clpr / max(highs) if highs else 0.0
-    return (srtn_cd, name, last[2] if isinstance(last[2], str) else None, clpr, surge, mom_s, mom_l, high_prox)
+    s = signals_from_series(recs, cfg)
+    market = last[2] if isinstance(last[2], str) else None
+    return (srtn_cd, name, market, clpr, s.tr_value_surge, s.mom_short, s.mom_long, s.high_proximity)
 
 
 def screen(store: MarketStore, config: ScreenConfig | None = None) -> ScreenResult:

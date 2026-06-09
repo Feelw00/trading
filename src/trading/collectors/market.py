@@ -102,6 +102,25 @@ class MarketStore:
         )
         return cur.fetchall()
 
+    def series_for(self, srtn_cd: str, min_bas_dt: str) -> list[tuple[Any, ...]]:
+        """단일 종목 [min_bas_dt~] 시리즈(rows_since 와 동일 컬럼, bas_dt 오름차순)."""
+        cur = self._conn.execute(
+            "SELECT srtn_cd, name, market, bas_dt, clpr, hipr, tr_prc, mrkt_tot_amt "
+            "FROM daily_quotes WHERE srtn_cd=? AND bas_dt >= ? ORDER BY bas_dt",
+            (srtn_cd, min_bas_dt),
+        )
+        return cur.fetchall()
+
+    def find_by_name(self, query: str, *, limit: int = 10) -> list[tuple[str, str]]:
+        """최신 거래일 기준 이름 부분일치 → [(srtn_cd, name)]. 종목 해석용."""
+        cur = self._conn.execute(
+            "SELECT srtn_cd, name FROM daily_quotes "
+            "WHERE bas_dt=(SELECT MAX(bas_dt) FROM daily_quotes) AND name LIKE ? "
+            "ORDER BY length(name) LIMIT ?",
+            (f"%{query}%", limit),
+        )
+        return [(str(r[0]), str(r[1])) for r in cur]
+
     def latest_quote(self, srtn_cd: str) -> tuple[str, str | None, str | None, str | None] | None:
         """종목 최신일 (bas_dt, market, clpr, mrkt_tot_amt). 없으면 None."""
         row = self._conn.execute(
