@@ -9,7 +9,14 @@ from trading.collectors.base import CollectError
 from trading.collectors.dart import DartClient
 from trading.collectors.market import MarketStore
 from trading.domains import Sector
-from trading.sectors import GROUNDED_SOURCE, classify_ksic, classify_untagged
+from trading.sectors import (
+    MANUAL_SECTORS,
+    MANUAL_SOURCE,
+    GROUNDED_SOURCE,
+    apply_manual_overrides,
+    classify_ksic,
+    classify_untagged,
+)
 
 
 def test_classify_ksic_high_purity_codes() -> None:
@@ -83,6 +90,35 @@ def test_classify_untagged_missing_corp_code_is_unclassified(tmp_path: Path) -> 
     summary = classify_untagged(store, dart, {}, [("123456", "없는회사")], as_of="20260608")  # type: ignore[arg-type]
     assert summary.classified == 0 and summary.unclassified == 1
     assert "123456" not in store.sector_map(GROUNDED_SOURCE)
+    store.close()
+
+
+def test_manual_overrides_idempotent_and_valid(tmp_path: Path) -> None:
+    store = MarketStore(tmp_path / "m.sqlite")
+    n = apply_manual_overrides(store, as_of="20260608")
+    assert n == sum(len(secs) for _, secs in MANUAL_SECTORS.values())  # 섹터별 1행
+    assert apply_manual_overrides(store, as_of="20260608") == 0  # 멱등
+    sm = store.sector_map(MANUAL_SOURCE)
+    assert sm["011170"] == ["chemicals"]              # 롯데케미칼
+    assert set(sm["139130"]) == {"financials", "holding"}  # iM금융지주 다중소속
+    # 모든 오버라이드 섹터는 유효 taxonomy 값
+    valid = {s.value for s in Sector}
+    for _, secs in MANUAL_SECTORS.values():
+        assert all(s.value in valid for s in secs)
+    store.close()
+
+
+def test_manual_takes_precedence_over_grounded(tmp_path: Path) -> None:
+    store = MarketStore(tmp_path / "m.sqlite")
+    apply_manual_overrides(store, as_of="20260608")
+    # grounded가 같은 종목을 다르게 분류해도 manual이 이김
+    store.upsert_sectors(
+        [{"srtn_cd": "011170", "name": "롯데케미칼", "sectors": ["battery_materials"], "confidence": 0.5}],
+        source=GROUNDED_SOURCE,
+        as_of="20260608",
+    )
+    merged = store.sector_map_multi((MANUAL_SOURCE, "llm-cls-v1", GROUNDED_SOURCE))
+    assert merged["011170"] == ["chemicals"]
     store.close()
 
 

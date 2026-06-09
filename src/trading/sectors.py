@@ -60,6 +60,36 @@ KSIC_RULES: dict[str, KsicRule] = {
 }
 
 
+MANUAL_SOURCE = "manual-curated-v1"
+# KSIC가 못 잡는 유명주 큐레이션 오버라이드(LLM/전문가 판단 폴백). 환각가드: **확실한 것만**.
+# 근거: 실측상 이들의 induty_code는 혼재 버킷(순도<0.75)이라 결정론 매핑 불가.
+# 등록업종≠테마(다각화)이거나, 26 taxonomy에 정확 버킷이 있으나 KSIC 코드가 광범위한 경우.
+# 모호·생소·taxonomy 버킷 부재(해운·운송·카지노 등)는 여기 넣지 않고 미분류 유지(→ PROPOSALS).
+MANUAL_SECTORS: dict[str, tuple[str, tuple[Sector, ...]]] = {
+    "011170": ("롯데케미칼", (_S.CHEMICALS,)),          # 20111 화학(bm/renewable 혼재 코드)
+    "035900": ("JYP Ent.", (_S.ENTERTAINMENT,)),       # 59201 영상물제작(n부족)
+    "328130": ("루닛", (_S.AI_SOFTWARE,)),             # 58222 응용SW(의료영상 AI)
+    "054920": ("한컴위드", (_S.AI_SOFTWARE,)),          # 58221 시스템SW(보안)
+    "174900": ("앱클론", (_S.PHARMA_BIO,)),            # 213 의약(cosmetics 혼재)
+    "462350": ("이노스페이스", (_S.AEROSPACE_UAM,)),     # 31311 우주발사체(defense 혼재)
+    "002020": ("코오롱", (_S.HOLDING,)),               # 64992 지주(financials 혼재)
+    "003380": ("하림지주", (_S.HOLDING,)),              # 64992 지주
+    "139130": ("iM금융지주", (_S.FINANCIALS, _S.HOLDING)),  # 64992 금융지주
+    "088980": ("맥쿼리인프라", (_S.FINANCIALS,)),        # 64201 인프라투자펀드
+    "103140": ("풍산", (_S.STEEL_MATERIALS, _S.DEFENSE)),  # 242 비철금속+방산(탄약)
+    "323280": ("태성", (_S.SEMICONDUCTOR,)),           # 292 반도체·PCB 장비
+}
+
+
+def apply_manual_overrides(store: MarketStore, *, as_of: str, source: str = MANUAL_SOURCE) -> int:
+    """큐레이션 오버라이드 적재(네트워크 불필요·멱등). 신규 적재 행 수 반환."""
+    items = [
+        {"srtn_cd": cd, "name": name, "sectors": [s.value for s in secs], "confidence": 0.99}
+        for cd, (name, secs) in MANUAL_SECTORS.items()
+    ]
+    return store.upsert_sectors(items, source=source, as_of=as_of)
+
+
 def _match(induty_code: str | None) -> KsicRule | None:
     """induty_code longest-prefix 매칭. 미수록 코드는 None(미분류)."""
     if not induty_code:
@@ -118,21 +148,26 @@ def classify_untagged(
 
 
 def main() -> int:
-    key = os.environ.get("DART_API_KEY", "")
-    if not key:
-        print("DART_API_KEY 미설정 — blocked(분류 스킵)")
-        return 0
     store = MarketStore()
     res = screen(store, ScreenConfig(top_n=1_000_000))  # 게이트 통과 전체 열거
     if not res.candidates:
         print("게이트 통과 종목 없음 — 분류 스킵")
         store.close()
         return 0
-    tagged = set(store.sector_map("llm-cls-v1"))
+    n_manual = apply_manual_overrides(store, as_of=res.as_of)  # 큐레이션(네트워크 불필요)
+    if n_manual:
+        print(f"큐레이션 오버라이드(manual-curated-v1): 신규 {n_manual}행")
+
+    key = os.environ.get("DART_API_KEY", "")
+    if not key:
+        print("DART_API_KEY 미설정 — grounded 분류 스킵(blocked)")
+        store.close()
+        return 0
+    tagged = set(store.sector_map_multi(("llm-cls-v1", MANUAL_SOURCE)))
     attempted = store.codes_with_any_row(GROUNDED_SOURCE)
     todo = [(c.srtn_cd, c.name) for c in res.candidates if c.srtn_cd not in tagged and c.srtn_cd not in attempted]
     if not todo:
-        print(f"섹터 보강 불필요 — 게이트 {res.universe}종목 모두 태깅/시도됨")
+        print(f"grounded 보강 불필요 — 게이트 {res.universe}종목 모두 태깅/시도됨")
         store.close()
         return 0
     dart = DartClient(key)
@@ -150,9 +185,12 @@ def main() -> int:
 
 __all__ = [
     "GROUNDED_SOURCE",
+    "MANUAL_SOURCE",
+    "MANUAL_SECTORS",
     "KSIC_RULES",
     "KsicRule",
     "ClassifySummary",
+    "apply_manual_overrides",
     "classify_ksic",
     "classify_untagged",
 ]
