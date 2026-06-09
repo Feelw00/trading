@@ -12,10 +12,9 @@ description: 종목 분석·토론 — 특정 종목의 추이·포지션을 gro
 종목(이름/코드) + (선택) 운영자가 가져온 **소문/뉴스/의도**(진입·이탈 고려).
 
 ## 1. Grounding (결정론 — 추측 금지)
-1. `.env` 로드 후 `poetry run python -m trading.factpack --ticker <종목>` → 가격맥락(DB)+공시(DART)+재무(DART, 당기/전기 YoY)+섹터. 못 찾으면(DB 미수집) `/collect` 제안.
+1. `.env` 로드 후 `poetry run python -m trading.factpack --ticker <종목>` → 가격맥락(DB)+공시(DART)+재무(DART, 당기/전기 YoY)+섹터+**최근 뉴스**(news.sqlite 자동 합류, 발행처·trust·published_at 포함). 못 찾으면(DB 미수집) `/collect` 제안. `news`가 비면 `collect-news` 제안.
 2. **거시 백드롭:** 최신 `.runtime/collect/<날짜>/macro_indicators.sqlite` 읽기(있으면). 없으면 `collect-macro` 제안.
-3. **뉴스:** `.runtime/collect/<날짜>/news.sqlite` 에서 해당 종목 `entities`(srtn_cd) 조회(있으면). 없으면 `collect-news` 제안.
-- **모든 사실에 출처·as_of 표기.** 없는 데이터는 "미수집"이라 말하고 **지어내지 않는다**.
+- **모든 사실에 출처·as_of 표기.** 없는 데이터는 "미수집"이라 말하고 **지어내지 않는다**. fact pack의 `news`는 trust·verified를 보고 가중(저신뢰=참고만).
 
 ## 2. 운영자 입력 분리 (환각가드)
 - 운영자가 가져온 소문/뉴스는 **`[UNVERIFIED]`** 로 명시 표기. fact pack의 grounded 사실과 **절대 섞지 않는다.**

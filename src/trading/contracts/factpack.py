@@ -8,6 +8,7 @@
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from trading.contracts.base import NonEmptyStr
+from trading.contracts.news import NewsItem
 
 
 class _Frozen(BaseModel):
@@ -55,6 +56,7 @@ class FactPack(_Frozen):
     disclosures: list[DisclosureItem] = Field(default_factory=list)
     fin_period: str | None = None        # 사용한 재무 기간 "bsns_year/reprt_code"
     financials: list[FinancialLine] = Field(default_factory=list)
+    news: list[NewsItem] = Field(default_factory=list)     # 최근 grounded 뉴스(있으면)
     sources: dict[str, str] = Field(default_factory=dict)  # 구성요소별 출처
     notes: list[str] = Field(default_factory=list)         # 결측·미수집 사유(추측 대체 금지)
     as_of: AwareDatetime         # 조립 기준 거래일 시각
