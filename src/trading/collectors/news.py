@@ -10,7 +10,6 @@ append-only landing 적재. 어댑터 미연결/실패는 ``blocked`` 으로 보
 
 import hashlib
 import html
-import json
 import re
 import sqlite3
 from collections.abc import Sequence
@@ -211,21 +210,33 @@ def _merge(a: NewsItem, b: NewsItem) -> NewsItem:
     )
 
 
+# 뉴스는 시계열 촉매(며칠 지속) — 시세(market.sqlite)처럼 단일 영속 DB. (PROPOSALS P-3)
+DEFAULT_NEWS_DB = Path("data") / "news.sqlite"
+
 NEWS_DDL = """
 CREATE TABLE IF NOT EXISTS news_items (
-  id TEXT PRIMARY KEY, source TEXT, query TEXT, title TEXT, url TEXT, publisher TEXT,
-  published_at TEXT, fetched_at TEXT, snippet TEXT, lang TEXT,
-  entities TEXT, trust REAL, verified INTEGER
-)
+  id TEXT PRIMARY KEY, source TEXT, query TEXT, title TEXT, title_norm TEXT, url TEXT,
+  publisher TEXT, published_at TEXT, fetched_at TEXT, snippet TEXT, lang TEXT,
+  trust REAL, verified INTEGER
+);
+CREATE TABLE IF NOT EXISTS news_entities (
+  news_id TEXT NOT NULL, entity TEXT NOT NULL, entity_type TEXT,
+  PRIMARY KEY (news_id, entity)
+);
+CREATE INDEX IF NOT EXISTS idx_ne_entity ON news_entities(entity);
+CREATE INDEX IF NOT EXISTS idx_ni_published ON news_items(published_at);
+CREATE INDEX IF NOT EXISTS idx_ni_title_norm ON news_items(title_norm);
 """
 _NEWS_INSERT = (
-    "INSERT OR IGNORE INTO news_items (id, source, query, title, url, publisher, "
-    "published_at, fetched_at, snippet, lang, entities, trust, verified) "
+    "INSERT OR IGNORE INTO news_items (id, source, query, title, title_norm, url, publisher, "
+    "published_at, fetched_at, snippet, lang, trust, verified) "
     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
 )
+_ENTITY_INSERT = "INSERT OR IGNORE INTO news_entities (news_id, entity, entity_type) VALUES (?,?,?)"
 
 
 def _row_to_news_item(r: tuple[object, ...]) -> NewsItem:
+    """recent_for 행 → NewsItem. 마지막 컬럼은 GROUP_CONCAT 된 entities(콤마)."""
     return NewsItem(
         id=str(r[0]), source=str(r[1]), query=str(r[2]), title=str(r[3]), url=str(r[4]),
         publisher=str(r[5]) if r[5] is not None else None,
@@ -233,53 +244,84 @@ def _row_to_news_item(r: tuple[object, ...]) -> NewsItem:
         fetched_at=datetime.fromisoformat(str(r[7])),
         snippet=str(r[8]) if r[8] is not None else None,
         lang=str(r[9]) if r[9] is not None else None,
-        entities=list(json.loads(str(r[10]))) if r[10] else [],
-        trust=float(str(r[11])) if r[11] is not None else 0.0,
-        verified=bool(r[12]),
+        trust=float(str(r[10])) if r[10] is not None else 0.0,
+        verified=bool(r[11]),
+        entities=str(r[12]).split(",") if r[12] else [],
     )
 
 
-class NewsStore:
-    """뉴스 landing SQLite. append-only(중복 id는 IGNORE → 실행 간 dedup)."""
+def _entity_type(entity: str) -> str:
+    return "theme" if entity.startswith("theme:") else "ticker"
 
-    def __init__(self, db_path: Path) -> None:
+
+class NewsStore:
+    """뉴스 landing SQLite — 단일 영속 ``data/news.sqlite``(시세 DB와 동격, P-3).
+
+    append-only: URL 중복은 PK(id)로 IGNORE, 정규화 제목(title_norm) 중복은 **크로스-런 병합**
+    (기사 행은 안 늘리고 entities 만 기존 행에 합침). entity 는 정규화 조인 테이블(news_entities)로
+    적재 → 종목/테마별 **인덱스** 조회(과거 ``entities LIKE`` 풀스캔·부분일치 오탐 제거).
+    """
+
+    def __init__(self, db_path: Path = DEFAULT_NEWS_DB) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path))
-        self._conn.execute(NEWS_DDL)
+        self._conn.executescript(NEWS_DDL)
 
     def upsert(self, items: Sequence[NewsItem]) -> int:
-        before = self._conn.total_changes
-        self._conn.executemany(
-            _NEWS_INSERT,
-            [
-                (
-                    it.id, it.source, it.query, it.title, it.url, it.publisher,
-                    it.published_at.isoformat() if it.published_at else None,
-                    it.fetched_at.isoformat(), it.snippet, it.lang,
-                    json.dumps(it.entities, ensure_ascii=False), it.trust, int(it.verified),
+        """기사 적재 + entities 머지. 반환=새로 적재된 news_items 수(신규 기사만).
+
+        같은 URL(id) 또는 같은 정규화 제목(title_norm)이 이미 있으면 기사 행은 추가하지 않고
+        entities 만 기존 행에 합친다(전역 dedup). "언제 처음 봤나"는 최초 행의 fetched_at 에 남는다.
+        """
+        stored = 0
+        for it in items:
+            tnorm = _norm_title(it.title)
+            existing = (
+                self._conn.execute(
+                    "SELECT id FROM news_items WHERE title_norm = ? LIMIT 1", (tnorm,)
+                ).fetchone()
+                if tnorm
+                else None
+            )
+            if existing is not None:
+                target_id = str(existing[0])
+            else:
+                cur = self._conn.execute(
+                    _NEWS_INSERT,
+                    (
+                        it.id, it.source, it.query, it.title, tnorm, it.url, it.publisher,
+                        it.published_at.isoformat() if it.published_at else None,
+                        it.fetched_at.isoformat(), it.snippet, it.lang, it.trust, int(it.verified),
+                    ),
                 )
-                for it in items
-            ],
-        )
+                target_id = it.id
+                if cur.rowcount > 0:
+                    stored += 1
+            for e in it.entities:
+                self._conn.execute(_ENTITY_INSERT, (target_id, e, _entity_type(e)))
         self._conn.commit()
-        return self._conn.total_changes - before
+        return stored
 
     def count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM news_items").fetchone()
         return int(row[0]) if row else 0
 
     def recent_for(self, entities: Sequence[str], *, limit: int = 10) -> list[NewsItem]:
-        """해당 entities(종목 srtn_cd/테마) 최근 뉴스 — 발행일 최신순(날짜 미상은 뒤)."""
+        """해당 entities(종목 srtn_cd/테마) 최근 뉴스 — 발행일 최신순(날짜 미상은 뒤).
+
+        news_entities(entity 인덱스) 정확매칭. 각 행의 entities 는 조인으로 복원.
+        """
         if not entities:
             return []
-        where = " OR ".join("entities LIKE ?" for _ in entities)
-        params: list[object] = [f'%"{e}"%' for e in entities]
-        params.append(limit)
+        placeholders = ",".join("?" for _ in entities)
         cur = self._conn.execute(
-            "SELECT id, source, query, title, url, publisher, published_at, fetched_at, "
-            "snippet, lang, entities, trust, verified FROM news_items "
-            f"WHERE {where} ORDER BY (published_at IS NULL), published_at DESC LIMIT ?",
-            params,
+            "SELECT n.id, n.source, n.query, n.title, n.url, n.publisher, "
+            "n.published_at, n.fetched_at, n.snippet, n.lang, n.trust, n.verified, "
+            "(SELECT GROUP_CONCAT(e2.entity) FROM news_entities e2 WHERE e2.news_id = n.id) "
+            "FROM news_items n "
+            f"WHERE n.id IN (SELECT news_id FROM news_entities WHERE entity IN ({placeholders})) "
+            "ORDER BY (n.published_at IS NULL), n.published_at DESC LIMIT ?",
+            [*entities, limit],
         )
         return [_row_to_news_item(r) for r in cur]
 
@@ -332,6 +374,7 @@ def collect_news(
 
 
 __all__ = [
+    "DEFAULT_NEWS_DB",
     "FOREIGN_THEMES",
     "NewsCollectSummary",
     "NewsQuery",

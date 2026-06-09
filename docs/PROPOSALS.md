@@ -30,3 +30,78 @@
 
 **영향범위:** `sectors.py`에 LLM 폴백 함수, `/collect` 배선. 모델명 .env 주입. 비용↑(거래일마다 잔존분).
 **미결:** 멀티에이전트 Workflow vs 단일 `claude -p`. 검증(cross-check) 깊이.
+
+## 👍 P-3 — 뉴스 단일 영속 DB + 인덱싱 (시계열 통합)
+**제안:** 뉴스 landing을 날짜별 분산(`.runtime/collect/<날짜>/news.sqlite`)에서
+**단일 영속 DB `data/news.sqlite`**(시세 `market.sqlite`와 동격)로 통합하고, 조회를 인덱스로 가속.
+- entity 정규화: `news_entities(news_id, entity, entity_type)` 조인 테이블 — `entities LIKE` 풀스캔/부분일치 오탐 제거.
+- 인덱스: `news_entities(entity)`, `news_items(published_at)`, `news_items(title_norm)`.
+- 전역 dedup: URL은 PK(`id`)로 자동(`INSERT OR IGNORE`), 제목은 `title_norm` 매칭으로 크로스-런 병합(entities 머지).
+- (후속) FTS5 전문검색(title/snippet) · 보존정책(published_at 윈도).
+
+**근거:** 현 구조 결함 — ① factpack `_latest_news_db()`가 **최신 1개 DB만** 봐서 어제 촉매가 오늘 안 보임
+(촉매는 며칠 지속 → **시계열 단절**) ② `entities LIKE '%"코드"%'` 풀스캔·부분일치 오탐 ③ 크로스-데이 중복 미차단.
+시세는 이미 단일 `data/market.sqlite`라 뉴스만 분산된 게 비일관.
+
+**영향범위:** `collectors/news.py`(NewsStore 스키마·upsert·recent_for), `collect_news.py`(경로),
+`factpack.py`(`_latest_news_db` 제거→단일 경로), `work-boot` 스킬(신선도 체크 경로).
+기존 데이터 마이그레이션 불필요(현재 news.sqlite 0개).
+append-only(`INSERT OR IGNORE`) 유지 — 프로젝트 철학 보존, "언제 처음 봤나"는 `fetched_at`에 잔존.
+
+**상태:** 👍채택(운영자 지시 2026-06-09) — 구현 진행.
+
+## 💡 P-4 — 경제 뉴스 촉매 파이프라인 (수집→검증→분류·스코어→적대검증→인덱싱)
+**제안:** 뉴스를 "종목 쿼리 적재"에서 **촉매 인텔리전스 파이프라인**으로 격상. 핵심 통찰:
+종목이 움직이는 이유는 자사 실적보다 거시·테마·수급일 때가 더 많고 빠르다(실증: 젠슨황 방한이
+SK네트웍스 등 AI 연관주 촉매로 종목명 검색에 약하게만 잡힘). **거르지 말고 폭넓게 적재 + 판단은 LLM에 위임.**
+
+> **설계서 정합:** 새 구조가 아니라 **R0→R1→R2→R3→R4 골격의 뉴스 인스턴스화**.
+> `AssetClass.NEWS`("정형화 대상")·`ThesisRecord(direction·horizon_days·confidence·invalidation)`가 이미 존재.
+> | 파이프라인 | 라운드 | 주체 |
+> |---|---|---|
+> | 광범위 수집 | R0 | 코드 어댑터(COLLECT-4) |
+> | 신선도·정합성 검증 | **R1** | **코드, LLM 금지** |
+> | 분류·스코어링 | R2 | GPT-5.5 |
+> | 적대 스코어 검증 | R4 | claude -p 멀티에이전트 |
+> | 인덱싱 | Fact Store | 코드(P-3 확장) |
+
+### 1. 스코어 = EventRecord 확장 (방향·확신은 R3 몫 — 중복 금지)
+사건의 **객관 속성만** EventRecord(R2)에. 방향/시계/확신은 종목·페르소나별이라 R3 ThesisRecord가 채움
+(같은 사건이 A엔 호재·B엔 악재 → 사건 레벨에 방향 박으면 오류).
+- `catalyst_strength: float 0~1` — 사건 시장 임팩트(종목 독립)
+- `scope: {single_stock | sector_theme | broad_market}` — entity 카디널리티 1차 추정 + LLM 확정
+- `catalyst_type: CatalystType` — §2
+- `affected: list[(srtn_cd, relevance 0~1)]` — 영향종목 + 연결강도
+- `novelty: float 0~1` — 신규성(재탕 디스카운트)
+- 근거 기사 id는 `EventRecord.evidence`(기존)에 필수(환각가드). 재스코어링=append 새 버전.
+
+### 2. 분류 taxonomy = 2축 직교
+- **섹터축:** 기존 26 `Sector` enum **재사용**(종목 분류와 조인 — 신설 금지).
+- **촉매유형축(신설 `CatalystType`):** `earnings`·`guidance`·`policy_regulation`·`ma_restructure`·
+  `supply_chain`·`flow_demand`·`macro`·`product_tech`·`legal`·`management`·`rumor_unconfirmed`.
+- 근거: R7 캘리브레이션이 "어떤 촉매유형 가설이 적중하나" 학습하려면 촉매유형 라벨 필요.
+
+### 3. 수집 = 3계층 쿼리플랜 (현행 L1만)
+- **L1 종목(현행):** 후보 srtn_cd × name → 네이버 (~600콜/일).
+- **L2 섹터·테마(신설):** 26섹터 + 활성테마(반도체·AI·로봇…) → 네이버 (~520콜/일).
+- **L3 거시(현 `FOREIGN_THEMES` 확장):** Fed·CPI·환율·유가·지정학 → SearXNG.
+- 예산: 네이버 2.5만콜/일 → ~1,100콜 사용(여유 충분). `scope=broad_market`은 L3에서 자연발생.
+
+### 4. 스케줄 + **전수 검증 안 함** (지연·실효성 제동)
+- 06:20/16:20 R0 수집(3계층) + 장중 heartbeat 속보 / 06:30/16:30 R1검증→R2분류·스코어 /
+  06:45/16:45 **R4 적대검증 — 선별만**.
+- **전수 멀티에이전트 검증 금지**(토큰 무관이라도): `catalyst_strength` 상위 + `scope=single_stock`/고강도만
+  perspective-diverse(강도/종목연결/시점정합) 검증. loop-until-dry는 신규 고강도에만.
+  저강도·broad는 검증 없이 grounding 노출(R3가 가중).
+
+**안전선(절대):** 모든 스코어·검증 산출은 **R2 EventRecord → R3 ThesisRecord grounding으로만** 흐른다.
+**R5.5(매매 발동)·R1(게이트)에 LLM 점수 주입 금지**(절대금지 #2 — 매매판단 LLM 차단). 매매 발동은 코드 게이트 + 미시구조 유지.
+R7이 스코어 적중도를 사후 캘리브레이션해 `catalyst_strength` 신뢰 보정(폐루프).
+
+**영향범위:** `contracts/event.py`(필드 추가), `domains.py`(`CatalystType`), `collectors/news.py`(3계층 `build_query_plan`),
+`rounds/`(R2 분류·스코어러, R4 검증), `gates/`(R1 뉴스 검증), `ops/openclaw/cron_jobs.py`(슬롯), 인덱싱(P-3 news DB 확장).
+
+**잔여 미결:** ① 활성테마 리스트 큐레이션 출처(임의확장 금지 — 운영자/섹터 메타) ② `catalyst_strength` 스코어러
+GPT-5.5 단일 vs 멀티에이전트 ③ R7 캘리브레이션 연동 시점(파이프라인 안정 후).
+
+**상태:** 💡제안 — 방향 합의(2026-06-09), 구현 미착수. R0~R4 뉴스 흐름 구현 시 본 스펙을 따른다.

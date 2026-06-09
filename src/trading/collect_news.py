@@ -9,7 +9,6 @@ COLLECT-4 하네스: 승인 search 어댑터만, 미연결/실패는 blocked(빈
 import os
 import sys
 
-from trading.collectors.base import default_db_path
 from trading.collectors.market import MarketStore
 from trading.collectors.news import (
     NewsSource,
@@ -52,7 +51,7 @@ def run(top_n: int = DEFAULT_TOP_N) -> int:
         return 0
     plan = build_query_plan([(c.srtn_cd, c.name) for c in res.candidates])
     sources = build_sources_from_env()
-    store = NewsStore(default_db_path("news"))
+    store = NewsStore()  # 단일 영속 data/news.sqlite — 시계열 통합 (P-3)
     summary = collect_news(sources, plan, store, limit=SEARCH_LIMIT)
     store.close()
     print(f"뉴스 수집 as_of={res.as_of}: 적재 {summary.stored}건 (dedup후 {summary.collected})")

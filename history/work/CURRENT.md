@@ -7,6 +7,7 @@
 - (없음)
 
 ## 최근 완료
+- 2026-06-09 — **뉴스 단일 영속 DB + 인덱싱(P-3) + 부트 뉴스 신선도**: 뉴스 landing을 날짜분산(`.runtime/collect/<날짜>/news.sqlite`) → **단일 `data/news.sqlite`**(시세 DB 동격)로 통합. factpack `_latest_news_db()`(최신 1개 DB만 봐 **시계열 단절** — 어제 촉매가 오늘 안 보임) 제거 → `_open_news_store()`. `news_entities(news_id,entity,entity_type)` 조인 정규화 + 인덱스(entity·published_at·title_norm) → `entities LIKE` 풀스캔·부분일치 오탐 제거. 전역 dedup: URL=PK `INSERT OR IGNORE`, 제목=`title_norm` **크로스-런 병합**(기사 1건 유지, entities만 머지). 부트 스킬(`work-boot`·`boot`)에 **1b 뉴스 신선도**: 오늘자 `data/news.sqlite` 확인 → 미수집 시 ⚠️ + `/collect-news`(키 없으면 키 안내, COLLECT-3 흉내 금지). 기존 0건이라 마이그레이션 불필요. pytest 100(+1 크로스런dedup)·mypy strict clean. PROPOSALS **P-3 채택** 등록. **네이버 키 발급·라이브 검증 완료**(2026-06-09 30건 적재·verified 30/30·fact pack 8건 합류 확인, 연합뉴스 trust 0.95). SearXNG(해외)는 미설정(선택). **후속 튜닝:** 네이버 `sort=date` → 종목 검색에 시장 일반뉴스 혼입(노이즈) → `sim`/혼합 검토.
 - 2026-06-09 — **스크리너 튜닝(#4)**: **액면병합/분할 아티팩트 가드**(실증된 크레오에스지 1251% 문제 해결). 탐지법을 실데이터로 검증 — 인접 거래일 상장주식수(lstg_st_cnt) 비율>1.5면 가격 시리즈 불연속 → 제외(분할·병합·무상증자만, 점진 희석은 통과). 6/8 307→293종목(14 제외, 전부 1.5~5배 실자본변동), 크레오에스지 제외·#1=SK네트웍스(실모멘텀). `rows_since`/`series_for`에 lstg_st_cnt 추가. 하락장 절대필터 knob 추가(`min_mom_long`·`min_high_proximity`, 기본 off — 전략선택). pytest 101(+3)·mypy clean. **관리종목 제외는 소스 없음**(data.go.kr 미제공 → 🔴 KRX 필요). 가중치 튜닝은 백테스트(리플레이) 후.
 - 2026-06-09 — **파이프라인 디스패치(#3)**: `trading.run` 빈 `ROUNDS` 채움 — 라운드명→결정론 핸들러(collect-macro/collect-market/collect-news/classify-sectors/screen/factpack + 합성 **daily-eod**=시세→분류→스크리너→fact pack). lazy import·`--list`·첫 실패 중단. `ops/openclaw/cron_jobs.py`(선언적 cron 매니페스트, KST 슬롯 5개) + `sync.py`(매니페스트→openclaw 명령, **dry-run 기본**·round 정합성 검증). **openclaw CLI 구문은 미검증→설치본에서 확정**(절대금지 #1, sync는 출력만). pytest 98(+5)·mypy clean. `trading.run screen` end-to-end 확인. 휴장일은 cron(월~금) 아닌 잡 내부 가드(data.go.kr 빈 결과).
 - 2026-06-09 — **뉴스 → fact pack 연동**(뉴스 가치사슬 완성): 수집된 뉴스를 종목별로 FactPack에 합류 → `discuss`·fact pack이 grounded 촉매로 뉴스를 본다(원 목표 "정확한 가설 도출"의 빠진 고리). `NewsStore.recent_for(entities)`(발행 최신순) + `FactPack.news` 필드 + `factpack._latest_news_db()`(최신 news.sqlite 자동 탐색). `build_fact_pack(..., news_store)` 옵션(하위호환). discuss 스킬은 `--ticker` 출력의 `news`(발행처·trust·published_at) 사용. 키 불필요(라이브는 Naver/SearXNG 주면 즉시 채워짐). pytest 93(+3)·mypy clean. end-to-end 검증(삼성전자 뉴스 합류).
@@ -23,7 +24,7 @@
 - 2026-06-08 — **M1 골격·데이터 계약 5종·journal·리플레이** → [archive](archive/2026-06-08-m1-skeleton.md)
 
 ## 빠른 재개 (다음 세션 `/boot` 후)
-- **상태:** 디스커버리 파이프라인 작동(전종목→후보→섹터). 키 발급 완료(FRED/ECOS/DATA_GO_KR/DART). KIS·뉴스 보류.
+- **상태:** 디스커버리 파이프라인 작동(전종목→후보→섹터). 키 발급 완료(FRED/ECOS/DATA_GO_KR/DART, **네이버뉴스**). KIS·SearXNG 보류.
 - **DB:** `data/market.sqlite`(gitignored) 1년치(247거래일·711k행). 최신 수집일 = 2026-06-08. 새 거래일은 `/collect`로 증분(시세+섹터보강+스크리너).
 - **바로 보기:** `/boot` → 거시 백드롭 + 신선도 + 오늘 후보(섹터). 또는 `python -m trading.screener`.
 

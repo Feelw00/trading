@@ -117,6 +117,24 @@ def test_news_store_idempotent(tmp_path: Path) -> None:
     store.close()
 
 
+def test_news_store_cross_run_title_dedup(tmp_path: Path) -> None:
+    """다른 수집 실행에서 같은 제목·다른 URL → 기사 1건, entities 머지(전역 dedup, P-3)."""
+    store = NewsStore(tmp_path / "news.sqlite")
+    a = _item("https://yna.co.kr/a", "삼성전자 신고가 경신", source="naver",
+              trust_pub="연합뉴스", when=FETCHED, ent=["005930"])
+    b = _item("https://other.com/b", "삼성전자 신고가 경신", source="searxng",  # 다른 URL·같은 제목
+              trust_pub=None, when=FETCHED, ent=["theme:semi"])
+    assert a is not None and b is not None
+    assert store.upsert([a]) == 1
+    assert store.upsert([b]) == 0          # 제목 같음 → 기사 행 안 늘어남
+    assert store.count() == 1
+    got = store.recent_for(["005930"])
+    assert len(got) == 1
+    assert set(got[0].entities) == {"005930", "theme:semi"}             # entities 머지
+    assert [n.title for n in store.recent_for(["theme:semi"])] == ["삼성전자 신고가 경신"]  # 테마로도 조회
+    store.close()
+
+
 class _FakeSource:
     def __init__(self, name: str, raws: list[RawNews]) -> None:
         self.name = name
