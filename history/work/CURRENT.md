@@ -7,6 +7,7 @@
 - (없음)
 
 ## 최근 완료
+- 2026-06-09 — **종목 분석·토론 스킬(`discuss`)** + 단일종목 grounding: 임의 종목(코드/이름) grounded 분석·토론 — 설계서 §6 철학(적대적·무효화 필수·예측 아님, 반-아첨). `factpack.build_fact_pack_for(ident)` + `python -m trading.factpack --ticker <코드|이름>`(스크리너 게이트 외도 조회). `screener.signals_from_series` 추출(게이트 무관 신호, `_survivor` 재사용), `MarketStore.series_for`·`find_by_name`. 스킬: grounding(factpack+거시+뉴스 DB)→소문 `[UNVERIFIED]` 분리→적대분석→조건문(가설/트리거/무효화/시계/확신도). 시장가 금지·수급 미수집은 "없음". pytest 90(+3)·mypy clean. **수급(외인·기관) 데이터는 🔴 소스 미결정으로 보류 — 스킬상 "판단 보류" 표기.**
 - 2026-06-09 — **뉴스 수집 독립 커맨드 분리**: 러너(`build_sources_from_env`+오케스트레이션)를 코어에서 빼 `src/trading/collect_news.py`로 독립 → `python -m trading.collect_news [top_n]`(factpack 패턴). `collectors/news.py`는 순수 라이브러리화(정규화·dedup·landing·라우터만). `run()` 분리로 추후 `trading.run` ROUNDS 핸들러가 import만 하면 됨(#3 디스패치 대비). `collect-news` 스킬 명령어 갱신. pytest 87(+5, env→소스 구성)·mypy clean.
 - 2026-06-09 — **SearXNG 뉴스 어댑터**(해외 분담): `collectors/news_searxng.py`(JSON API — results 파싱·ISO8601→aware[naive=None]·발행처 도메인 추정). 발행처 추정(`publisher_from_url`+도메인맵)을 코어로 올려 두 어댑터 공유(국내+해외 도메인). `build_sources_from_env`에 SEARXNG_URL 배선. pytest 82(+4)·mypy clean. **라이브 검증은 인스턴스(`format=json` 활성) 확보 후.**
 - 2026-06-09 — **네이버 뉴스 어댑터** + 러너 배선: `collectors/news_naver.py`(네이버 검색 API — RawNews 파싱·발행처 도메인 추정·pubDate RFC822→KST). `base.fetch_json`에 헤더 인증 지원 추가(기존 호출 무영향). 러너 `python -m trading.collectors.news [top_n]`(env→소스구성·스크리너 후보→쿼리플랜·landing) + `collect-news` 스킬 배선. 키 없이 graceful blocked(날조 없음) 확인. pytest 78(+6)·mypy clean. **라이브 검증·SearXNG 어댑터는 키/인스턴스 확보 후.**

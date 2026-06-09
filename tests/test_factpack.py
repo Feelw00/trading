@@ -9,8 +9,9 @@ from trading.factpack import (
     _fin_periods,
     _parse_amount,
     build_fact_pack,
+    build_fact_pack_for,
 )
-from trading.screener import Candidate, SignalSet
+from trading.screener import Candidate, ScreenConfig, SignalSet, signals_from_series
 
 SIG = SignalSet(tr_value_surge=3.2, mom_short=0.21, mom_long=0.55, high_proximity=0.84)
 CAND = Candidate(srtn_cd="003220", name="대원제약", market="KOSPI", clpr=18000.0, score=0.92, signals=SIG)
@@ -94,6 +95,50 @@ def test_build_fact_pack_missing_corp_and_disclosures(tmp_path: Path) -> None:
     assert pack.financials == [] and pack.disclosures == []
     assert any("corp_code 없음" in n for n in pack.notes)
     assert pack.price.close == 18000.0  # 가격맥락은 여전히 grounded
+    store.close()
+
+
+def test_signals_from_series_surge_and_high() -> None:
+    # (srtn_cd, name, market, bas_dt, clpr, hipr, tr_prc, mcap) 오름차순
+    series = [(100, 1e9), (110, 1e9), (120, 5e9)]
+    recs: list[tuple[object, ...]] = [
+        ("X", "엑스", "KOSPI", f"2026060{i}", str(c), str(c), str(tr), "1e12")
+        for i, (c, tr) in enumerate(series, 1)
+    ]
+    s = signals_from_series(recs, ScreenConfig(lookback_surge=2, mom_short=1, mom_long=2))
+    assert round(s.tr_value_surge, 2) == 1.67   # 5e9 / ((1e9+5e9)/2)
+    assert s.high_proximity == 1.0              # clpr 120 = 최고가
+    assert round(s.mom_long, 2) == 0.2          # 120/100 - 1
+
+
+def _seed_one(store: MarketStore, code: str, name: str) -> None:
+    rows = [
+        {"basDt": f"2026060{i}", "srtnCd": code, "itmsNm": name, "mrktCtg": "KOSPI",
+         "clpr": str(c), "hipr": str(c), "trPrc": "1000000000", "mrktTotAmt": "1000000000000"}
+        for i, c in enumerate([100, 110, 120], 1)
+    ]
+    store.upsert(rows)
+
+
+def test_build_fact_pack_for_resolves_code_and_name(tmp_path: Path) -> None:
+    store = MarketStore(tmp_path / "m.sqlite")
+    _seed_one(store, "003220", "대원제약")
+    corp_map = {"003220": ("00111999", "대원제약")}
+    pack = build_fact_pack_for("003220", store=store, dart=_FakeDart(with_disc=True), corp_map=corp_map)
+    assert pack is not None and pack.srtn_cd == "003220" and pack.name == "대원제약"
+    assert pack.price.close == 120.0 and pack.price.high_252_proximity == 1.0
+    assert pack.fin_period == "2025/11014"        # DART grounding 연동
+    assert any("단일종목" in n for n in pack.notes)
+    # 이름으로도 해석(부분일치)
+    by_name = build_fact_pack_for("대원", store=store, dart=_FakeDart(with_disc=False), corp_map=corp_map)
+    assert by_name is not None and by_name.srtn_cd == "003220"
+    store.close()
+
+
+def test_build_fact_pack_for_unknown_returns_none(tmp_path: Path) -> None:
+    store = MarketStore(tmp_path / "m.sqlite")
+    _seed_one(store, "003220", "대원제약")
+    assert build_fact_pack_for("없는종목xyz", store=store, dart=_FakeDart(with_disc=False), corp_map={}) is None
     store.close()
 
 

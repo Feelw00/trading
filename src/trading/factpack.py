@@ -18,7 +18,7 @@ from trading.collectors.base import KST, now_kst
 from trading.collectors.dart import DartClient
 from trading.collectors.market import MarketStore
 from trading.contracts.factpack import DisclosureItem, FactPack, FinancialLine, PriceContext
-from trading.screener import Candidate, SECTOR_SOURCES, ScreenConfig, screen
+from trading.screener import Candidate, SECTOR_SOURCES, ScreenConfig, screen, signals_from_series
 
 DART_DISCLOSURE_DAYS = 90
 DISCLOSURE_LIMIT = 15
@@ -206,6 +206,60 @@ def _fmt_date(yyyymmdd: str) -> str:
     return f"{yyyymmdd[:4]}-{yyyymmdd[4:6]}-{yyyymmdd[6:8]}" if len(yyyymmdd) == 8 else yyyymmdd
 
 
+def build_fact_pack_for(
+    ident: str,
+    *,
+    store: MarketStore | None = None,
+    dart: DartLike | None = None,
+    corp_map: dict[str, tuple[str, str]] | None = None,
+) -> FactPack | None:
+    """임의 종목(코드 6자리 또는 이름) 단일 FactPack. 토론 스킬 grounding용.
+
+    스크리너 게이트와 무관(소문 종목 등 후보 밖도 조회). screen_score 는 무의미(0).
+    """
+    own = store is None
+    st = store or MarketStore()
+    try:
+        cutoff = st.nth_recent_date(ScreenConfig().lookback_high) or st.latest_date()
+        if cutoff is None:
+            return None
+        code: str | None = ident if (ident.isdigit() and len(ident) == 6) else None
+        if code is None:
+            matches = st.find_by_name(ident)
+            code = matches[0][0] if matches else None
+        if code is None:
+            return None
+        recs = st.series_for(code, cutoff)
+        if not recs:
+            return None
+        last = recs[-1]
+        cand = Candidate(
+            srtn_cd=code,
+            name=str(last[1]),
+            market=last[2] if isinstance(last[2], str) else None,
+            clpr=_f_or(last[4]),
+            score=0.0,
+            signals=signals_from_series(recs, ScreenConfig()),
+        )
+        if dart is None:
+            key = os.environ.get("DART_API_KEY", "")
+            dart = DartClient(key) if key else _NullDart()
+            corp_map = dart.corp_code_map() if isinstance(dart, DartClient) else {}
+        sectors = st.sector_map_multi(SECTOR_SOURCES).get(code, [])
+        pack = build_fact_pack(cand, st, dart, corp_map or {}, sectors)
+        return pack.model_copy(update={"notes": [*pack.notes, "단일종목 조회 — 스크리너 게이트 외일 수 있음(screen_score 무의미)"]})
+    finally:
+        if own:
+            st.close()
+
+
+def _f_or(v: object, default: float = 0.0) -> float:
+    try:
+        return float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 def run(top_n: int = 15) -> FactPackRun:
     key = os.environ.get("DART_API_KEY", "")
     store = MarketStore()
@@ -229,7 +283,18 @@ def run(top_n: int = 15) -> FactPackRun:
 
 
 def main() -> int:
-    top_n = int(sys.argv[1]) if len(sys.argv) > 1 else 15
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--ticker":
+        if len(argv) < 2:
+            print("usage: python -m trading.factpack --ticker <code|name>")
+            return 2
+        pack = build_fact_pack_for(argv[1])
+        if pack is None:
+            print(f"종목 못 찾음(DB 미수집?): {argv[1]}")
+            return 1
+        print(pack.model_dump_json(indent=2))
+        return 0
+    top_n = int(argv[0]) if argv else 15
     r = run(top_n)
     if r.written == 0:
         print("FactPack 미생성 (후보 없음 — DB/스크리너 확인)")
@@ -239,7 +304,7 @@ def main() -> int:
     return 0
 
 
-__all__ = ["DartLike", "FactPackRun", "build_fact_pack", "run"]
+__all__ = ["DartLike", "FactPackRun", "build_fact_pack", "build_fact_pack_for", "run"]
 
 
 if __name__ == "__main__":
