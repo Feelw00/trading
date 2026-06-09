@@ -7,7 +7,8 @@
 - (없음)
 
 ## 최근 완료
-- 2026-06-09 — **섹터 태깅 grounded 영속화**(next-work #5 부분): DART 회사개황(KSIC 업종) → 26 taxonomy **결정론** 분류(`src/trading/sectors.py`). 기존 293 LLM 라벨 대비 induty_code **순도 실측** → 깨끗한 코드(≥0.75)만 채택, 혼재(264 등)는 미분류 유지(추측 안 함). 소스 `dart-ksic-v1`(큐레이션 `llm-cls-v1` 우선·갭만 채움, 스크리너 `sector_map_multi` 병합). `/collect`에 매 거래일 자동 보강 스텝 배선. **6/8 게이트 43미태깅→12 grounded 분류**(대원제약→pharma_bio·크레오에스지→ai_software·태양금속/화신→auto·에이팩트→semi·대한조선→shipbuilding 등 스폿체크 정확). mypy strict clean·pytest 55(+7). LLM 미개입.
+- 2026-06-09 — **혼재 KSIC 잔존분 보강 + KSIC 천장 finding**: 미분류 31종 induty_code를 293라벨 대비 5/4/3자리 순도로 실측 → **결정론 확장 데이터 미지지**(거의 n부족·혼재) 확인. 대응: ① 고확신 유명주 12종 큐레이션 오버라이드(`manual-curated-v1`, 환각가드: 확실한 것만 — 롯데케미칼·JYP·루닛·코오롱·하림지주·iM금융지주·앱클론·이노스페이스·풍산 등) ② taxonomy 버킷 부재분(해운 HMM·흥아해운·운송 동양고속·레저 강원랜드)은 `docs/PROPOSALS.md` P-1 등록(추측 안 함) ③ LLM 폴백 분류기 P-2 제안. 커버리지 게이트 **90%→93.8%(288/307)**. pytest 57·mypy clean.
+- 2026-06-09 — **섹터 태깅 grounded 영속화**(next-work #5 부분, PR#1 머지 `79e8d95`): DART 회사개황(KSIC 업종) → 26 taxonomy **결정론** 분류(`src/trading/sectors.py`). 기존 293 LLM 라벨 대비 induty_code **순도 실측** → 깨끗한 코드(≥0.75)만 채택, 혼재(264 등)는 미분류 유지(추측 안 함). 소스 `dart-ksic-v1`(큐레이션·LLM 우선·갭만 채움, 스크리너 `sector_map_multi` 병합). `/collect`에 매 거래일 자동 보강 스텝 배선. 6/8 게이트 43미태깅→12 grounded 분류. LLM 미개입.
 - 2026-06-08 — **디스커버리 파이프라인 + 데이터소스 + boot/수집 스킬** → [archive](archive/2026-06-08-discovery-pipeline.md)
   - 수집(거시 FRED·ECOS·공공데이터 / 전종목 EOD 708k행 / 공시 DART) → 스크리너(거래대금+모멘텀+신고가) → 멀티에이전트 26섹터 분류 → 섹터 태그 후보. mypy 41 clean·pytest 48. 커밋 `d56819e`→`a98835a`.
 - 2026-06-08 — **M1 골격·데이터 계약 5종·journal·리플레이** → [archive](archive/2026-06-08-m1-skeleton.md)
@@ -22,5 +23,5 @@
 2. **grounded 분석 에이전트** — fact pack을 *읽고* 가설+무효화(ThesisRecord) 도출. 멀티에이전트 병렬. **공시에 없는 촉매 지어내기 금지**.
 3. **파이프라인 디스패치** — `trading.run` ROUNDS 채우기(collect-macro/collect-market/screen/daily) + openclaw cron(하루 2회).
 4. **스크리너 튜닝** — 가중치·임계치 + 하락장 절대필터·관리종목 제외.
-5. ~~분류 영속화~~(✅ grounded `dart-ksic-v1`) / 남은 것: **혼재 KSIC 코드 보강**(264·262·292·201·649… 저순도 31종 미분류 잔존 → 5자리 세분 규칙 or LLM 폴백) · 일일 diff(신규상장) · 뉴스 소스 확정.
+5. ~~분류 영속화~~(✅ grounded `dart-ksic-v1` + 큐레이션 `manual-curated-v1`, 93.8%). 남은 19 미분류는 **taxonomy 갭(PROPOSALS P-1)** + 진짜 모호(전자부품·다각화). 후속: P-1 taxonomy 확장 합의 / P-2 LLM 폴백 분류기 / 일일 diff(신규상장) / 뉴스 소스.
 - 보류: KIS(호가·수급·실시간) / NXT(🔴) / M2 R1 게이트.
