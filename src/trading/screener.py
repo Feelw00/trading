@@ -25,6 +25,13 @@ class ScreenConfig:
     w_momentum: float = 1.0
     w_high: float = 1.0
     common_only: bool = True  # 보통주만(단축코드 末 '0')
+    # 액면병합/분할/증자 아티팩트 가드: 윈도우 내 상장주식수 max/min 비율이 이 값 초과면 제외
+    # (raw 가격 시리즈가 구조적 불연속 → 모멘텀·신고가 신호 오염. 크레오에스지 5:1 병합 사례).
+    exclude_adjustment_artifacts: bool = True
+    max_share_ratio: float = 1.5
+    # 하락장 절대필터(기본 off — 전략 선택). 설정 시 횡단면 랭크와 무관하게 절대 컷.
+    min_mom_long: float | None = None       # 장기수익률 하한(예: -0.3 = 60일 -30% 미만 제외)
+    min_high_proximity: float | None = None  # 52주 최고가 근접 하한(예: 0.5)
 
 
 @dataclass(frozen=True)
@@ -115,9 +122,27 @@ def _survivor(srtn_cd: str, recs: list[tuple[object, ...]], as_of: str, cfg: Scr
         return None
     if mcap is not None and mcap < cfg.min_mrkt_cap:
         return None
+    # 액면병합/분할/증자 아티팩트: 상장주식수가 윈도우 내 크게 바뀌면 raw 가격 시리즈 불연속 → 제외
+    if cfg.exclude_adjustment_artifacts and _has_share_discontinuity(recs, cfg.max_share_ratio):
+        return None
     s = signals_from_series(recs, cfg)
+    # 하락장 절대필터(옵션) — 횡단면 랭크 무관 절대 컷
+    if cfg.min_mom_long is not None and s.mom_long < cfg.min_mom_long:
+        return None
+    if cfg.min_high_proximity is not None and s.high_proximity < cfg.min_high_proximity:
+        return None
     market = last[2] if isinstance(last[2], str) else None
     return (srtn_cd, name, market, clpr, s.tr_value_surge, s.mom_short, s.mom_long, s.high_proximity)
+
+
+def _has_share_discontinuity(recs: list[tuple[object, ...]], max_ratio: float) -> bool:
+    """**인접 거래일** 상장주식수(index 8) 비율이 임계 초과면 True.
+
+    단일일 급변(액면분할·병합·무상증자=가격 레벨 불연속)만 잡는다 — 점진적 희석(CB전환·소규모
+    증자)은 일별 변화가 작아 통과(false positive 방지). 크레오에스지 5:1 병합은 인접일 5배 점프.
+    """
+    shares = [v for v in (_f(r[8]) for r in recs) if v is not None and v > 0]
+    return any(a / b > max_ratio or b / a > max_ratio for a, b in zip(shares, shares[1:]))
 
 
 def screen(store: MarketStore, config: ScreenConfig | None = None) -> ScreenResult:

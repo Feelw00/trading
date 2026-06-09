@@ -94,9 +94,9 @@ class MarketStore:
         return dates[-1] if dates else None
 
     def rows_since(self, min_bas_dt: str) -> list[tuple[Any, ...]]:
-        """[min_bas_dt~] 행: (srtn_cd, name, market, bas_dt, clpr, hipr, tr_prc, mrkt_tot_amt)."""
+        """[min_bas_dt~] 행: (srtn_cd, name, market, bas_dt, clpr, hipr, tr_prc, mrkt_tot_amt, lstg_st_cnt)."""
         cur = self._conn.execute(
-            "SELECT srtn_cd, name, market, bas_dt, clpr, hipr, tr_prc, mrkt_tot_amt "
+            "SELECT srtn_cd, name, market, bas_dt, clpr, hipr, tr_prc, mrkt_tot_amt, lstg_st_cnt "
             "FROM daily_quotes WHERE bas_dt >= ? ORDER BY srtn_cd, bas_dt",
             (min_bas_dt,),
         )
@@ -105,7 +105,7 @@ class MarketStore:
     def series_for(self, srtn_cd: str, min_bas_dt: str) -> list[tuple[Any, ...]]:
         """단일 종목 [min_bas_dt~] 시리즈(rows_since 와 동일 컬럼, bas_dt 오름차순)."""
         cur = self._conn.execute(
-            "SELECT srtn_cd, name, market, bas_dt, clpr, hipr, tr_prc, mrkt_tot_amt "
+            "SELECT srtn_cd, name, market, bas_dt, clpr, hipr, tr_prc, mrkt_tot_amt, lstg_st_cnt "
             "FROM daily_quotes WHERE srtn_cd=? AND bas_dt >= ? ORDER BY bas_dt",
             (srtn_cd, min_bas_dt),
         )
