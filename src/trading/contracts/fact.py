@@ -9,10 +9,11 @@ from trading.domains import AssetClass, Region, Sector
 
 
 class FactFlag(str, Enum):
-    """R1 게이트가 부착하는 플래그(설계서 §3 R1)."""
+    """R1 게이트가 부착하는 플래그(설계서 §3 R1 + 뉴스 게이트 선례의 미래시점 결함)."""
 
     STALE = "stale"
     CONFLICT = "conflict"
+    FUTURE_DATED = "future_dated"  # as_of가 미래(시계·파싱 오류) — 신선도 판정 회피 차단
 
 
 class FactRecord(BaseRecord):

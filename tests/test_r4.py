@@ -103,3 +103,22 @@ def test_run_r4_attaches_verification_and_preserves_fields() -> None:
 def test_run_r4_skips_when_nothing_selected() -> None:
     res = run_r4(_BoomClient(), [_evt("a", scope="broad_market", strength=0.4)], {}, config=R4Config())
     assert res.selected == 0 and res.verified == []
+
+
+def test_config_from_env_overrides() -> None:
+    cfg = R4Config.from_env(
+        {
+            "R4_STRENGTH_THRESHOLD": "0.4",
+            "R4_HIGH_STRENGTH": "0.6",
+            "R4_MIN_SURVIVED": "3",
+            "R4_MAX_EVENTS": "10",
+        }
+    )
+    assert cfg == R4Config(
+        strength_threshold=0.4, high_strength=0.6, min_survived=3, max_events=10
+    )
+
+
+def test_config_from_env_defaults_when_unset() -> None:
+    assert R4Config.from_env({}) == R4Config()
+    assert R4Config.from_env({"R4_STRENGTH_THRESHOLD": ""}) == R4Config()

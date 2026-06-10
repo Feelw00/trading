@@ -8,6 +8,7 @@ R2가 산출한 EventRecord 중 **고강도·single_stock만 선별**해 적대�
 적대 기본값은 **회의적**: 근거 약하거나 호출 실패면 survived=False(refute).
 """
 
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -28,10 +29,30 @@ _LENS_TASK: dict[str, str] = {
 
 @dataclass(frozen=True)
 class R4Config:
-    strength_threshold: float = 0.5   # single_stock은 이 이상이면 검증
-    high_strength: float = 0.7        # scope 무관 이 이상이면 검증
+    """선별 임계 — 실데이터 분포 기반(2026-06-10, 6/9자 뉴스 395건→이벤트 131건 캘리브레이션).
+
+    R2 산출 강도는 0.2~0.5에 질량 집중: single_stock p80=0.40·최대 0.50(구 기본 0.5는
+    선별률 4%로 사실상 비활성), scope 무관 0.6 이상은 전체의 6%. 재캘리브레이션은
+    같은 분포 분석으로 — .env(R4_*)로 코드 수정 없이 오버라이드 가능.
+    """
+
+    strength_threshold: float = 0.4   # single_stock은 이 이상이면 검증 (p80)
+    high_strength: float = 0.6        # scope 무관 이 이상이면 검증 (상위 ~6%)
     min_survived: int = 2             # 3렌즈 중 생존 최소(다수결) → confirmed
     max_events: int = 20              # 비용 가드(선별 상한)
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "R4Config":
+        """.env 주입(하드코딩 금지 규약): R4_STRENGTH_THRESHOLD / R4_HIGH_STRENGTH /
+        R4_MIN_SURVIVED / R4_MAX_EVENTS. 미설정 키는 코드 기본값."""
+        e = env if env is not None else os.environ
+        base = cls()
+        return cls(
+            strength_threshold=float(e.get("R4_STRENGTH_THRESHOLD") or base.strength_threshold),
+            high_strength=float(e.get("R4_HIGH_STRENGTH") or base.high_strength),
+            min_survived=int(e.get("R4_MIN_SURVIVED") or base.min_survived),
+            max_events=int(e.get("R4_MAX_EVENTS") or base.max_events),
+        )
 
 
 @dataclass(frozen=True)

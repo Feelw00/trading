@@ -28,14 +28,16 @@
 
 **검증 (AC)**: pytest **162 passed**, mypy **0 issues** (73 files).
 
+- **M2 마무리 슬라이스** (2026-06-10): 일반 R1 게이트(FactRecord stale/conflict + R5 하드게이트) · `market_calendar/` 가드(휴장일·DST·장중 LLM 거부, CAL-1/2 등록) · score-news 전수(뉴스 395→이벤트 131) · R4 threshold 분포 캘리브레이션(0.4/0.6 + .env knob). pytest **197 passed**, mypy **0 issues** (77 files). → `history/work/archive/2026-06-10-m2-wrapup-slices.md`
+
 ---
 
 ## 미해결 / 다음
 
-**M2 마무리**
-- 일반 R1 게이트(FactRecord stale/conflict 플래그) — 뉴스 외 거시·시세에도 적용 (설계서 §3)
-- `market_calendar/` 휴장일·DST·장중 게이팅 가드 (SCHED-1)
-- R4 threshold 튜닝(기본 0.5는 실데이터 빈도 낮음) + R3 grounding 보강(수급 페르소나 데이터 부재)
+**M2 잔여**
+- R3 grounding 보강(수급 페르소나 데이터 부재 — 🔴 KRX 의존)
+- R4 실검증 실행(선별 18건, ~54 claude 호출 — 비용 승인 후)
+- R1 일반 게이트 운영 배선: landing→FactRecord 변환 계층 후 거시·시세 적용
 
 **M3 / Phase 1**
 - R5 합성·플레이북·주문 초안 (claude -p, 20:30)

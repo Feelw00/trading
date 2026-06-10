@@ -37,7 +37,7 @@ def run(
     nstore.close()
 
     llm = client if client is not None else client_from_env()
-    result: R4Result = run_r4(llm, events, evidence_by_id, config=config or R4Config())
+    result: R4Result = run_r4(llm, events, evidence_by_id, config=config or R4Config.from_env())
     stored = es.append(result.verified)
     if store is None:
         es.close()
