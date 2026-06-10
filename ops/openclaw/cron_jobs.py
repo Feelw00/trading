@@ -38,6 +38,9 @@ JOBS: tuple[CronJob, ...] = (
     CronJob("verify-pm", "45 16 * * 1-5", "verify-catalysts", comment="R4 적대검증(선별)"),
     CronJob("reason-pm", "55 16 * * 1-5", "reason-theses", comment="R3 페르소나 분석"),
     CronJob("macro-pm", "30 16 * * 1-5", "collect-macro", comment="마감 거시"),
+    # --- 보고 (설계서 §5·§8: 06:50 모닝 / 21:00 저녁 결재) ---
+    CronJob("report-am", "50 6 * * 1-5", "report-morning", comment="R6 모닝 브리핑(읽기 전용, 정적 렌더)"),
+    CronJob("report-pm", "0 21 * * 1-5", "report-evening", comment="R6 저녁 결재 보고(승인 요청 포함)"),
     # --- 아침 선택 (설계서 §5: 08:50 R5.5 — 순수 코드, 휴장·장중은 러너 가드가 거부) ---
     CronJob("select-am", "50 8 * * 1-5", "select-playbooks", comment="R5.5 플레이북 선택·arm(순수 코드)"),
     # --- 야간 합성 (설계서 §5: 20:30 R5 — 장중 실행은 러너 내부 가드가 거부) ---

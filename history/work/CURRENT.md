@@ -7,6 +7,7 @@
 - _(없음 — 다음 세션 진입 시 채움)_
 
 ## 최근 완료
+- 2026-06-10 — **M3 R6 보고: Jinja2 모닝/저녁 렌더 + 분량 가드(실패+P1, 축약 없음) + Telegram 실발송 검증(1,420자)** → [archive](archive/2026-06-10-m3-r6-reports.md)
 - 2026-06-10 — **M3 R5.5 선택기: 순수 함수 평가 엔진 + approved-only arm(P1 알림) + 장중·휴장 가드, SEL-1 등록** → [archive](archive/2026-06-10-m3-r55-selector.md)
 - 2026-06-10 — **M3 R5 합성: 흐름변수 화이트리스트 + 규율 코드 강제(3트랜치·상한·손절2종) + PlaybookStore + 장중 가드 배선, 실거동 "비거래" 검증** → [archive](archive/2026-06-10-m3-r5-synthesis.md)
 - 2026-06-10 — **M3 alerts 어댑터: 4요소 강제 + Telegram sendMessage 직접(폴링 없음) + P0즉시/P1다이제스트/P2보고, 실발송 검증** → [archive](archive/2026-06-10-m3-alerts-adapter.md)

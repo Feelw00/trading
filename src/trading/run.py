@@ -82,6 +82,18 @@ def _alerts_digest() -> int:
     return dispatch.main()
 
 
+def _report_morning() -> int:
+    from trading import report
+
+    return report.run("morning")
+
+
+def _report_evening() -> int:
+    from trading import report
+
+    return report.run("evening")
+
+
 def _daily_eod() -> int:
     """EOD 디스커버리 파이프라인: 전종목 수집 → 섹터분류 → 스크리너 → fact pack. 첫 실패에서 중단."""
     for step in (_collect_market, _classify_sectors, _screen, _factpack):
@@ -104,6 +116,8 @@ ROUNDS: dict[str, Callable[[], int]] = {
     "synth-playbooks": _synth_playbooks,
     "select-playbooks": _select_playbooks,
     "alerts-digest": _alerts_digest,
+    "report-morning": _report_morning,
+    "report-evening": _report_evening,
     "daily-eod": _daily_eod,
 }
 

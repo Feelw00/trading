@@ -1,0 +1,40 @@
+# 저녁 결재 보고 — {{ day }} (의사결정 문서)
+
+> 운영자의 하루 중 유일한 판단 시점. 아래 승인 요청만 결정한다.
+
+## 오늘 계획 대비 집행 편차
+{% if executions %}{% for e in executions %}- {{ e }}
+{% endfor %}{% else %}- (집행 데이터 미수집 — KIS 잔고·체결 어댑터 미구현, OPEN_QUESTIONS)
+{% endif %}
+
+## 보유 포지션 무효화 잔여 거리
+{% if positions %}{% for p in positions %}- {{ p }}
+{% endfor %}{% else %}- (보유 포지션 데이터 미수집 — KIS 어댑터 미구현)
+{% endif %}
+
+## 수급 확정치
+{% if flows %}{% for f in flows %}- {{ f }}
+{% endfor %}{% else %}- (투자자별 매매동향 미수집 — KRX 접근 미해결 🔴)
+{% endif %}
+
+## R4 적대검증 요약 (as_of {{ r4_as_of }})
+- 검증 {{ r4.total }}건: 생존 {{ r4.confirmed }} / 기각 {{ r4.refuted }}
+{% for line in r4.lines %}- {{ line }}
+{% endfor %}
+
+## 시나리오 (R5, as_of {{ synth_as_of }})
+{{ scenario_tree if scenario_tree else "(합성 없음)" }}
+
+## 내일 OrderDraft 승인 요청
+{% if approvals %}{% for a in approvals %}- **{{ a.id }}** {{ a.symbol }} {{ a.side }} | 스탑 {{ a.stop }} | 시간손절 {{ a.time_stop }}일 | 상한 {{ a.cap }} | status={{ a.status }}
+{% endfor %}> 승인은 수동(의도된 마찰): 검토 후 approved 전이 → 예약 주문 직접 입력.
+{% else %}- 승인 요청 없음 — 내일 비거래.
+{% endif %}
+
+{% if p2_alerts %}## P2 정보 알림 (오늘)
+{% for a in p2_alerts %}- {{ a }}
+{% endfor %}{% endif %}
+
+{% if notes %}## 결측·미수집 (추측 대체 없음)
+{% for n in notes %}- {{ n }}
+{% endfor %}{% endif %}
