@@ -1,0 +1,71 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.6.1"
+  },
+  "agents": {
+    "defaults": {
+      "model": "ollama/minimax-m2.7:cloud",
+      "workspace": "${TRADING_OPENCLAW_WORKSPACE}",
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "maxConcurrent": 2,
+      "subagents": {
+        "maxConcurrent": 4
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": "http://127.0.0.1:11434",
+        "apiKey": "ollama-local",
+        "api": "ollama",
+        "models": [
+          {
+            "id": "minimax-m2.7:cloud",
+            "name": "MiniMax M2.7 Cloud",
+            "input": ["text"],
+            "contextWindow": 205000,
+            "maxTokens": 205000,
+            "params": {
+              "num_ctx": 205000
+            }
+          }
+        ]
+      }
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": false
+    }
+  },
+  "gateway": {
+    "mode": "local",
+    "port": 18790,
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    }
+  },
+  "plugins": {
+    "entries": {
+      "ollama": {
+        "enabled": true
+      },
+      "openai": {
+        "enabled": false
+      },
+      "codex": {
+        "enabled": false
+      },
+      "telegram": {
+        "enabled": false
+      }
+    }
+  },
+  "diagnostics": {
+    "stuckSessionWarnMs": 150000
+  }
+}
