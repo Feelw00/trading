@@ -64,6 +64,12 @@ def _reason_theses() -> int:
     return reason_news.run()
 
 
+def _synth_playbooks() -> int:
+    from trading import synth_playbooks
+
+    return synth_playbooks.run()
+
+
 def _alerts_digest() -> int:
     from trading.alerts import dispatch
 
@@ -89,6 +95,7 @@ ROUNDS: dict[str, Callable[[], int]] = {
     "score-news": _score_news,
     "verify-catalysts": _verify_catalysts,
     "reason-theses": _reason_theses,
+    "synth-playbooks": _synth_playbooks,
     "alerts-digest": _alerts_digest,
     "daily-eod": _daily_eod,
 }

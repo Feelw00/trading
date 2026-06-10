@@ -1,0 +1,181 @@
+"""R5 — 합성·플레이북·주문 초안: 규율 코드 강제·화이트리스트·비거래 기본 테스트 (M3 AC).
+
+핵심: LLM 출력을 신뢰하지 않는다 — 3트랜치(20/50/30)·총량 상한·손절 2종은 코드가 주입,
+stop_level 미제공은 폐기(코드가 가격을 지어내지 않음), 흐름 변수 외 조건은 계약이 거부.
+"""
+
+import json
+from datetime import datetime
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import pytest
+from pydantic import ValidationError
+
+from trading.contracts.order import OrderStatus, OrderType, Side
+from trading.contracts.playbook import FLOW_VARIABLES, Playbook, PlaybookState
+from trading.contracts.thesis import Direction, Persona, ThesisRecord
+from trading.llm import LLMError
+from trading.rounds.r5 import TOTAL_SIZE_CAP, R5Config, run_r5
+
+KST = ZoneInfo("Asia/Seoul")
+NOW = datetime(2026, 6, 10, 20, 30, tzinfo=KST)
+
+
+def _thesis(**over: Any) -> ThesisRecord:
+    base: dict[str, Any] = {
+        "id": "thesis.20260610.001740.supply",
+        "as_of": NOW, "fetched_at": NOW, "source": "r3:claude",
+        "persona": Persona.SUPPLY,
+        "thesis": "반대매매 소진 후 스윙 반등",
+        "direction": Direction.LONG,
+        "instrument_class": "SK네트웍스",
+        "trigger": "시초 갭다운 후 30분 내 저점 미이탈",
+        "invalidation": "플러시 저점 종가 이탈",
+        "horizon_days": 5,
+        "confidence": 0.55,
+    }
+    base.update(over)
+    return ThesisRecord(**base)
+
+
+def _proposal(**over: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "thesis_ref": "thesis.20260610.001740.supply",
+        "srtn_cd": "001740", "side": "buy",
+        "arm_conditions": {"gap_pct": "<-3.0", "premkt_volume_rank": "<=20"},
+        "abort_conditions": {"new_low_after": "09:30"},
+        "stop_level": 5000,
+        "confirmation_condition": "prev_day_high_reclaim",
+        "time_stop_days": 5,
+        "summary": "플러시 롱",
+    }
+    base.update(over)
+    return base
+
+
+class _OneShotClient:
+    def __init__(self, payload: dict[str, Any] | None = None, *, fail: bool = False) -> None:
+        self.payload = payload
+        self.fail = fail
+
+    def complete(self, prompt: str) -> str:
+        if self.fail:
+            raise LLMError("boom")
+        return json.dumps(self.payload if self.payload is not None else {"playbooks": []})
+
+
+def _run(payload: dict[str, Any] | None = None, theses: list[ThesisRecord] | None = None, **kw: Any) -> Any:
+    return run_r5(
+        _OneShotClient(payload, **kw),
+        theses if theses is not None else [_thesis()],
+        [], [], now=NOW,
+    )
+
+
+# --- 계약: 흐름 변수 화이트리스트 (M3 AC: 로드 시점 거부) ---
+
+
+def test_playbook_rejects_non_flow_variable() -> None:
+    with pytest.raises(ValidationError, match="whitelist"):
+        Playbook(
+            id="pb.x", as_of=NOW, fetched_at=NOW, source="t",
+            thesis_ref="t1", order_draft_ref="o1",
+            arm_conditions={"per_valuation": "<10"},  # 가치 변수 — 거부
+        )
+
+
+def test_playbook_rejects_empty_arm() -> None:
+    with pytest.raises(ValidationError, match="arm_conditions"):
+        Playbook(
+            id="pb.x", as_of=NOW, fetched_at=NOW, source="t",
+            thesis_ref="t1", order_draft_ref="o1", arm_conditions={},
+        )
+
+
+def test_playbook_accepts_flow_variables_default_inactive() -> None:
+    pb = Playbook(
+        id="pb.x", as_of=NOW, fetched_at=NOW, source="t",
+        thesis_ref="t1", order_draft_ref="o1",
+        arm_conditions={"gap_pct": "<-3.0"},
+        abort_conditions={"new_low_after": "09:30"},
+    )
+    assert pb.default is PlaybookState.INACTIVE  # 기본 비활성(발동은 R5.5)
+
+
+# --- 규율 코드 강제 ---
+
+
+def test_discipline_params_injected_ignoring_llm() -> None:
+    res = _run({"playbooks": [_proposal()], "scenario_tree": "s", "checklist": ["c1"]})
+    [draft] = res.drafts
+    assert [(t.label, t.pct_of_plan) for t in draft.tranches] == [
+        ("impatience_fee", 20), ("flush", 50), ("confirmation", 30),
+    ]
+    assert draft.tranches[0].order_type is OrderType.LIMIT
+    assert draft.tranches[2].condition == "prev_day_high_reclaim"
+    assert draft.total_size_cap == TOTAL_SIZE_CAP
+    assert draft.stop is not None and draft.stop.level == 5000.0
+    assert draft.time_stop_days == 5                 # 손절 2종 모두
+    assert draft.status is OrderStatus.DRAFT
+    assert draft.created_when_market.value == "closed"
+    [pb] = res.playbooks
+    assert pb.order_draft_ref == draft.id and pb.default is PlaybookState.INACTIVE
+
+
+def test_missing_stop_level_rejected_not_invented() -> None:
+    res = _run({"playbooks": [_proposal(stop_level=None)]})
+    assert res.drafts == [] and res.rejected == 1
+    assert "stop_level" in res.rejected_reasons[0]
+
+
+def test_bad_time_stop_falls_back_to_thesis_horizon() -> None:
+    res = _run({"playbooks": [_proposal(time_stop_days=999)]})
+    assert res.drafts[0].time_stop_days == 5  # grounded 폴백(논제 horizon)
+
+
+def test_direction_side_mismatch_rejected() -> None:
+    res = _run({"playbooks": [_proposal(side="sell")]})  # long 논제 + sell
+    assert res.rejected == 1 and "불일치" in res.rejected_reasons[0]
+
+
+def test_unknown_thesis_ref_rejected() -> None:
+    res = _run({"playbooks": [_proposal(thesis_ref="thesis.ghost")]})
+    assert res.rejected == 1
+
+
+def test_flat_theses_produce_no_trade() -> None:
+    res = _run(None, theses=[_thesis(direction=Direction.FLAT)])
+    assert res.playbooks == [] and res.drafts == []
+    assert "비거래" in res.scenario_tree
+
+
+def test_non_flow_arm_condition_from_llm_rejected() -> None:
+    res = _run({"playbooks": [_proposal(arm_conditions={"consensus_revision": ">0"})]})
+    assert res.rejected == 1 and "whitelist" in res.rejected_reasons[0]
+
+
+def test_empty_playbooks_is_normal_path() -> None:
+    res = _run({"playbooks": [], "scenario_tree": "조건 미충족", "checklist": []})
+    assert res.playbooks == [] and res.rejected == 0 and res.error is None
+
+
+def test_llm_failure_surfaces_error() -> None:
+    res = run_r5(_OneShotClient(fail=True), [_thesis()], [], [], now=NOW)
+    assert res.error is not None and res.playbooks == []
+
+
+def test_max_playbooks_cap() -> None:
+    many = [_proposal() for _ in range(8)]
+    res = _run({"playbooks": many})
+    assert len(res.playbooks) <= R5Config().max_playbooks
+
+
+def test_confirmation_condition_must_be_flow_variable() -> None:
+    res = _run({"playbooks": [_proposal(confirmation_condition="목표가 도달")]})
+    assert res.rejected == 1 and "흐름 변수" in res.rejected_reasons[0]
+
+
+def test_whitelist_matches_design_doc() -> None:
+    # 설계서 §4 예시·§6 확인 조건이 화이트리스트에 존재
+    assert {"gap_pct", "premkt_volume_rank", "new_low_after", "prev_day_high_reclaim"} <= FLOW_VARIABLES

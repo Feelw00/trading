@@ -7,6 +7,7 @@
 - _(없음 — 다음 세션 진입 시 채움)_
 
 ## 최근 완료
+- 2026-06-10 — **M3 R5 합성: 흐름변수 화이트리스트 + 규율 코드 강제(3트랜치·상한·손절2종) + PlaybookStore + 장중 가드 배선, 실거동 "비거래" 검증** → [archive](archive/2026-06-10-m3-r5-synthesis.md)
 - 2026-06-10 — **M3 alerts 어댑터: 4요소 강제 + Telegram sendMessage 직접(폴링 없음) + P0즉시/P1다이제스트/P2보고, 실발송 검증** → [archive](archive/2026-06-10-m3-alerts-adapter.md)
 - 2026-06-10 — **M2 마무리 슬라이스 4종 + R4 실검증 → 결함 2건 수정·재검증(인프라 실패 8→0, confirmed 0은 백필 데이터의 정답)** → [archive](archive/2026-06-10-m2-wrapup-slices.md)
 - 2026-06-10 — **M2 GitOps 부트스트랩 · 격리 OpenClaw · R0~R4 실거동 검증** → [archive](archive/2026-06-10-m2-bootstrap-validation.md)
