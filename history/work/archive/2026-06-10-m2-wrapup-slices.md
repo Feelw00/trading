@@ -31,8 +31,17 @@
 - pytest **197 passed** (162 → 197: gates/facts +18, market_calendar +15, R4 from_env +2)
 - mypy strict **0 issues (77 files)** (73 → 77)
 
+## R4 실검증 결과 (같은 날 저녁 실행, 운영자 승인)
+- 선별 18 / 검증 18 / **confirmed 0** / 적재 18 (EventStore 새 버전).
+- 기각 3갈래 분해:
+  1. **정당한 기각 다수** — 백필 특성상 6/9 뉴스는 기반영(과거 실현 가격·D+1 공시). 메타 시그널 양호: 단일 군소매체 AI 시황, 2025-10 APEC 재탕 기사, 헤드라인-본문 불일치 적발.
+  2. **결함 ① R2 affected 공백**: single_stock 이벤트 다수가 affected 비어 linkage 자동 기각(14건 중 다수). L1 후보 배치는 종목을 알면서 미귀속 — R3 종목 연결까지 막는 구조 결함.
+  3. **결함 ② 호출 실패=기각 집계**: 54콜 중 8콜 실패(타임아웃 120s ×6, JSON 파싱 ×2). 회의적 기본값이 생존률을 인위 절하(0.95 서킷브레이커 이벤트도 타임아웃 1건으로 1/3 기각).
+
 ## 발견된 후속 작업
-- R4 실검증 실행(verify-catalysts): 선별 18건 × 3렌즈 ≈ 54 claude 호출 — 비용 승인 후 실행(운영자).
+- **R2 affected 채움 수정**: L1(후보별) 배치에서 배치 키 종목을 affected에 귀속(환각 아님 — 배치 자체가 종목 grounded). 수정 후 R4 재실행.
+- **claude -p 견고화**: 타임아웃 120s→상향(.env knob), JSON 파싱 견고화, 일시 실패 1회 재시도(설계서 §9 "1회 재시도 후 폐기+알림"과 정합).
+- R4 러너 진행 콜백(R2 BatchProgress 패턴) — 장시간 실행 가시성.
 - CAL-1: 2026년 음력·대체공휴일을 KRX 공지로 확인해 `krx_holidays.json` 채우기(운영자 확인 필요).
 - CAL-2: 장중 가드의 `trading.run` 배선 범위(cron 한정 vs 수동 포함) — cron 활성화(M3) 시 결정.
 - R1 일반 게이트의 운영 배선: landing行→FactRecord 변환 계층(collectors.base 후속) 후 거시·시세에 적용.
