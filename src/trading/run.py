@@ -64,6 +64,12 @@ def _reason_theses() -> int:
     return reason_news.run()
 
 
+def _alerts_digest() -> int:
+    from trading.alerts import dispatch
+
+    return dispatch.main()
+
+
 def _daily_eod() -> int:
     """EOD 디스커버리 파이프라인: 전종목 수집 → 섹터분류 → 스크리너 → fact pack. 첫 실패에서 중단."""
     for step in (_collect_market, _classify_sectors, _screen, _factpack):
@@ -83,6 +89,7 @@ ROUNDS: dict[str, Callable[[], int]] = {
     "score-news": _score_news,
     "verify-catalysts": _verify_catalysts,
     "reason-theses": _reason_theses,
+    "alerts-digest": _alerts_digest,
     "daily-eod": _daily_eod,
 }
 

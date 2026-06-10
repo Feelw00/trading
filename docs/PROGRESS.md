@@ -40,11 +40,12 @@
 - R1 일반 게이트 운영 배선: landing→FactRecord 변환 계층 후 거시·시세 적용
 
 **M3 / Phase 1**
+- ✅ `alerts/` P0/P1/P2 어댑터 (2026-06-10): 4요소 강제, Telegram sendMessage 직접(폴링 없음), P0즉시/P1다이제스트/P2보고, append-only AlertStore, cron digest 슬롯 2개(disabled). 실발송 검증. → `history/work/archive/2026-06-10-m3-alerts-adapter.md`
 - R5 합성·플레이북·주문 초안 (claude -p, 20:30)
 - R5.5 아침 플레이북 선택기 (`selector/`, 코드, 흐름 변수만)
-- R6 보고 (`reports/`, 정적 렌더)
+- R6 보고 (`reports/`, 정적 렌더 — P2는 AlertStore.recent 렌더)
 - R7 평가·캘리브레이션 + 레짐 모니터 (주간)
-- `alerts/` P0/P1/P2 어댑터 (Telegram Bot API 직접, 폴링 없음)
+- 이벤트 감시기(`watch/`) → P0 발화 연결 (서킷브레이커·환율 임계·바이너리 전이·보유 공시)
 - KIS 잔고·체결 어댑터 (`KIS_ENABLE_TRADING=false`)
 
 **OPEN_QUESTIONS 🔴**
