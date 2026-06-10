@@ -26,8 +26,10 @@ description: 부팅 컨텍스트 — DB에서 데이터 신선도·스크리너 
 ## 2. 오늘 후보 (스크리너 — DB 위, 수집 없음)
 - `poetry run python -m trading.screener` → 상위 후보 + 섹터 태그. **기존 DB로만 계산**(라이브 수집 안 함).
 
-## 3. 읽기 (history)
-- `history/work/CURRENT.md`, `history/trading/INDEX.md`(최근 N), 포인터: `docs/PROGRESS.md`·`docs/OPEN_QUESTIONS.md`(🔴).
+## 3. 읽기 (history + 마일스톤)
+- **자동 읽기**: `history/work/CURRENT.md`(진행 중·다음 후보), `docs/PROGRESS.md`(마일스톤 원장 — coarse).
+- **가벼운 스캔**: `history/trading/INDEX.md`(최근 N), `docs/OPEN_QUESTIONS.md`(🔴 항목만).
+- **온디맨드**: `history/work/archive/<slug>.md`(CURRENT 링크 따라 필요 시), OPEN_QUESTIONS 🟢 결정 본문.
 - CLAUDE.md·MEMORY.md는 자동 주입 — 활성화만.
 
 ## 4. 기본 동작 활성화 (체크리스트)
