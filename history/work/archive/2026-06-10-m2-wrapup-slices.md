@@ -38,10 +38,16 @@
   2. **결함 ① R2 affected 공백**: single_stock 이벤트 다수가 affected 비어 linkage 자동 기각(14건 중 다수). L1 후보 배치는 종목을 알면서 미귀속 — R3 종목 연결까지 막는 구조 결함.
   3. **결함 ② 호출 실패=기각 집계**: 54콜 중 8콜 실패(타임아웃 120s ×6, JSON 파싱 ×2). 회의적 기본값이 생존률을 인위 절하(0.95 서킷브레이커 이벤트도 타임아웃 1건으로 1/3 기각).
 
+## 결함 수정 + R4 재실행 (같은 날 저녁, 운영자 지시)
+- **결함① 수정**: `build_prompt` universe에 배치 키 종목 상시 포함 + single_stock 이벤트에 배치 키 종목 결정론 귀속(relevance 1.0 — 수집 쿼리 grounded, 연결 강도 공격은 R4 linkage 몫). 테스트 5종.
+- **결함② 수정**: 타임아웃 120s→300s 기본 + `CLAUDE_TIMEOUT_S` knob, `extract_json` 다중 시작점 스캔(산문 속 `[기사id]` 건너뜀), `complete_json` 1회 재시도(§9 정합). 테스트 5종.
+- run_r4 `on_event` 콜백 + verify_news 이벤트별 진행·incremental append. 검증 리셋 백필(새 version 18건, affected 귀속 6건 — 원 이력 보존).
+- **재실행 결과**: 선별 18 / confirmed 0. 단 실패 모드 전환 확인 — 인프라 실패 기각 8→**0**, linkage 생존 8건(실질 심사로 질 전환). 잔여 기각은 전부 실질 사유("D+1 기반영"·"6주 경과 재인용"·"절차적 일정") — **6/9 뉴스의 6/10 백필 검증에선 전멸이 정답**(운영 헌장 "트리거 미충족=비진입"). 실측 생존률은 당일 뉴스 운영 슬롯에서 측정.
+- pytest **207 passed**(+10), mypy 0 issues.
+
 ## 발견된 후속 작업
-- **R2 affected 채움 수정**: L1(후보별) 배치에서 배치 키 종목을 affected에 귀속(환각 아님 — 배치 자체가 종목 grounded). 수정 후 R4 재실행.
-- **claude -p 견고화**: 타임아웃 120s→상향(.env knob), JSON 파싱 견고화, 일시 실패 1회 재시도(설계서 §9 "1회 재시도 후 폐기+알림"과 정합).
-- R4 러너 진행 콜백(R2 BatchProgress 패턴) — 장시간 실행 가시성.
+- R4 실측 생존률·threshold 재캘리브레이션은 **운영 슬롯(당일 뉴스) 가동 후** — 백필 데이터로는 측정 불가.
+- 스테이블코인 이벤트의 affected(카카오뱅크·케이뱅크) vs 기사 주체(KB·신한 등) 불일치 — R2 affected 정밀도는 R4가 잡는 구조 확인됐으나 R7 캘리브레이션 대상.
 - CAL-1: 2026년 음력·대체공휴일을 KRX 공지로 확인해 `krx_holidays.json` 채우기(운영자 확인 필요).
 - CAL-2: 장중 가드의 `trading.run` 배선 범위(cron 한정 vs 수동 포함) — cron 활성화(M3) 시 결정.
 - R1 일반 게이트의 운영 배선: landing行→FactRecord 변환 계층(collectors.base 후속) 후 거시·시세에 적용.
