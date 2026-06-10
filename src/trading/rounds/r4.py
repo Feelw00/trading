@@ -9,7 +9,7 @@ R2가 산출한 EventRecord 중 **고강도·single_stock만 선별**해 적대�
 """
 
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from trading.contracts.event import EventRecord, LensVerdict, Scope, Verification
@@ -60,6 +60,14 @@ class R4Result:
     verified: list[EventRecord]       # verification 부착된 새 version 이벤트
     selected: int
     confirmed: int                    # 생존(confirmed=True) 수
+
+
+@dataclass(frozen=True)
+class EventProgress:
+    """이벤트 검증 직후 콜백에 전달(R2 BatchProgress 패턴) — 가시성 + incremental append용."""
+    index: int                        # 1-based
+    total: int                        # 선별된 전체 이벤트 수
+    event: EventRecord                # verification 부착된 새 version
 
 
 def select_events(events: Sequence[EventRecord], config: R4Config) -> list[EventRecord]:
@@ -135,21 +143,29 @@ def run_r4(
     *,
     config: R4Config | None = None,
     source: str = "r4:claude",
+    on_event: Callable[[EventProgress], None] | None = None,
 ) -> R4Result:
-    """선별 → 이벤트별 3렌즈 검증 → verification 부착한 새 version 이벤트 반환."""
+    """선별 → 이벤트별 3렌즈 검증 → verification 부착한 새 version 이벤트 반환.
+
+    ``on_event`` 가 주어지면 이벤트 검증 직후마다 호출(장시간 실행 가시성 + incremental 적재).
+    """
     cfg = config if config is not None else R4Config()
     selected = select_events(events, cfg)
     verified: list[EventRecord] = []
-    for e in selected:
+    for idx, e in enumerate(selected, start=1):
         evidence = [evidence_by_id[i] for i in e.evidence if i in evidence_by_id]
         verification = verify_event(client, e, evidence, cfg, source=source)
-        verified.append(e.model_copy(update={"verification": verification}))
+        new_version = e.model_copy(update={"verification": verification})
+        verified.append(new_version)
+        if on_event is not None:
+            on_event(EventProgress(index=idx, total=len(selected), event=new_version))
     confirmed = sum(1 for e in verified if e.verification is not None and e.verification.confirmed)
     return R4Result(verified=verified, selected=len(selected), confirmed=confirmed)
 
 
 __all__ = [
     "LENSES",
+    "EventProgress",
     "R4Config",
     "R4Result",
     "build_lens_prompt",

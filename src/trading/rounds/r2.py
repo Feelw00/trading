@@ -151,14 +151,21 @@ _SCOPES = ", ".join(s.value for s in Scope)
 
 
 def build_prompt(batch_key: str, items: Sequence[NewsItem], candidates: Sequence[tuple[str, str]]) -> str:
-    """배치 프롬프트 — 기사 목록 + 후보 universe + JSON 스키마 + 환각가드."""
+    """배치 프롬프트 — 기사 목록 + 후보 universe + JSON 스키마 + 환각가드.
+
+    L1(종목) 배치의 키 종목은 universe에 항상 포함 — 당일 스크리너 후보가 아니어도
+    배치 자체가 그 종목 쿼리로 수집된 기사라 귀속 대상이다(2026-06-10 R4 실검증 결함①).
+    """
     arts = "\n".join(
         f"[{it.id}] ({(it.published_at.date().isoformat() if it.published_at else '날짜미상')}"
         f"·{it.publisher or '발행처미상'}) {it.title}"
         + (f" — {it.snippet[:120]}" if it.snippet else "")
         for it in items
     )
-    universe = "\n".join(f"  {cd} {nm}" for cd, nm in candidates) or "  (없음)"
+    rows = list(candidates)
+    if _SRTN.match(batch_key) and batch_key not in {cd for cd, _ in rows}:
+        rows.insert(0, (batch_key, "(배치 키 종목)"))
+    universe = "\n".join(f"  {cd} {nm}" for cd, nm in rows) or "  (없음)"
     return (
         "너는 한국 증시 뉴스의 촉매를 분류·스코어링하는 결정론적 추출기다. "
         "아래 기사들을 **사건 단위로 클러스터링**(같은 촉매를 다룬 다수 기사는 1개 이벤트)하고, "
@@ -180,6 +187,7 @@ def build_prompt(batch_key: str, items: Sequence[NewsItem], candidates: Sequence
         "## 절대 규칙\n"
         "- 방향(호재/악재)·목표가·확신은 출력하지 마라(그건 다음 단계 몫).\n"
         "- affected 는 universe srtn_cd 에만. 모르면 빈 배열. **종목 지어내기 금지.**\n"
+        "- scope=single_stock 이고 배치 키가 종목코드면 그 종목을 affected 에 포함하라.\n"
         "- evidence 는 위 기사 id 에만. 기사에 없는 사실 금지.\n"
         "- 미확인 소문은 catalyst_type=rumor_unconfirmed, catalyst_strength 낮게.\n"
         "- 유의미한 촉매가 없으면 events 를 빈 배열로."
@@ -207,6 +215,15 @@ def _to_event_record(
             rel = _safe_score(a["relevance"])
             if rel is not None:
                 affected.append(AffectedStock(srtn_cd=str(a["srtn_cd"]), relevance=rel))
+    # 결정론 귀속(결함① 가드): L1 배치의 single_stock 이벤트는 배치 키 종목이 정의상 대상이다.
+    # 배치가 그 종목 쿼리로 수집된 기사라 환각 아님 — 연결 강도의 사후 공격은 R4 linkage 몫.
+    scope = _safe_scope(ev.get("scope"))
+    if (
+        scope is Scope.SINGLE_STOCK
+        and _SRTN.match(batch_key)
+        and not any(a.srtn_cd == batch_key for a in affected)
+    ):
+        affected.insert(0, AffectedStock(srtn_cd=batch_key, relevance=1.0))
     raw_ev = ev.get("evidence")
     ev_list = raw_ev if isinstance(raw_ev, list) else []
     evidence = [str(e) for e in ev_list if str(e) in items_by_id]
@@ -223,7 +240,7 @@ def _to_event_record(
         entities=[batch_key, *(a.srtn_cd for a in affected)],
         evidence=evidence,
         catalyst_type=ctype,
-        scope=_safe_scope(ev.get("scope")),
+        scope=scope,
         catalyst_strength=_safe_score(ev.get("catalyst_strength")),
         novelty=_safe_score(ev.get("novelty")),
         affected=affected,

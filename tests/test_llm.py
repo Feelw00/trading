@@ -109,3 +109,45 @@ def test_client_from_env_model_precedence() -> None:
     assert client_from_env({"R2_MODEL": "m1", "CLAUDE_MODEL": "m2"}).model == "m1"
     assert client_from_env({"CLAUDE_MODEL": "m2"}).model == "m2"
     assert client_from_env({}).model is None
+
+
+def test_extract_json_skips_prose_brackets() -> None:
+    # 결함②(2026-06-10): 산문 속 [기사id] 가짜 시작점을 건너뛰고 진짜 JSON을 찾는다
+    text = '[9bc8b78c06d38fdb]: 발행 2026-06-09 분석 결과 {"survived": false, "reason": "기반영"}'
+    assert extract_json(text) == {"survived": False, "reason": "기반영"}
+
+
+class _FlakyClient:
+    def __init__(self, fail_times: int, payload: str = '{"ok": 1}') -> None:
+        self.fail_times = fail_times
+        self.payload = payload
+        self.calls = 0
+
+    def complete(self, prompt: str) -> str:
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise LLMError("일시 실패")
+        return self.payload
+
+
+def test_complete_json_retries_once_then_succeeds() -> None:
+    c = _FlakyClient(fail_times=1)
+    assert complete_json(c, "go") == {"ok": 1}
+    assert c.calls == 2
+
+
+def test_complete_json_exhausts_retries_and_raises() -> None:
+    c = _FlakyClient(fail_times=5)
+    with pytest.raises(LLMError):
+        complete_json(c, "go")
+    assert c.calls == 2  # 기본 1회 재시도
+
+    c0 = _FlakyClient(fail_times=5)
+    with pytest.raises(LLMError):
+        complete_json(c0, "go", retries=0)
+    assert c0.calls == 1
+
+
+def test_client_from_env_timeout() -> None:
+    assert client_from_env({"CLAUDE_TIMEOUT_S": "450"}).timeout_s == 450.0
+    assert client_from_env({}).timeout_s == 300.0

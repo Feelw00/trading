@@ -10,7 +10,7 @@ import sys
 from trading.collectors.news import NewsStore
 from trading.journal.events import EventStore
 from trading.llm import LLMClient, client_from_env
-from trading.rounds.r4 import R4Config, R4Result, run_r4
+from trading.rounds.r4 import EventProgress, R4Config, R4Result, run_r4
 
 DEFAULT_EVENT_LIMIT = 200
 
@@ -37,8 +37,22 @@ def run(
     nstore.close()
 
     llm = client if client is not None else client_from_env()
-    result: R4Result = run_r4(llm, events, evidence_by_id, config=config or R4Config.from_env())
-    stored = es.append(result.verified)
+    stored = 0
+
+    def _on_event(p: EventProgress) -> None:
+        nonlocal stored
+        stored += es.append([p.event])
+        v = p.event.verification
+        survived = sum(1 for lv in v.lens_verdicts if lv.survived) if v else 0
+        mark = "confirmed" if v and v.confirmed else "refuted"
+        print(
+            f"  [{p.index:>2}/{p.total}] {p.event.id}: {mark} ({survived}/3 생존)",
+            flush=True,
+        )
+
+    result: R4Result = run_r4(
+        llm, events, evidence_by_id, config=config or R4Config.from_env(), on_event=_on_event
+    )
     if store is None:
         es.close()
 

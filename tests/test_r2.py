@@ -168,3 +168,54 @@ def test_run_r2_on_batch_callback_streams_progress() -> None:
     # R2Result 와 콜백 합계는 일치
     streamed = [e for p in seen for e in p.events]
     assert streamed == res.events
+
+
+_SS_NO_AFFECTED = (
+    '{"events":[{"event_type":"corp_action","catalyst_type":"supply_chain","scope":"single_stock",'
+    '"catalyst_strength":0.5,"novelty":0.6,"summary_1line":"공급계약 체결","affected":[],"evidence":["n1"]}]}'
+)
+
+
+def test_l1_single_stock_auto_attributes_batch_stock() -> None:
+    # 결함①(2026-06-10): L1 배치의 single_stock 이벤트는 affected가 비어도 배치 키 종목 귀속
+    items = [_news("n1", ["001740"])]
+    res = run_r2(_FakeClient(by_key={"001740": _SS_NO_AFFECTED}), [_fresh(items[0])], CANDS, now=NOW)
+    [ev] = res.events
+    assert [a.srtn_cd for a in ev.affected] == ["001740"]
+    assert ev.affected[0].relevance == 1.0
+
+
+def test_l1_auto_attribution_no_duplicate() -> None:
+    good = _SS_NO_AFFECTED.replace('"affected":[]', '"affected":[{"srtn_cd":"001740","relevance":0.8}]')
+    items = [_news("n1", ["001740"])]
+    res = run_r2(_FakeClient(by_key={"001740": good}), [_fresh(items[0])], CANDS, now=NOW)
+    [ev] = res.events
+    assert [a.srtn_cd for a in ev.affected] == ["001740"]
+    assert ev.affected[0].relevance == 0.8  # LLM 귀속 유지, 중복 삽입 없음
+
+
+def test_sector_batch_not_auto_attributed() -> None:
+    items = [_news("n1", ["sector:semiconductor"])]
+    res = run_r2(
+        _FakeClient(by_key={"sector:semiconductor": _SS_NO_AFFECTED}),
+        [_fresh(items[0])], CANDS, now=NOW,
+    )
+    assert res.events[0].affected == []  # 배치 키가 종목코드 아님 → 귀속 없음
+
+
+def test_l1_broad_scope_not_auto_attributed() -> None:
+    broad = _SS_NO_AFFECTED.replace('"scope":"single_stock"', '"scope":"broad_market"')
+    items = [_news("n1", ["001740"])]
+    res = run_r2(_FakeClient(by_key={"001740": broad}), [_fresh(items[0])], CANDS, now=NOW)
+    assert res.events[0].affected == []
+
+
+def test_prompt_universe_includes_batch_stock() -> None:
+    from trading.rounds.r2 import build_prompt
+
+    items = [_news("n1", ["066430"])]
+    p = build_prompt("066430", items, CANDS)  # 배치 키 종목이 후보 universe에 없음
+    assert "066430 (배치 키 종목)" in p
+    # 이미 universe에 있으면 중복 삽입 없음
+    p2 = build_prompt("001740", items, CANDS)
+    assert p2.count("001740") >= 1 and "(배치 키 종목)" not in p2

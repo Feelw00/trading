@@ -122,3 +122,17 @@ def test_config_from_env_overrides() -> None:
 def test_config_from_env_defaults_when_unset() -> None:
     assert R4Config.from_env({}) == R4Config()
     assert R4Config.from_env({"R4_STRENGTH_THRESHOLD": ""}) == R4Config()
+
+
+def test_run_r4_on_event_callback_streams_progress() -> None:
+    from trading.rounds.r4 import EventProgress
+
+    c = _SeqClient(['{"survived": true, "reason": "유효"}'])
+    seen: list[EventProgress] = []
+    res = run_r4(
+        c, [_evt("a", strength=0.85), _evt("b", strength=0.8)], {},
+        config=R4Config(), on_event=seen.append,
+    )
+    assert [(p.index, p.total) for p in seen] == [(1, 2), (2, 2)]
+    assert [p.event.id for p in seen] == [e.id for e in res.verified]
+    assert all(p.event.verification is not None for p in seen)
