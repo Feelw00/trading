@@ -70,6 +70,12 @@ def _synth_playbooks() -> int:
     return synth_playbooks.run()
 
 
+def _select_playbooks() -> int:
+    from trading import select_playbooks
+
+    return select_playbooks.run()
+
+
 def _alerts_digest() -> int:
     from trading.alerts import dispatch
 
@@ -96,6 +102,7 @@ ROUNDS: dict[str, Callable[[], int]] = {
     "verify-catalysts": _verify_catalysts,
     "reason-theses": _reason_theses,
     "synth-playbooks": _synth_playbooks,
+    "select-playbooks": _select_playbooks,
     "alerts-digest": _alerts_digest,
     "daily-eod": _daily_eod,
 }

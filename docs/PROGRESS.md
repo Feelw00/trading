@@ -42,7 +42,7 @@
 **M3 / Phase 1**
 - ✅ `alerts/` P0/P1/P2 어댑터 (2026-06-10): 4요소 강제, Telegram sendMessage 직접(폴링 없음), P0즉시/P1다이제스트/P2보고, append-only AlertStore, cron digest 슬롯 2개(disabled). 실발송 검증. → `history/work/archive/2026-06-10-m3-alerts-adapter.md`
 - ✅ R5 합성·플레이북·주문 초안 (2026-06-10): 흐름변수 화이트리스트(계약 거부), 규율 코드 강제(3트랜치 20/50/30·총량상한·손절2종, stop 미제공=폐기), PlaybookStore(append-only), 장중 가드(rc=3)·LLM 장애 P1 알림, cron synth-pm(20:30, disabled). 실거동: 논제 3→비거래 선택(정상 경로). R5-1(논제 적대 라운드 부재) 🟡 등록. → `history/work/archive/2026-06-10-m3-r5-synthesis.md`
-- R5.5 아침 플레이북 선택기 (`selector/`, 코드, 흐름 변수만 — PlaybookStore.playbooks_for_day 입력)
+- ✅ R5.5 아침 선택기 (2026-06-10): 순수 함수 엔진(`<op><숫자>` 계약, AND, 누락=미충족), approved-only arm(+P1), 장중·휴장 가드, 스냅샷 주입(SEL-1 🟡 — NXT 어댑터 부재=비거래), cron select-am(08:50, disabled). → `history/work/archive/2026-06-10-m3-r55-selector.md`
 - R6 보고 (`reports/`, 정적 렌더 — P2는 AlertStore.recent 렌더)
 - R7 평가·캘리브레이션 + 레짐 모니터 (주간)
 - 이벤트 감시기(`watch/`) → P0 발화 연결 (서킷브레이커·환율 임계·바이너리 전이·보유 공시)
