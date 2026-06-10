@@ -13,7 +13,7 @@ from trading.collectors.news import NewsStore
 from trading.gates.news import gate_news
 from trading.journal.events import EventStore
 from trading.llm import LLMClient, client_from_env
-from trading.rounds.r2 import R2Config, R2Result, run_r2
+from trading.rounds.r2 import BatchProgress, R2Config, R2Result, run_r2
 from trading.screener import ScreenConfig, screen
 
 DEFAULT_TOP_N = 15
@@ -46,10 +46,27 @@ def run(
 
     verdicts = gate_news(items)
     llm = client if client is not None else client_from_env()
-    result: R2Result = run_r2(llm, verdicts, candidates, config=config or R2Config())
-
     es = store if store is not None else EventStore()
-    stored = es.append(result.events)
+
+    stored = 0
+
+    def _on_batch(p: BatchProgress) -> None:
+        nonlocal stored
+        if p.events:
+            stored += es.append(p.events)
+        err = f" ERR={p.error[:60]}" if p.error else ""
+        print(
+            f"  [{p.index:>2}/{p.total}] {p.key}: events={len(p.events)} "
+            f"rejected={p.rejected}{err}",
+            flush=True,
+        )
+
+    result: R2Result = run_r2(
+        llm, verdicts, candidates,
+        config=config or R2Config(),
+        on_batch=_on_batch,
+    )
+
     if store is None:
         es.close()
 

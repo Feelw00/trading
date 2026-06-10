@@ -9,7 +9,7 @@ R1 게이트를 통과한 뉴스를 scope 레이어별 배치(L1 후보 / L2 섹
 """
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -37,6 +37,17 @@ class R2Result:
     rejected: int                   # 스키마 위반으로 폐기한 이벤트 수
     batch_errors: list[str] = field(default_factory=list)   # LLM 호출 실패 배치
     rejected_reasons: list[str] = field(default_factory=list)  # 폐기 사유(관측성·프롬프트 튜닝)
+
+
+@dataclass(frozen=True)
+class BatchProgress:
+    """배치 직후 호출되는 콜백에 전달 — 운영 가시성 + EventStore incremental append용."""
+    index: int                       # 1-based
+    total: int                       # 전체 배치 수
+    key: str                         # 배치 키(primary entity)
+    events: list[EventRecord]        # 이 배치에서 스키마 통과한 이벤트
+    rejected: int                    # 이 배치에서 폐기된 raw 이벤트 수
+    error: str | None                # LLM 호출 실패 메시지 (실패 시 events=[])
 
 
 # coarse EventType(5종)은 촉매 어휘(11종)와 입도가 달라 모델이 미끄러진다 → catalyst_type에서 보정.
@@ -227,45 +238,63 @@ def run_r2(
     now: datetime | None = None,
     config: R2Config | None = None,
     source: str = "r2:claude",
+    on_batch: Callable[[BatchProgress], None] | None = None,
 ) -> R2Result:
-    """게이트 통과 뉴스 → 배치 LLM 호출 → EventRecord 목록. 호출/스키마 실패는 격리·카운트."""
+    """게이트 통과 뉴스 → 배치 LLM 호출 → EventRecord 목록. 호출/스키마 실패는 격리·카운트.
+
+    ``on_batch`` 가 주어지면 매 배치 직후 호출(운영 가시성 + 캐러 incremental 적재용).
+    배치 LLM에러는 ``BatchProgress.error`` 로 전달하고 ``events=[]`` 로 다음 배치 진행.
+    """
     resolved_now = now if now is not None else now_kst()
     cfg = config if config is not None else R2Config()
     items = [v.item for v in verdicts if cfg.include_stale or v.fresh]
     batches = build_batches(items, cfg)
+    total = len(batches)
     events: list[EventRecord] = []
     rejected = 0
     reasons: list[str] = []
     errors: list[str] = []
-    for key, batch in batches.items():
+    for idx, (key, batch) in enumerate(batches.items(), start=1):
         items_by_id = {it.id: it for it in batch}
+        batch_events: list[EventRecord] = []
+        batch_rejected = 0
+        batch_error: str | None = None
         try:
             data = complete_json(client, build_prompt(key, batch, candidates))
+            raw_events = data.get("events", []) if isinstance(data, dict) else []
         except LLMError as e:
+            batch_error = str(e)
             errors.append(f"{key}: {e}")
-            continue
-        raw_events = data.get("events", []) if isinstance(data, dict) else []
+            raw_events = []
         for i, ev in enumerate(raw_events):
             if not isinstance(ev, dict):
-                rejected += 1
+                batch_rejected += 1
                 reasons.append(f"{key}#{i}: 이벤트가 객체 아님")
                 continue
             try:
-                events.append(
+                batch_events.append(
                     _to_event_record(
                         ev, batch_key=key, idx=i, now=resolved_now, source=source, items_by_id=items_by_id
                     )
                 )
             except (ValidationError, ValueError, KeyError, TypeError) as e:
-                rejected += 1
+                batch_rejected += 1
                 reasons.append(f"{key}#{i}: {str(e)[:120]}")
+        events.extend(batch_events)
+        rejected += batch_rejected
+        if on_batch is not None:
+            on_batch(BatchProgress(
+                index=idx, total=total, key=key,
+                events=batch_events, rejected=batch_rejected, error=batch_error,
+            ))
     return R2Result(
-        events=events, batches=len(batches), rejected=rejected,
+        events=events, batches=total, rejected=rejected,
         batch_errors=errors, rejected_reasons=reasons,
     )
 
 
 __all__ = [
+    "BatchProgress",
     "R2Config",
     "R2Result",
     "build_batches",

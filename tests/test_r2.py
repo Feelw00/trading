@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from trading.contracts.news import NewsItem
 from trading.gates.news import NewsFlag, NewsVerdict
 from trading.llm import LLMError
-from trading.rounds.r2 import R2Config, build_batches, run_r2
+from trading.rounds.r2 import BatchProgress, R2Config, build_batches, run_r2
 
 KST = ZoneInfo("Asia/Seoul")
 NOW = datetime(2026, 6, 9, 16, 0, tzinfo=KST)
@@ -149,3 +149,22 @@ def test_run_r2_batch_error_isolated() -> None:
     res = run_r2(client, items, CANDS, now=NOW)
     assert len(res.events) == 1           # 001740 배치는 성공
     assert len(res.batch_errors) == 1 and res.batch_errors[0].startswith("theme:fed")
+
+
+def test_run_r2_on_batch_callback_streams_progress() -> None:
+    """on_batch 콜백이 매 배치 직후 호출 — 성공·에러·폐기 케이스 모두 전달."""
+    items = [_fresh(_news("n1", ["001740"])), _fresh(_news("n2", ["theme:fed"]))]
+    # 001740: 정상 / theme:fed: LLM 에러
+    client = _FakeClient(by_key={"001740": _GOOD, "theme:fed": "x"}, error_keys={"theme:fed"})
+    seen: list[BatchProgress] = []
+    res = run_r2(client, items, CANDS, now=NOW, on_batch=seen.append)
+
+    assert [p.index for p in seen] == [1, 2]
+    assert all(p.total == 2 for p in seen)
+    ok = next(p for p in seen if p.key == "001740")
+    err = next(p for p in seen if p.key == "theme:fed")
+    assert len(ok.events) == 1 and ok.error is None and ok.rejected == 0
+    assert err.events == [] and err.error is not None and err.rejected == 0
+    # R2Result 와 콜백 합계는 일치
+    streamed = [e for p in seen for e in p.events]
+    assert streamed == res.events
