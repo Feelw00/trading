@@ -71,6 +71,9 @@ docs/               # trading-system-design, OPEN_QUESTIONS, SECRETS, claude-cod
 
 ## 작업 방식
 - 마일스톤 프롬프트(`docs/claude-code-prompts.md` §2)의 수용 기준(AC)을 충족하기 전에 다음 작업으로 넘어가지 마라.
-- 각 마일스톤 종료 시: 전체 테스트 + mypy strict 통과 확인 → `docs/PROGRESS.md`에 완료·미해결 항목 기록.
+- **이력 분리 — 두 층위 유지**:
+  - `docs/PROGRESS.md` = **마일스톤 원장(coarse)**. M1/M2/M3 단위 요약 + 통과 AC + 미해결. 검증 디테일·세션 로그 누적 금지(점점 무거워짐).
+  - `history/work/archive/YYYY-MM-DD-<slug>.md` = **세션 단위 디테일**. 산출·메커니즘·검증 결과·발견된 후속 작업. PROGRESS는 이 파일을 링크로만 참조.
+  - 작업이 끝나면: 디테일은 archive 신규 파일로, PROGRESS는 1~2문장 + archive 링크만 추가, `history/work/CURRENT.md`는 한 줄 + 링크로 롤오버.
 - 설계서에 없는 기능을 추가하고 싶으면 구현하지 말고 `docs/PROPOSALS.md`에 적어라.
 - 외부 의존(증권사 API, KRX 인증 등)이 필요한 지점은 막히지 말고 인터페이스로 추상화 후 OPEN_QUESTIONS 등록하고 진행.
