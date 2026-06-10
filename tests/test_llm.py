@@ -9,6 +9,7 @@ import pytest
 from trading.llm import (
     ClaudeCliClient,
     LLMError,
+    Runner,
     client_from_env,
     complete_json,
     extract_json,
@@ -21,7 +22,7 @@ def _envelope(result: str = "ok", *, is_error: bool = False, subtype: str = "suc
     )
 
 
-def _runner(stdout: str = "", *, returncode: int = 0, stderr: str = "", sink: list[Any] | None = None):
+def _runner(stdout: str = "", *, returncode: int = 0, stderr: str = "", sink: list[Any] | None = None) -> Runner:
     def run(argv: list[str], **kw: Any) -> "subprocess.CompletedProcess[str]":
         if sink is not None:
             sink.append(argv)

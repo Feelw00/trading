@@ -4,8 +4,9 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from trading.contracts.event import AffectedStock, EventRecord
+from trading.contracts.event import AffectedStock, EventRecord, EventType, Scope
 from trading.contracts.thesis import Persona
+from trading.domains import CatalystType
 from trading.rounds.r3 import events_for_persona, run_r3
 
 KST = ZoneInfo("Asia/Seoul")
@@ -40,16 +41,21 @@ class _StrictAware:
         return _VALID if "[재생성]" in prompt else _NO_INVAL
 
 
-def _evt(eid: str, ctype: str | None) -> EventRecord:
+def _evt(eid: str, ctype: CatalystType | None) -> EventRecord:
     return EventRecord(
-        id=eid, as_of=NOW, fetched_at=NOW, source="r2:test", type="corp_action",
-        summary_1line="요약", catalyst_type=ctype, scope="single_stock", catalyst_strength=0.6,
+        id=eid, as_of=NOW, fetched_at=NOW, source="r2:test", type=EventType.CORP_ACTION,
+        summary_1line="요약", catalyst_type=ctype, scope=Scope.SINGLE_STOCK, catalyst_strength=0.6,
         affected=[AffectedStock(srtn_cd="001740", relevance=0.8)],
     )
 
 
 def test_events_for_persona_isolation() -> None:
-    evs = [_evt("a", "flow_demand"), _evt("b", "earnings"), _evt("c", "macro"), _evt("d", None)]
+    evs = [
+        _evt("a", CatalystType.FLOW_DEMAND),
+        _evt("b", CatalystType.EARNINGS),
+        _evt("c", CatalystType.MACRO),
+        _evt("d", None),
+    ]
     assert {e.id for e in events_for_persona(Persona.SUPPLY, evs)} == {"a", "d"}   # flow_demand + None
     assert {e.id for e in events_for_persona(Persona.CYCLE, evs)} == {"b", "d"}    # earnings + None
     assert {e.id for e in events_for_persona(Persona.MACRO, evs)} == {"c", "d"}    # macro + None

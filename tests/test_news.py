@@ -18,6 +18,7 @@ from trading.collectors.news import (
     publisher_from_url,
     strip_html,
 )
+from trading.contracts.news import NewsItem
 from trading.domains import Sector
 
 KST = ZoneInfo("Asia/Seoul")
@@ -67,7 +68,7 @@ def test_normalize_drops_invalid_url_and_marks_unverified() -> None:
     assert item is not None and item.verified is False and item.published_at is None
 
 
-def _item(url: str, title: str, *, source: str, trust_pub: str | None, when: datetime | None, ent: list[str]):
+def _item(url: str, title: str, *, source: str, trust_pub: str | None, when: datetime | None, ent: list[str]) -> NewsItem | None:
     return normalize(
         RawNews(title=title, url=url, publisher=trust_pub, published_at=when),
         source=source, query="q", entities=ent, fetched_at=FETCHED,

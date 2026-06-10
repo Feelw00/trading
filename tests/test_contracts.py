@@ -11,6 +11,7 @@ from trading.contracts.fact import FactRecord
 from trading.contracts.order import OrderDraft
 from trading.contracts.playbook import Playbook
 from trading.contracts.thesis import ThesisRecord
+from trading.domains import CatalystType
 
 
 def test_all_contracts_construct(
@@ -69,11 +70,11 @@ def test_event_catalyst_fields_default_none(event_kwargs: dict[str, Any]) -> Non
 def test_event_catalyst_fields_construct(event_kwargs: dict[str, Any]) -> None:
     evt = EventRecord(
         **event_kwargs,
-        catalyst_type="supply_chain",
-        scope="sector_theme",
+        catalyst_type=CatalystType.SUPPLY_CHAIN,
+        scope=Scope.SECTOR_THEME,
         catalyst_strength=0.8,
         novelty=0.6,
-        affected=[{"srtn_cd": "001740", "relevance": 0.9}],
+        affected=[AffectedStock(srtn_cd="001740", relevance=0.9)],
     )
     assert evt.catalyst_type is not None and evt.catalyst_type.value == "supply_chain"
     assert evt.scope is Scope.SECTOR_THEME
@@ -89,7 +90,7 @@ def test_event_score_out_of_range_rejected(event_kwargs: dict[str, Any], bad: fl
 
 def test_event_unknown_catalyst_type_rejected(event_kwargs: dict[str, Any]) -> None:
     with pytest.raises(ValidationError):
-        EventRecord(**event_kwargs, catalyst_type="not_a_real_type")
+        EventRecord(**event_kwargs, catalyst_type="not_a_real_type")  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("bad", [-0.5, 2.0])
