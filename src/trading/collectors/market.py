@@ -111,6 +111,42 @@ class MarketStore:
         )
         return cur.fetchall()
 
+    def closes_for(self, srtn_cd: str, min_bas_dt: str) -> list[tuple[str, float]]:
+        """단일 종목 [(bas_dt, 종가)] 오름차순 — R7 채점용. 비수치 종가는 제외."""
+        cur = self._conn.execute(
+            "SELECT bas_dt, clpr FROM daily_quotes WHERE srtn_cd=? AND bas_dt >= ? ORDER BY bas_dt",
+            (srtn_cd, min_bas_dt),
+        )
+        out: list[tuple[str, float]] = []
+        for bas_dt, clpr in cur:
+            try:
+                out.append((str(bas_dt), float(clpr)))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def daily_change_medians(self, min_bas_dt: str) -> list[tuple[str, float]]:
+        """일자별 전종목 |등락률(flt_rt)| 중앙값 — R7 레짐 변동성 프록시(EOD 가용 범위)."""
+        cur = self._conn.execute(
+            "SELECT bas_dt, flt_rt FROM daily_quotes WHERE bas_dt >= ? ORDER BY bas_dt",
+            (min_bas_dt,),
+        )
+        by_date: dict[str, list[float]] = {}
+        for bas_dt, flt_rt in cur:
+            try:
+                by_date.setdefault(str(bas_dt), []).append(abs(float(flt_rt)))
+            except (TypeError, ValueError):
+                continue
+        out: list[tuple[str, float]] = []
+        for d in sorted(by_date):
+            vals = sorted(by_date[d])
+            n = len(vals)
+            if n == 0:
+                continue
+            med = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
+            out.append((d, med))
+        return out
+
     def find_by_name(self, query: str, *, limit: int = 10) -> list[tuple[str, str]]:
         """최신 거래일 기준 이름 부분일치 → [(srtn_cd, name)]. 종목 해석용."""
         cur = self._conn.execute(

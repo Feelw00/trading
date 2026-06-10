@@ -82,6 +82,12 @@ def _alerts_digest() -> int:
     return dispatch.main()
 
 
+def _evaluate() -> int:
+    from trading import evaluate
+
+    return evaluate.run()
+
+
 def _report_morning() -> int:
     from trading import report
 
@@ -118,6 +124,7 @@ ROUNDS: dict[str, Callable[[], int]] = {
     "alerts-digest": _alerts_digest,
     "report-morning": _report_morning,
     "report-evening": _report_evening,
+    "evaluate": _evaluate,
     "daily-eod": _daily_eod,
 }
 

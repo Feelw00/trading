@@ -44,7 +44,8 @@
 - ✅ R5 합성·플레이북·주문 초안 (2026-06-10): 흐름변수 화이트리스트(계약 거부), 규율 코드 강제(3트랜치 20/50/30·총량상한·손절2종, stop 미제공=폐기), PlaybookStore(append-only), 장중 가드(rc=3)·LLM 장애 P1 알림, cron synth-pm(20:30, disabled). 실거동: 논제 3→비거래 선택(정상 경로). R5-1(논제 적대 라운드 부재) 🟡 등록. → `history/work/archive/2026-06-10-m3-r5-synthesis.md`
 - ✅ R5.5 아침 선택기 (2026-06-10): 순수 함수 엔진(`<op><숫자>` 계약, AND, 누락=미충족), approved-only arm(+P1), 장중·휴장 가드, 스냅샷 주입(SEL-1 🟡 — NXT 어댑터 부재=비거래), cron select-am(08:50, disabled). → `history/work/archive/2026-06-10-m3-r55-selector.md`
 - ✅ R6 보고 (2026-06-10): Jinja2 모닝(06:50 읽기전용)/저녁(21:00 결재 — 승인 요청·R4 요약·시나리오·P2, 미수집=결측 명시), 분량 가드 7000자(초과=실패+P1), 파일+Telegram 발송, cron report-am/pm(disabled). 실발송 검증. → `history/work/archive/2026-06-10-m3-r6-reports.md`
-- R7 평가·캘리브레이션 + 레짐 모니터 (주간)
+- ✅ R7 평가·캘리브레이션+레짐 (2026-06-10): 결정론 채점기(트리거 무관 명시, 미성숙=채점 보류, 캘리브레이션 버킷, R4 정확도, |등락률| 레짐 프록시 — R7-1 🟡), 해석·개정안은 claude -p 박제만(자동 적용 금지), ScoreStore, cron eval-sat(토 10:00, disabled). 실거동: 표본 0 → 해석 생략·정직 보고. → `history/work/archive/2026-06-10-m3-r7-evaluation.md`
+  **→ M3 완결: R0~R7 전 라운드 + alerts + 보고 배선, cron 18개(전부 disabled — enable은 운영자 결정).**
 - 이벤트 감시기(`watch/`) → P0 발화 연결 (서킷브레이커·환율 임계·바이너리 전이·보유 공시)
 - KIS 잔고·체결 어댑터 (`KIS_ENABLE_TRADING=false`)
 
