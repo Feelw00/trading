@@ -45,6 +45,9 @@ def add_args(job: CronJob) -> list[str]:
         "--tz", TZ,
         "--tools", "exec",
         "--light-context",
+        # 알림·보고는 Python 두뇌가 Telegram 직접 발송(alerts/) — openclaw 딜리버리 미사용.
+        # 채널 미설정 fail-closed로 잡이 error 처리되는 것 방지(2026-06-10 enable 검증).
+        "--no-deliver",
         "--",
         f"python -m trading.run {job.round}",
     ]

@@ -4,7 +4,7 @@
   },
   "agents": {
     "defaults": {
-      "model": "ollama/minimax-m2.7:cloud",
+      "model": "ollama/minimax-m2.5:cloud",
       "workspace": "${TRADING_OPENCLAW_WORKSPACE}",
       "compaction": {
         "mode": "safeguard"
@@ -23,8 +23,8 @@
         "api": "ollama",
         "models": [
           {
-            "id": "minimax-m2.7:cloud",
-            "name": "MiniMax M2.7 Cloud",
+            "id": "minimax-m2.5:cloud",
+            "name": "MiniMax M2.5 Cloud",
             "input": ["text"],
             "contextWindow": 205000,
             "maxTokens": 205000,
