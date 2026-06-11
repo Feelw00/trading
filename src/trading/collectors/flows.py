@@ -220,7 +220,9 @@ def intraday_lines(client: KisClient, *, now: datetime | None = None) -> list[st
     if not in_krx_session(resolved):
         return []
     out = [
-        f"[당일 잠정] {resolved.strftime('%Y-%m-%d %H:%M')} KST 누계 (시세성 — 확정치 아님, 단위 억원)"
+        f"[당일 잠정] {resolved.strftime('%Y-%m-%d %H:%M')} KST 누계 (시세성 — 확정치 아님, 단위 억원)",
+        "  ⚠ 잠정 집계는 마감 동시호가 미반영 추정치 — 확정치와 크게 다를 수 있음"
+        "(2026-06-11 실측: 부호 반전 사례). 확정은 마감 후 일별 수치 기준.",
     ]
     for mkt in MARKETS:
         try:

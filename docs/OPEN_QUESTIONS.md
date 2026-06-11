@@ -45,7 +45,7 @@
   - 시장별 투자자매매동향(일별): `GET /uapi/domestic-stock/v1/quotations/inquire-investor-daily-by-market` TR `FHPTJ04040000` — KOSPI=(업종 0001, KSP)/KOSDAQ=(업종 1001, KSQ) 파라미터 조합 실호출 확정.
   - 토큰: `POST /oauth2/tokenP`(24h 유효, 6시간 내 재발급=동일 토큰+알림톡) → 파일 캐시 필수(`.runtime/kis/token.json`).
   - 구현: `collectors/kis.py`(조회 전용 — 주문 TR 금지 유지) + `collectors/flows.py`(`data/flows.sqlite` append-only) + `collect-flows` 라운드(daily-eod 체인 내 best-effort) + FactPack `flows` 섹션(R3 수급 grounding).
-  - 장중 잠정(시세성): `GET /uapi/domestic-stock/v1/quotations/inquire-investor-time-by-market` TR `FHPTJ04030000` — 파라미터 (999, S001)=KOSPI/(999, S101)=KOSDAQ은 장중 조합 프로브 관측 확정(그 외 0/오류, HTS [0403] 코스피·코스닥 화면과 정합). 표시 전용·적재 금지(응답에 날짜 필드 부재). **잔여 🟡: 잠정 단위(백만원 추정 — 필드 체계 동일)를 마감 후 일별 확정치와 교차검증.**
+  - 장중 잠정(시세성): `GET /uapi/domestic-stock/v1/quotations/inquire-investor-time-by-market` TR `FHPTJ04030000` — 파라미터 (999, S001)=KOSPI/(999, S101)=KOSDAQ은 장중 조합 프로브 관측 확정(그 외 0/오류, HTS [0403] 코스피·코스닥 화면과 정합). 표시 전용·적재 금지(응답에 날짜 필드 부재). **잠정 단위 🟢 해소(2026-06-11 15:38 마감 직후 교차검증):** 단위는 일별과 동일 **백만원** 확인. 단 **잠정-확정 괴리가 큼을 실측**(KOSPI 개인 +3,195억 vs 확정 +20,662억, KOSDAQ 기관계 부호 반전) — 시세성 피드는 마감 동시호가 미반영 추정 집계로 보임. 표시 전용·적재 금지 정책 유지(실증됨).
 
 ### 🟢 COLLECT-3 — 수집 하네스 (LLM 독자 웹서치 금지) · **뉴스는 COLLECT-4로 부분 개정(2026-06-09)**
 - **결정(2026-06-08, 운영자):** LLM은 **승인된 소스 어댑터/도구만** 호출한다. **독자 판단의 웹서치(WebSearch/WebFetch) 금지** — 지침이 아니라 구조로 차단.
