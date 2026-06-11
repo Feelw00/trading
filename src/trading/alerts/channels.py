@@ -47,11 +47,17 @@ _TELEGRAM_MAX_LEN = 4096  # Bot API sendMessage 텍스트 상한(공식 문서)
 
 @dataclass(frozen=True)
 class TelegramChannel:
-    """Bot API ``sendMessage`` 직접 POST. parse_mode 미사용(이스케이프 사고 방지, 평문)."""
+    """Bot API ``sendMessage`` 직접 POST.
+
+    기본은 평문(parse_mode 없음 — 이스케이프 사고 방지). 보고 등 서식이 필요한 발신은
+    ``parse_mode="HTML"`` 인스턴스를 쓰되, 호출측이 엔티티 이스케이프를 책임진다
+    (``reports.tgfmt.to_telegram_html`` — 텔레그램은 마크다운 원문을 렌더하지 않는다).
+    """
 
     token: str
     chat_id: str
     timeout_s: float = 10.0
+    parse_mode: str | None = None
     opener: PostOpener = _urlpost
 
     @property
@@ -65,7 +71,10 @@ class TelegramChannel:
         if len(text) > _TELEGRAM_MAX_LEN:
             text = text[: _TELEGRAM_MAX_LEN - 12] + "\n…(잘림)"
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-        body = json.dumps({"chat_id": self.chat_id, "text": text}).encode()
+        payload: dict[str, str] = {"chat_id": self.chat_id, "text": text}
+        if self.parse_mode:
+            payload["parse_mode"] = self.parse_mode
+        body = json.dumps(payload).encode()
         try:
             raw = self.opener(url, body, self.timeout_s)
         except Exception as e:  # noqa: BLE001 — 네트워크 계층 전체를 채널 실패로 수렴

@@ -104,3 +104,40 @@ def test_runner_writes_file_and_alerts_on_guard_failure(tmp_path: Path, monkeypa
     assert rc2 == 1
     pending = d.store.pending(Severity.P1.value)
     assert len(pending) == 1 and "보고 생성 실패" in pending[0][1].what
+
+
+def test_tgfmt_converts_report_subset() -> None:
+    from trading.reports.tgfmt import to_telegram_html
+
+    md = (
+        "# 저녁 결재 보고 — 2026-06-11\n\n\n"
+        "## 결정 — 내일 OrderDraft 승인 요청\n"
+        "**승인 요청 없음 — 내일 비거래.** (정상)\n"
+        "> 검토 후 approved 전이\n"
+        "- 분기 A: 갭<-3 & 거래량>2배\n"
+        "- [ ] 갭 확인\n"
+    )
+    out = to_telegram_html(md)
+    assert "<b>저녁 결재 보고 — 2026-06-11</b>" in out
+    assert "<b>승인 요청 없음 — 내일 비거래.</b> (정상)" in out
+    assert "<i>검토 후 approved 전이</i>" in out
+    assert "• 분기 A: 갭&lt;-3 &amp; 거래량&gt;2배" in out  # 본문 HTML 이스케이프
+    assert "□ 갭 확인" in out
+    assert "#" not in out and "**" not in out
+    assert "\n\n\n" not in out  # 연속 빈 줄 압축
+
+
+def test_telegram_channel_parse_mode_in_payload() -> None:
+    import json as _json
+    from trading.alerts.channels import TelegramChannel
+
+    sink: list[tuple[str, bytes]] = []
+
+    def opener(url: str, body: bytes, timeout: float) -> bytes:
+        sink.append((url, body))
+        return b'{"ok": true}'
+
+    TelegramChannel(token="t", chat_id="c", parse_mode="HTML", opener=opener).send("<b>x</b>")
+    assert _json.loads(sink[0][1])["parse_mode"] == "HTML"
+    TelegramChannel(token="t", chat_id="c", opener=opener).send("plain")
+    assert "parse_mode" not in _json.loads(sink[1][1])

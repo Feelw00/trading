@@ -6,11 +6,14 @@ cron: report-am(06:50) / report-pm(21:00).
 """
 
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 from trading.alerts import Alert, AlertDispatcher, ChannelError, Severity, channel_from_env
+from trading.alerts.channels import TelegramChannel
 from trading.reports.render import Rendered, ReportLengthError, render_evening, render_morning
+from trading.reports.tgfmt import to_telegram_html
 
 DEFAULT_OUT_DIR = Path(".runtime") / "reports"
 
@@ -56,7 +59,14 @@ def run(
     if send:
         channel = channel_from_env()
         try:
-            channel.send(rendered.text)
+            if isinstance(channel, TelegramChannel):
+                # 텔레그램은 마크다운을 렌더하지 않음 → HTML 변환 발송, 실패 시 평문 폴백
+                try:
+                    replace(channel, parse_mode="HTML").send(to_telegram_html(rendered.text))
+                except ChannelError:
+                    channel.send(rendered.text)
+            else:
+                channel.send(rendered.text)
             sent = f"발송: {channel.name}"
         except ChannelError as e:
             print(f"  발송 실패(파일은 저장됨): {e}")
