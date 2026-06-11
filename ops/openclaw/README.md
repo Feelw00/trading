@@ -8,6 +8,9 @@
   현재 9슬롯: 거시(am/pm)·뉴스 촉매 파이프라인 **collect-news→score-news→verify-catalysts**(am 06:20/30/45·pm 16:20/32/45)·daily-eod.
 - **`sync.py`** — 매니페스트를 openclaw cron에 등록. **기본 dry-run**(명령만 출력) + round 정합성 검증(`trading.run.ROUNDS`).
   `python ops/openclaw/sync.py [--apply]`.
+- **`drill.py`** — 슬롯을 기다리지 않고 잡 즉시 트리거 + **결정론 검증**(status ok가 아니라 1차 exec 성공·임기응변 없음까지 — 2026-06-11 교훈).
+  `drill.py --audit`(최근 런 검증만) / `drill.py <잡…>` / `drill.py --cycle am|pm|all [--timeout s]`.
+  ⚠️ 모의 아님 — LLM 비용·실제 Telegram 발송·실제 DB 적재(append-only·멱등).
 - 라운드 디스패치 엔트리: `src/trading/run.py`(`ROUNDS`). `python -m trading.run --list`로 확인.
 
 > ⚠️ **openclaw cron CLI 정확 구문은 설치본에서 검증 후 확정**(절대금지 #1). `sync.py`의 명령은 문서화된 플래그 기준 템플릿이며 `--apply`도 검증 전까지 출력만(SAFE). bootstrap에서 openclaw 설치 후 활성화.
