@@ -129,6 +129,29 @@ ROUNDS: dict[str, Callable[[], int]] = {
 }
 
 
+GUARD_SKIP_RC = 3  # 시장 가드 정상 스킵(장중·휴장) — 실패 아님, 알림 없음
+
+
+def _alert_round_failure(name: str, detail: str) -> None:
+    """라운드 실패 P1 — cron이 fire-and-forget이라 실패 가시성은 여기(Python)가 전담."""
+    try:
+        from trading.alerts import Alert, AlertDispatcher, Severity
+
+        d = AlertDispatcher()
+        d.notify(
+            Alert(
+                severity=Severity.P1,
+                what=f"라운드 실패: {name} — {detail[:140]}",
+                rule="trading.run 디스패치 무결성(§9 장애 대응)",
+                action="잡 로그(.runtime/logs/cron) 확인 후 수동 재실행 또는 보류",
+                deadline="다음 동일 슬롯 전",
+            )
+        )
+        d.store.close()
+    except Exception as alert_exc:  # noqa: BLE001 — 알림 실패가 원 실패를 가리면 안 됨
+        print(f"[alert-fail] {alert_exc}", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args and args[0] in ("--list", "-l"):
@@ -143,7 +166,15 @@ def main(argv: list[str] | None = None) -> int:
     if handler is None:
         print(f"unknown or not-yet-implemented round: {name} (try --list)", file=sys.stderr)
         return 2
-    return handler()
+    try:
+        rc = handler()
+    except Exception as exc:  # noqa: BLE001 — 라운드 전체의 마지막 방어선(§9)
+        print(f"round {name} crashed: {exc!r}", file=sys.stderr)
+        _alert_round_failure(name, repr(exc))
+        return 1
+    if rc not in (0, GUARD_SKIP_RC):
+        _alert_round_failure(name, f"rc={rc}")
+    return rc
 
 
 if __name__ == "__main__":

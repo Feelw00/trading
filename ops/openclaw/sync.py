@@ -53,32 +53,35 @@ def add_args(job: CronJob) -> list[str]:
     ]
 
 
-def exec_command(job: CronJob) -> str:
-    """결정론 exec 명령 — 절대경로 + cd 필수(2026-06-11 첫 자동 운영일 결함).
+def job_log_path(job: CronJob) -> Path:
+    """잡별 라운드 로그(fire-and-forget의 관측 지점 — drill·운영자가 tail)."""
+    return _ROOT / ".runtime" / "logs" / "cron" / f"{job.name}.log"
 
-    exec cwd는 에이전트 워크스페이스고 PATH의 python은 venv가 아니다 — 상대경로 data/가
-    빈 DB로 열려 조용히 스킵되고, LLM 트리거가 임기응변 복구하는 비결정 경로가 생긴다
-    (SCHED-2 위반). 경로는 sync 시점에 기기별로 렌더(GitOps — clone 위치 무관).
+
+def exec_command(job: CronJob) -> str:
+    """결정론 exec 명령 — fire-and-forget(2026-06-11 pm 드릴 교훈).
+
+    - 절대경로 + cd: exec cwd는 에이전트 워크스페이스고 PATH python은 venv가 아니다
+      (상대경로 data/가 빈 DB로 열려 조용히 스킵 — 첫 자동 운영일 결함).
+    - **nohup … & 즉시 반환**: 긴 라운드를 트리거 LLM이 poll로 babysit하게 두면
+      프로세스 kill·DB 자체 조회(월권), poll 턴 누적으로 모델 rate limit까지 발생.
+      트리거 턴은 발사 확인 1줄로 수 초에 끝낸다. 라운드 성패 가시성은 openclaw가
+      아니라 Python이 담당(trading.run 실패 시 P1 알림 + 잡별 로그).
     """
-    return f"cd {shlex.quote(str(_ROOT))} && .venv/bin/python -m trading.run {job.round}"
+    log = job_log_path(job)
+    return (
+        f"cd {shlex.quote(str(_ROOT))} && mkdir -p {shlex.quote(str(log.parent))} && "
+        f"nohup .venv/bin/python -m trading.run {job.round} >> {shlex.quote(str(log))} 2>&1 & "
+        f"echo launched:{job.name}:$!"
+    )
 
 
 def dispatch_message(job: CronJob) -> str:
-    """결정론 디스패치 프롬프트(SCHED-2) — 트리거 LLM의 행동을 명령 실행·대기로만 제한.
-
-    2026-06-11 pm 드릴 결함: exec가 2분(플랫폼 한도) 넘으면 백그라운드 전환되는데,
-    트리거 LLM이 poll 대기 대신 **프로세스 kill·소스 열람·DB 자체 쿼리**까지 했다
-    (verify-pm R4가 kill당해 검증 0건). 백그라운드 전환은 막을 수 없으므로(YIELD_MS
-    클램프 120s) 프롬프트로 행동을 결정론적으로 묶는다.
-    """
+    """결정론 디스패치 프롬프트(SCHED-2) — 발사 후 즉시 종료, 판단 금지."""
     return (
         f"exec 도구로 아래 명령을 정확히 1회 실행하라:\n{exec_command(job)}\n"
-        "규칙:\n"
-        "1. 명령이 백그라운드 세션으로 전환되면(Command still running) 종료될 때까지 "
-        "process poll만 반복하라. 수십 분 걸릴 수 있으며 그것이 정상이다.\n"
-        "2. 절대 금지: 프로세스 kill, 명령 수정·재실행·추가 실행, 파일·소스·DB 열람, "
-        "결과 해석·요약 가공. 너는 트리거다 — 판단하지 않는다.\n"
-        "3. 종료 후 명령의 마지막 출력 줄과 종료 코드만 보고하라."
+        "출력의 launched 줄을 그대로 보고하고 즉시 끝내라. "
+        "대기·재실행·프로세스 조작·파일/DB 열람·해석 금지 — 너는 트리거다."
     )
 
 

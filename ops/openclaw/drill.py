@@ -21,6 +21,7 @@ exec가 1차 실패해도 LLM 트리거가 임기응변으로 복구해 ok가 �
 
 import json
 import re
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -31,7 +32,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
 from cron_jobs import JOBS, CronJob  # noqa: E402
-from sync import _ENV, _run, fetch_existing  # noqa: E402
+from sync import _ENV, _run, fetch_existing, job_log_path  # noqa: E402
 
 _ROOT = Path(__file__).resolve().parents[2]
 _SESSIONS = _ROOT / ".runtime" / "openclaw" / "agents" / "main" / "sessions"
@@ -147,23 +148,69 @@ def audit_job(name: str, job_id: str) -> Verdict:
     return Verdict(name, grade, str(entry.get("status")), entry.get("durationMs"), detail)
 
 
-def trigger_job(name: str, job_id: str, *, timeout_s: float) -> Verdict:
+def _round_process_alive(round_name: str) -> bool:
+    proc = subprocess.run(
+        ["pgrep", "-f", f"trading.run {round_name}"], capture_output=True, text=True
+    )
+    return proc.returncode == 0
+
+
+_ROUND_FAIL = re.compile(r"crashed:|Traceback|\bLLMError\b")
+
+
+def _follow_round(job: CronJob, pre_size: int, deadline: float) -> tuple[str, str]:
+    """fire-and-forget 라운드 추적 — 로그 신장 + 프로세스 종료까지 대기 후 결과 분류."""
+    log = job_log_path(job)
+    grace = time.monotonic() + 30.0  # 라운드 기동 유예
+    started = False
+    while time.monotonic() < deadline:
+        size = log.stat().st_size if log.exists() else 0
+        alive = _round_process_alive(job.round)
+        started = started or alive or size > pre_size
+        if not started and time.monotonic() > grace:
+            return ("FAIL", "라운드 미기동(로그·프로세스 없음)")
+        if started and not alive and size > pre_size:
+            break
+        time.sleep(POLL_INTERVAL_S)
+    else:
+        return ("FAIL", f"라운드 미종료(드릴 타임아웃)")
+    appended = log.read_text(encoding="utf-8", errors="replace")[pre_size:]
+    lines = [ln.strip() for ln in appended.splitlines() if ln.strip()]
+    if any(_ROUND_FAIL.search(ln) for ln in lines):
+        bad = next(ln for ln in lines if _ROUND_FAIL.search(ln))
+        return ("FAIL", bad[:100])
+    summary = next((ln for ln in reversed(lines) if _RUNNER_SUMMARY.match(ln)), None)
+    return ("PASS", (summary or (lines[-1] if lines else "(로그 출력 없음)"))[:110])
+
+
+def trigger_job(job: CronJob, job_id: str, *, timeout_s: float) -> Verdict:
+    name = job.name
+    log = job_log_path(job)
+    pre_size = log.stat().st_size if log.exists() else 0
     proc = _run(["cron", "run", job_id], check=False)
     try:
         run_id = str(json.loads(proc.stdout).get("runId", ""))
     except json.JSONDecodeError:
         return Verdict(name, "FAIL", "trigger-error", None, proc.stderr.strip()[:100])
     deadline = time.monotonic() + timeout_s
+    entry = None
     while time.monotonic() < deadline:
         entry = _latest_entry(job_id, run_id=run_id)
         if entry is not None:
-            grade, detail = _classify_session(
-                str(entry.get("sessionId", "")), str(entry.get("status", "?")),
-                run_marker=f" {name}] ",
-            )
-            return Verdict(name, grade, str(entry.get("status")), entry.get("durationMs"), detail)
+            break
         time.sleep(POLL_INTERVAL_S)
-    return Verdict(name, "FAIL", "timeout", None, f"{timeout_s:.0f}s 내 종료 안 됨")
+    if entry is None:
+        return Verdict(name, "FAIL", "timeout", None, f"트리거 {timeout_s:.0f}s 내 미종료")
+    status = str(entry.get("status", "?"))
+    grade, detail = _classify_session(
+        str(entry.get("sessionId", "")), status, run_marker=f" {name}] "
+    )
+    if grade == "FAIL":
+        return Verdict(name, grade, status, entry.get("durationMs"), detail)
+    # 트리거는 발사만 — 라운드 완주는 로그·프로세스로 추적
+    round_grade, round_detail = _follow_round(job, pre_size, deadline)
+    final = "WARN" if (grade == "WARN" and round_grade == "PASS") else round_grade
+    return Verdict(name, final, status, entry.get("durationMs"), round_detail)
 
 
 def report(verdicts: list[Verdict]) -> int:
@@ -205,6 +252,7 @@ def main(argv: list[str]) -> int:
         print(f"미등록 잡: {missing} — 먼저 sync.py --apply", file=sys.stderr)
         return 2
 
+    by_name = {j.name: j for j in JOBS}
     verdicts: list[Verdict] = []
     for n in names:
         job_id = str(existing[n]["id"])
@@ -212,7 +260,9 @@ def main(argv: list[str]) -> int:
             verdicts.append(audit_job(n, job_id))
         else:
             print(f"… {n} 트리거", flush=True)
-            verdicts.append(trigger_job(n, job_id, timeout_s=timeout_s))
+            v = trigger_job(by_name[n], job_id, timeout_s=timeout_s)
+            print(f"  [{v.grade}] {v.detail[:90]}", flush=True)
+            verdicts.append(v)
     return report(verdicts)
 
 
