@@ -49,7 +49,7 @@ def add_args(job: CronJob) -> list[str]:
         # 채널 미설정 fail-closed로 잡이 error 처리되는 것 방지(2026-06-10 enable 검증).
         "--no-deliver",
         "--",
-        exec_command(job),
+        dispatch_message(job),
     ]
 
 
@@ -61,6 +61,25 @@ def exec_command(job: CronJob) -> str:
     (SCHED-2 위반). 경로는 sync 시점에 기기별로 렌더(GitOps — clone 위치 무관).
     """
     return f"cd {shlex.quote(str(_ROOT))} && .venv/bin/python -m trading.run {job.round}"
+
+
+def dispatch_message(job: CronJob) -> str:
+    """결정론 디스패치 프롬프트(SCHED-2) — 트리거 LLM의 행동을 명령 실행·대기로만 제한.
+
+    2026-06-11 pm 드릴 결함: exec가 2분(플랫폼 한도) 넘으면 백그라운드 전환되는데,
+    트리거 LLM이 poll 대기 대신 **프로세스 kill·소스 열람·DB 자체 쿼리**까지 했다
+    (verify-pm R4가 kill당해 검증 0건). 백그라운드 전환은 막을 수 없으므로(YIELD_MS
+    클램프 120s) 프롬프트로 행동을 결정론적으로 묶는다.
+    """
+    return (
+        f"exec 도구로 아래 명령을 정확히 1회 실행하라:\n{exec_command(job)}\n"
+        "규칙:\n"
+        "1. 명령이 백그라운드 세션으로 전환되면(Command still running) 종료될 때까지 "
+        "process poll만 반복하라. 수십 분 걸릴 수 있으며 그것이 정상이다.\n"
+        "2. 절대 금지: 프로세스 kill, 명령 수정·재실행·추가 실행, 파일·소스·DB 열람, "
+        "결과 해석·요약 가공. 너는 트리거다 — 판단하지 않는다.\n"
+        "3. 종료 후 명령의 마지막 출력 줄과 종료 코드만 보고하라."
+    )
 
 
 def _run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -90,7 +109,7 @@ def matches_manifest(job: CronJob, existing: dict[str, Any]) -> bool:
     if sched.get("expr") != job.cron or sched.get("tz") != TZ:
         return False
     payload = existing.get("payload") or {}
-    if payload.get("message") != exec_command(job):
+    if payload.get("message") != dispatch_message(job):
         return False
     if not payload.get("lightContext"):
         return False

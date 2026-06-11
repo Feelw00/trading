@@ -36,8 +36,15 @@ from sync import _ENV, _run, fetch_existing  # noqa: E402
 _ROOT = Path(__file__).resolve().parents[2]
 _SESSIONS = _ROOT / ".runtime" / "openclaw" / "agents" / "main" / "sessions"
 
-# 1차 exec 실패 마커 — 이게 보이면 트리거가 임기응변으로 복구했더라도 WARN
-_FAIL_MARKERS = ("ModuleNotFoundError", "No module named", "Command exited with code")
+# 비결정 마커 — 보이면 status ok여도 WARN. "Command exited with code 0"은 정상 종료 보고이고
+# 백그라운드 전환("Command still running")+poll 대기는 플랫폼 표준 동작이라 결함 아님.
+_NONZERO_EXIT = re.compile(r"Command exited with code [1-9]")
+_FAIL_MARKERS = ("ModuleNotFoundError", "No module named")
+# 트리거 LLM의 월권 마커(2026-06-11 pm 드릴: 프로세스 kill·DB 자체 쿼리 관측)
+_OVERREACH_MARKERS = ("process kill", "\nkilled", "sqlite3 ", "SELECT COUNT")
+_RUNNER_SUMMARY = re.compile(
+    r"^(적재|수집|뉴스 수집|R[0-9.]+ |P1 다이제스트|섹터 보강|스크리너|해석|모닝|저녁).{0,90}"
+)
 _TEXT_RE = re.compile(r'"text":"((?:[^"\\]|\\.)*)"')
 
 POLL_INTERVAL_S = 5.0
@@ -96,14 +103,22 @@ def _classify_session(session_id: str, status: str, run_marker: str | None) -> t
     body = texts[1:]  # [0]=cron 프롬프트
     if not body:
         return ("FAIL", "exec 출력 없음")
-    first_exec = body[0].strip().splitlines()
-    first_line = first_exec[0][:100] if first_exec else "(빈 출력)"
-    improvised = any(any(mark in t for mark in _FAIL_MARKERS) for t in body)
+    # detail: 러너 요약 줄 우선(백그라운드 전환 보일러플레이트 회피), 없으면 1차 출력 첫 줄
+    detail = next(
+        (m.group(0) for t in body for m in [_RUNNER_SUMMARY.match(t.strip())] if m),
+        (body[0].strip().splitlines() or ["(빈 출력)"])[0][:100],
+    )
+    exec_failed = any(
+        any(mark in t for mark in _FAIL_MARKERS) or _NONZERO_EXIT.search(t) for t in body
+    )
+    overreach = any(any(mark in t for mark in _OVERREACH_MARKERS) for t in body)
     if status != "ok":
-        return ("FAIL", first_line)
-    if improvised:
-        return ("WARN", f"1차 exec 실패 후 임기응변 복구 — {first_line}")
-    return ("PASS", first_line)
+        return ("FAIL", detail)
+    if exec_failed:
+        return ("WARN", f"exec 실패 흔적(임기응변 복구 의심) — {detail}")
+    if overreach:
+        return ("WARN", f"트리거 월권 흔적(kill/DB 조회) — {detail}")
+    return ("PASS", detail)
 
 
 def _latest_entry(job_id: str, *, run_id: str | None = None) -> dict[str, Any] | None:
