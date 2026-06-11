@@ -235,7 +235,7 @@ def render_evening(
     # 미수집은 빈 섹션 나열 대신 한 군데 모아 명시(읽기 부담 제거, 추측 대체 없음은 유지)
     notes = [
         "집행 편차·보유 포지션: KIS 잔고·체결 어댑터 미구현",
-        "수급 확정치(투자자별 매매동향): KRX 접근 미해결",
+        "수급(투자자별 매매동향): KIS flows 수집 중(daily-eod) — 보고 섹션 배선은 후속",
     ]
     text = _env().get_template("evening.md.j2").render(
         day=today_iso,

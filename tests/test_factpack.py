@@ -83,7 +83,7 @@ def test_build_fact_pack_grounded(tmp_path: Path) -> None:
     assert pack.fin_period == "2025/11014"   # 2026 전부 빈 → 2025 폴백
     assert pack.financials[0].account == "매출액" and pack.financials[0].yoy_pct == 20.0
     assert pack.disclosures[0].rcept_no == "20260515000123"
-    assert pack.notes == []  # 결측 없음
+    assert pack.notes == ["수급 미수집(KIS flows 없음)"]  # DART 결측 없음(수급은 스토어 미주입)
     assert pack.as_of.tzinfo is not None  # KST aware
     store.close()
 

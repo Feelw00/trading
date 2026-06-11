@@ -26,7 +26,8 @@ TZ = "Asia/Seoul"
 
 JOBS: tuple[CronJob, ...] = (
     # --- 오전(장전) ---
-    CronJob("macro-am", "10 6 * * 1-5", "collect-macro", comment="장전 거시(밤사이 US·FX)"),
+    # 거시 수집은 독립 슬롯이 아니라 report-am/report-pm 라운드에 내장(trading.run) —
+    # 트리거 에이전트 턴 최소화(자체 판단 수집 여지 제거). R3/R5는 최신 landing(기존 데이터)만 읽는다.
     CronJob("news-am", "20 6 * * 1-5", "collect-news", comment="R0 수집 — 해외·밤사이 뉴스(3계층)"),
     CronJob("score-am", "30 6 * * 1-5", "score-news", comment="R1 게이트→R2 분류·스코어(내부 claude -p, R2_MODEL)"),
     CronJob("verify-am", "45 6 * * 1-5", "verify-catalysts", comment="R4 적대검증(고강도·single_stock 선별, 내부 claude -p)"),
@@ -36,13 +37,12 @@ JOBS: tuple[CronJob, ...] = (
     CronJob("daily-eod", "5 16 * * 1-5", "daily-eod", comment="전종목→섹터분류→스크리너→fact pack(T-1 EOD)"),
     # --- 오후(마감) ---
     CronJob("news-pm", "20 16 * * 1-5", "collect-news", comment="R0 수집 — 국내 마감 뉴스(네이버 중심)"),
-    CronJob("score-pm", "32 16 * * 1-5", "score-news", comment="R1 게이트→R2 분류·스코어(macro-pm와 시각 분리)"),
+    CronJob("score-pm", "32 16 * * 1-5", "score-news", comment="R1 게이트→R2 분류·스코어"),
     CronJob("verify-pm", "45 16 * * 1-5", "verify-catalysts", comment="R4 적대검증(선별)"),
     CronJob("reason-pm", "55 16 * * 1-5", "reason-theses", comment="R3 페르소나 분석"),
-    CronJob("macro-pm", "30 16 * * 1-5", "collect-macro", comment="마감 거시"),
-    # --- 보고 (설계서 §5·§8: 06:50 모닝 / 21:00 저녁 결재) ---
-    CronJob("report-am", "50 6 * * 1-5", "report-morning", comment="R6 모닝 브리핑(읽기 전용, 정적 렌더)"),
-    CronJob("report-pm", "0 21 * * 1-5", "report-evening", comment="R6 저녁 결재 보고(승인 요청 포함)"),
+    # --- 보고 (설계서 §5·§8: 06:50 모닝 / 21:00 저녁 결재) — 거시 재수집 내장(렌더 직전) ---
+    CronJob("report-am", "50 6 * * 1-5", "report-morning", comment="거시 전부 수집(결정론)→R6 모닝 브리핑"),
+    CronJob("report-pm", "0 21 * * 1-5", "report-evening", comment="거시 재수집(결정론)→R6 저녁 결재 보고(승인 요청)"),
     # --- 아침 선택 (설계서 §5: 08:50 R5.5 — 순수 코드, 휴장·장중은 러너 가드가 거부) ---
     CronJob("select-am", "50 8 * * 1-5", "select-playbooks", comment="R5.5 플레이북 선택·arm(순수 코드)"),
     # --- 야간 합성 (설계서 §5: 20:30 R5 — 장중 실행은 러너 내부 가드가 거부) ---

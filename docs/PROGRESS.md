@@ -41,8 +41,9 @@
 - **R7 평가**: 결정론 채점기(적중률·캘리브레이션·R4 정확도·레짐 프록시 — R7-1 🟡), 해석·개정안 claude -p 박제만(자동 적용 금지), ScoreStore. → `2026-06-10-m3-r7-evaluation.md`
 - **cron 18개 일괄 enable + 운영 안정화** (06-10 저녁~06-11): 트리거 모델 로컬 핀(qwen2.5:3b — 클라우드 쿼터 제거), `--no-deliver`, **fire-and-forget(setsid) 아키텍처**(LLM babysitting 제거 — kill 월권·rate limit 해소), trading.run 실패 P1 + 잡별 로그, daily-eod 16:05 이동(EOD 공개 시차), **drill.py**(슬롯 대기 없는 즉시 트리거+결정론 검증: PASS/WARN/FAIL). 첫 풀 사이클(저녁 결재+모닝 브리핑 자동 발송) 완주. → `2026-06-11-first-auto-cycle-audit.md`
 - **보고·알림 UX**: 저녁 결재 "결정 우선" 재설계 + Telegram HTML 서식 통일(보고·P0·P1, md 미지원 해소). → `2026-06-11-telegram-format.md`
+- **수급(투자자별 매매동향) 해소** (06-11): KIS TR 2종 공식 확정+실호출 검증 → `collectors/kis.py`(토큰 캐시)+`flows.py`(`data/flows.sqlite`)+`collect-flows` 라운드(daily-eod 체인)+FactPack `flows`(R3 수급 grounding). 🔴 KRX 정보데이터시스템 의존 해소. 거시 수집은 report-am/pm 라운드 내장으로 이동(cron 18→16슬롯). → `2026-06-11-kis-investor-flows.md`
 
-**검증 (AC)**: pytest **272 passed**, mypy **0 issues (103 files)**. 운영: 18슬롯 자동 가동 중.
+**검증 (AC)**: pytest **272 passed**, mypy **0 issues (103 files)**. 운영: 16슬롯 자동 가동 중(06-11 거시 수집을 report 라운드에 내장, macro-am/pm 슬롯 제거).
 
 ---
 
@@ -55,12 +56,11 @@
 - KIS 잔고·체결 어댑터 (`KIS_ENABLE_TRADING=false`) — 저녁 보고 집행·포지션 섹션 채움
 
 **M2~3 잔여(소)**
-- R3 grounding 보강(수급 페르소나 — 🔴 KRX 의존) / R1 일반 게이트 운영 배선(landing→FactRecord 변환 계층)
+- ~~R3 grounding 보강(수급 페르소나)~~ → 06-11 해소(KIS flows → FactPack) / R1 일반 게이트 운영 배선(landing→FactRecord 변환 계층)
 - R4 실측 생존률·threshold 재캘리브레이션 — 운영 슬롯 데이터 누적 후
 - CAL-1: 2026년 음력·대체공휴일 KRX 공지 확인 → `krx_holidays.json`
 
 **OPEN_QUESTIONS 🔴**
-- KRX 정보데이터시스템 — 시세·투자자별 매매동향 접근/인증 (R3 supply grounding 동시 해소)
 - NXT 프리·애프터마켓 데이터 (SEL-1·R7-1 흐름 관측치 공유)
 - 증권사 조건부(청산) 주문 API — KIS REAL 키 확보 완료, 청산 인터페이스 스펙 조사 잔여
 

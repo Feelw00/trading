@@ -28,6 +28,16 @@ class PriceContext(_Frozen):
     high_252_proximity: float   # 종가 / 252일 최고가
 
 
+class FlowLine(_Frozen):
+    """투자자별 순매수 1거래일(KIS 투자자매매동향 — 단위: 백만원, 실호출 관측 확정)."""
+
+    bas_dt: NonEmptyStr             # 거래일 YYYYMMDD
+    prsn_ntby_mn: float | None      # 개인 순매수 대금(백만원)
+    frgn_ntby_mn: float | None      # 외국인 순매수 대금(백만원)
+    orgn_ntby_mn: float | None      # 기관계 순매수 대금(백만원) — 기금 포함 합산(실관측 검증)
+    fund_ntby_mn: float | None = None  # 기금(연기금) 순매수 대금(백만원, KIS 공식 라벨 "기금")
+
+
 class DisclosureItem(_Frozen):
     """DART 공시 목록 1건(원본 필드 보존)."""
 
@@ -57,10 +67,11 @@ class FactPack(_Frozen):
     fin_period: str | None = None        # 사용한 재무 기간 "bsns_year/reprt_code"
     financials: list[FinancialLine] = Field(default_factory=list)
     news: list[NewsItem] = Field(default_factory=list)     # 최근 grounded 뉴스(있으면)
+    flows: list[FlowLine] = Field(default_factory=list)    # 최근 수급(KIS, 최신순 — 있으면)
     sources: dict[str, str] = Field(default_factory=dict)  # 구성요소별 출처
     notes: list[str] = Field(default_factory=list)         # 결측·미수집 사유(추측 대체 금지)
     as_of: AwareDatetime         # 조립 기준 거래일 시각
     fetched_at: AwareDatetime    # 조립 시각(KST)
 
 
-__all__ = ["DisclosureItem", "FactPack", "FinancialLine", "PriceContext"]
+__all__ = ["DisclosureItem", "FactPack", "FinancialLine", "FlowLine", "PriceContext"]

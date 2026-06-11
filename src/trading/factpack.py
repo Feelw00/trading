@@ -16,19 +16,56 @@ from typing import Protocol
 
 from trading.collectors.base import KST, now_kst
 from trading.collectors.dart import DartClient
+from trading.collectors.flows import DEFAULT_DB as DEFAULT_FLOWS_DB
+from trading.collectors.flows import FlowStore
 from trading.collectors.market import MarketStore
 from trading.collectors.news import DEFAULT_NEWS_DB, NewsStore
-from trading.contracts.factpack import DisclosureItem, FactPack, FinancialLine, PriceContext
+from trading.contracts.factpack import (
+    DisclosureItem,
+    FactPack,
+    FinancialLine,
+    FlowLine,
+    PriceContext,
+)
 from trading.screener import Candidate, SECTOR_SOURCES, ScreenConfig, screen, signals_from_series
 
 DART_DISCLOSURE_DAYS = 90
 DISCLOSURE_LIMIT = 15
 NEWS_LIMIT = 8
+FLOWS_LIMIT = 5
 
 
 def _open_news_store() -> NewsStore | None:
     """단일 영속 뉴스 DB(data/news.sqlite, P-3). 없으면 None(빈 파일 생성 회피)."""
     return NewsStore(DEFAULT_NEWS_DB) if DEFAULT_NEWS_DB.exists() else None
+
+
+def _open_flow_store() -> FlowStore | None:
+    """수급 DB(data/flows.sqlite, KIS). 없으면 None(빈 파일 생성 회피)."""
+    return FlowStore(DEFAULT_FLOWS_DB) if DEFAULT_FLOWS_DB.exists() else None
+
+
+def _f_opt(v: object) -> float | None:
+    try:
+        return float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _flow_lines(flow_store: FlowStore | None, srtn_cd: str) -> list[FlowLine]:
+    """최근 수급(최신순). 스토어·데이터 없으면 빈 리스트(결측은 호출측 notes)."""
+    if flow_store is None:
+        return []
+    return [
+        FlowLine(
+            bas_dt=d,
+            prsn_ntby_mn=_f_opt(p),
+            frgn_ntby_mn=_f_opt(f),
+            orgn_ntby_mn=_f_opt(o),
+            fund_ntby_mn=_f_opt(fund),
+        )
+        for d, p, f, o, fund in flow_store.recent_for("stock", srtn_cd, limit=FLOWS_LIMIT)
+    ]
 # 재무 기간 폴백(최신→과거). DART는 미제출 기간에 status 013 → 빈 → 다음 후보로.
 FIN_REPORTS = ("11014", "11013", "11012", "11011")  # 3Q·1Q·반기·사업
 
@@ -130,8 +167,9 @@ def build_fact_pack(
     corp_map: dict[str, tuple[str, str]],
     sectors: list[str],
     news_store: NewsStore | None = None,
+    flow_store: FlowStore | None = None,
 ) -> FactPack:
-    """후보 1종목의 결정론 FactPack 조립. DART 결측은 notes에 기록(추측 금지)."""
+    """후보 1종목의 결정론 FactPack 조립. DART·수급 결측은 notes에 기록(추측 금지)."""
     now = now_kst()
     price = _price_context(c, store)
     notes: list[str] = []
@@ -141,6 +179,11 @@ def build_fact_pack(
     news = news_store.recent_for([c.srtn_cd], limit=NEWS_LIMIT) if news_store else []
     if news_store and news:
         sources["news"] = "news.sqlite(COLLECT-4)"
+    flows = _flow_lines(flow_store, c.srtn_cd)
+    if flows:
+        sources["flows"] = "flows.sqlite(KIS:투자자매매동향)"
+    else:
+        notes.append("수급 미수집(KIS flows 없음)")
     fin_period: str | None = None
     fallback_date = price.as_of or now.strftime("%Y%m%d")
 
@@ -186,6 +229,7 @@ def build_fact_pack(
         fin_period=fin_period,
         financials=financials,
         news=news,
+        flows=flows,
         sources=sources,
         notes=notes,
         as_of=_as_of_aware(price.as_of) or now,
@@ -259,11 +303,14 @@ def build_fact_pack_for(
             corp_map = dart.corp_code_map() if isinstance(dart, DartClient) else {}
         sectors = st.sector_map_multi(SECTOR_SOURCES).get(code, [])
         news_store = _open_news_store()
+        flow_store = _open_flow_store()
         try:
-            pack = build_fact_pack(cand, st, dart, corp_map or {}, sectors, news_store)
+            pack = build_fact_pack(cand, st, dart, corp_map or {}, sectors, news_store, flow_store)
         finally:
             if news_store:
                 news_store.close()
+            if flow_store:
+                flow_store.close()
         return pack.model_copy(update={"notes": [*pack.notes, "단일종목 조회 — 스크리너 게이트 외일 수 있음(screen_score 무의미)"]})
     finally:
         if own:
@@ -288,16 +335,21 @@ def run(top_n: int = 15) -> FactPackRun:
     dart: DartLike = DartClient(key) if key else _NullDart()
     corp_map = dart.corp_code_map() if isinstance(dart, DartClient) else {}
     news_store = _open_news_store()
+    flow_store = _open_flow_store()
     out_dir = Path(".runtime") / "factpack" / _fmt_date(res.as_of)
     out_dir.mkdir(parents=True, exist_ok=True)
     written = 0
     for c in res.candidates:
-        pack = build_fact_pack(c, store, dart, corp_map, secmap.get(c.srtn_cd, []), news_store)
+        pack = build_fact_pack(
+            c, store, dart, corp_map, secmap.get(c.srtn_cd, []), news_store, flow_store
+        )
         path = out_dir / f"{c.srtn_cd}_{_safe_name(c.name)}.json"
         path.write_text(pack.model_dump_json(indent=2), encoding="utf-8")
         written += 1
     if news_store:
         news_store.close()
+    if flow_store:
+        flow_store.close()
     store.close()
     return FactPackRun(res.as_of, written, str(out_dir))
 

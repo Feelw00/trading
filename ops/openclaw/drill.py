@@ -6,7 +6,7 @@ exec가 1차 실패해도 LLM 트리거가 임기응변으로 복구해 ok가 �
 
 사용 (repo 루트):
   poetry run python ops/openclaw/drill.py --audit              # 트리거 없이 전 잡 최근 런 검증
-  poetry run python ops/openclaw/drill.py macro-pm digest-noon # 지정 잡 순차 트리거+검증
+  poetry run python ops/openclaw/drill.py news-pm digest-noon # 지정 잡 순차 트리거+검증
   poetry run python ops/openclaw/drill.py --cycle pm           # 사이클 전체(시간순) 트리거+검증
   poetry run python ops/openclaw/drill.py --cycle am --timeout 2400
 

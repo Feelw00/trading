@@ -39,7 +39,13 @@
 | 국내 종목 실시간 시세·호가 | **KIS Developers**(+`migusdn/KIS_MCP_Server` MCP, trading OFF) | 계좌(모의 지원), 초당 20건 | 실시간 근접 |
 - **KIS 해외선물/해외지수는 제외:** SOX 미확인 + 해외선물 계좌·권한 별도 → 해외 매크로는 FRED로.
 - 정확한 엔드포인트·FRED 시리즈ID·KIS TR_ID·필드는 **각 공식 문서에서 확정**(추측 금지).
-- **남은 갭:** ① 국내 투자자별 매매동향(수급) KIS TR 확인 · ② NXT 프리/애프터(기존 🔴) · ③ 실시간 필요 범위(라운드=EOD 충분, 장중 감시만 KIS 실시간).
+- **남은 갭:** ~~① 국내 투자자별 매매동향(수급) KIS TR 확인~~(**2026-06-11 해소** — 아래) · ② NXT 프리/애프터(기존 🔴) · ③ 실시간 필요 범위(라운드=EOD 충분, 장중 감시만 KIS 실시간).
+- **갭① 해소(2026-06-11) — 수급은 KIS TR로 확정** (공식 저장소 `koreainvestment/open-trading-api` + 실호출 관측 검증, KRX 정보데이터시스템 직접 접근 불필요):
+  - 종목별 투자자매매동향(일별): `GET /uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily` TR `FHPTJ04160001` — output2가 일별 ~30거래일, `{frgn,prsn,orgn}_ntby_qty`(주)/`..._ntby_tr_pbmn`(**백만원** — 수량×주가 대조로 단위 검증).
+  - 시장별 투자자매매동향(일별): `GET /uapi/domestic-stock/v1/quotations/inquire-investor-daily-by-market` TR `FHPTJ04040000` — KOSPI=(업종 0001, KSP)/KOSDAQ=(업종 1001, KSQ) 파라미터 조합 실호출 확정.
+  - 토큰: `POST /oauth2/tokenP`(24h 유효, 6시간 내 재발급=동일 토큰+알림톡) → 파일 캐시 필수(`.runtime/kis/token.json`).
+  - 구현: `collectors/kis.py`(조회 전용 — 주문 TR 금지 유지) + `collectors/flows.py`(`data/flows.sqlite` append-only) + `collect-flows` 라운드(daily-eod 체인 내 best-effort) + FactPack `flows` 섹션(R3 수급 grounding).
+  - 장중 잠정(시세성): `GET /uapi/domestic-stock/v1/quotations/inquire-investor-time-by-market` TR `FHPTJ04030000` — 파라미터 (999, S001)=KOSPI/(999, S101)=KOSDAQ은 장중 조합 프로브 관측 확정(그 외 0/오류, HTS [0403] 코스피·코스닥 화면과 정합). 표시 전용·적재 금지(응답에 날짜 필드 부재). **잔여 🟡: 잠정 단위(백만원 추정 — 필드 체계 동일)를 마감 후 일별 확정치와 교차검증.**
 
 ### 🟢 COLLECT-3 — 수집 하네스 (LLM 독자 웹서치 금지) · **뉴스는 COLLECT-4로 부분 개정(2026-06-09)**
 - **결정(2026-06-08, 운영자):** LLM은 **승인된 소스 어댑터/도구만** 호출한다. **독자 판단의 웹서치(WebSearch/WebFetch) 금지** — 지침이 아니라 구조로 차단.
@@ -135,7 +141,7 @@
 ---
 
 ## 외부 의존 (Phase 1, 미해결 — 부록 A)
-- 🔴 KRX 정보데이터시스템: 시세·투자자별 매매동향 접근 방식/인증
+- 🟢 ~~KRX 정보데이터시스템: 시세·투자자별 매매동향~~ → **해소(2026-06-11)**: 시세=data.go.kr(기 운영), 수급=KIS TR(COLLECT-2 갭① 해소 참조). KRX 직접 접근 불필요. (공식 KRX Open API엔 투자자별 매매동향 자체가 없음 — 29개 서비스 목록 확인)
 - 🔴 NXT 프리·애프터마켓 데이터: 소스·접근
 - 🔴 증권사 조건부(청산) 주문 API: 보유 증권사 스펙 확인 선행 (Phase 1 필수 — §6)
 - 🟢 DART OpenAPI / 한국은행 ECOS: 공개 문서 기반 구현 가능

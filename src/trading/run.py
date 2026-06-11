@@ -21,6 +21,12 @@ def _collect_market() -> int:
     return market.main()
 
 
+def _collect_flows() -> int:
+    from trading.collectors import flows
+
+    return flows.run()
+
+
 def _collect_news() -> int:
     from trading import collect_news
 
@@ -88,30 +94,54 @@ def _evaluate() -> int:
     return evaluate.run()
 
 
-def _report_morning() -> int:
+def _refresh_macro_then_report(kind: str) -> int:
+    """보고 직전 거시 재수집(결정론 어댑터) → 렌더.
+
+    수집을 독립 cron 슬롯이 아니라 보고 라운드에 내장 — 트리거 에이전트 턴을 줄여
+    수집 경로에서 LLM 개입 여지를 제거한다(COLLECT-3). 재수집이 실패해도 보고는
+    기존 landing으로 진행한다(결측·as_of 명시 정책) — 단 실패는 P1로 띄운다.
+    """
+    rc = _collect_macro()
+    if rc != 0:
+        print(
+            f"[report-{kind}] 거시 재수집 실패 rc={rc} — 기존 landing으로 보고 진행",
+            file=sys.stderr,
+        )
+        _alert_round_failure(f"report-{kind}/collect-macro", f"rc={rc}")
+
     from trading import report
 
-    return report.run("morning")
+    return report.run(kind)
+
+
+def _report_morning() -> int:
+    return _refresh_macro_then_report("morning")
 
 
 def _report_evening() -> int:
-    from trading import report
-
-    return report.run("evening")
+    return _refresh_macro_then_report("evening")
 
 
 def _daily_eod() -> int:
-    """EOD 디스커버리 파이프라인: 전종목 수집 → 섹터분류 → 스크리너 → fact pack. 첫 실패에서 중단."""
-    for step in (_collect_market, _classify_sectors, _screen, _factpack):
+    """EOD 디스커버리 파이프라인: 전종목 → 섹터분류 → 스크리너 → 수급 → fact pack.
+
+    수급(KIS)은 best-effort — 실패해도 P1만 띄우고 fact pack은 계속(수급 결측은
+    factpack notes가 명시). 나머지 단계는 첫 실패에서 중단.
+    """
+    for step in (_collect_market, _classify_sectors, _screen):
         rc = step()
         if rc != 0:
             return rc
-    return 0
+    flows_rc = _collect_flows()
+    if flows_rc != 0:
+        _alert_round_failure("daily-eod/collect-flows", f"rc={flows_rc}")
+    return _factpack()
 
 
 ROUNDS: dict[str, Callable[[], int]] = {
     "collect-macro": _collect_macro,
     "collect-market": _collect_market,
+    "collect-flows": _collect_flows,
     "collect-news": _collect_news,
     "classify-sectors": _classify_sectors,
     "screen": _screen,

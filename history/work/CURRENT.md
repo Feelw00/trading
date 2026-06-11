@@ -7,10 +7,11 @@
 - _(없음 — 다음 세션 진입 시 채움)_
 
 ## 운영 상태 (상시 확인)
-- **cron 18슬롯 자동 가동 중** (6/10 저녁~): fire-and-forget(setsid)+로컬 트리거(qwen2.5:3b)+잡별 로그(`.runtime/logs/cron/`). 보고·알림은 Telegram HTML.
+- **cron 16슬롯 자동 가동 중** (6/10 저녁~, 6/11 macro-am/pm 슬롯 제거 — 거시 수집은 report-am/pm 라운드에 내장): fire-and-forget(setsid)+로컬 트리거(qwen2.5:3b)+잡별 로그(`.runtime/logs/cron/`). 보고·알림은 Telegram HTML.
 - 세션 진입 시 점검: `poetry run python ops/openclaw/drill.py --audit` (전일 사이클 PASS/WARN/FAIL) + 라운드 실패 P1 알림 수신 여부.
 
 ## 최근 완료
+- 2026-06-11 — **수급 해소: KIS 투자자매매동향 TR 확정+flows 파이프라인(FactPack R3 grounding) + 거시 수집 report 라운드 내장(16슬롯) + boot 자동수집화** → [archive](archive/2026-06-11-kis-investor-flows.md)
 - 2026-06-11 — **R6 보고 가독성 재설계(결정 우선) + Telegram HTML 서식 통일(보고·P0·P1)** → [archive](archive/2026-06-11-telegram-format.md)
 - 2026-06-11 — **첫 자동 사이클 점검 + drill.py + 트리거 아키텍처 3단 진화(절대경로→프롬프트→fire-and-forget/setsid+로컬모델). pm 풀 드릴 10잡 검증** → [archive](archive/2026-06-11-first-auto-cycle-audit.md)
 - 2026-06-10 — **M3 완결(alerts·R5·R5.5·R6·R7) + cron 18개 enable** → PROGRESS M3 블록 + archive 5건
@@ -39,5 +40,8 @@
 - R1 일반 게이트 운영 배선 — landing→FactRecord 변환 계층
 
 **외부 의존 해소** (병행 가능)
-- KRX/NXT 데이터 소스 스펙 조사 → R3 supply grounding·SEL-1·R7-1 동시 해소
+- NXT 프리·애프터 데이터 소스 조사 → SEL-1·R7-1 해소 (KRX 수급은 6/11 KIS TR로 해소됨)
 - KIS 청산 주문(조건부) 인터페이스 스펙
+
+**빠른 슬라이스 추가**
+- R6 저녁 보고 수급 섹션을 flows.sqlite로 채우기(현재 "KRX 미해결" 결측 문구 잔존)
