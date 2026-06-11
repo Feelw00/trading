@@ -63,16 +63,18 @@ def exec_command(job: CronJob) -> str:
 
     - 절대경로 + cd: exec cwd는 에이전트 워크스페이스고 PATH python은 venv가 아니다
       (상대경로 data/가 빈 DB로 열려 조용히 스킵 — 첫 자동 운영일 결함).
-    - **nohup … & 즉시 반환**: 긴 라운드를 트리거 LLM이 poll로 babysit하게 두면
-      프로세스 kill·DB 자체 조회(월권), poll 턴 누적으로 모델 rate limit까지 발생.
-      트리거 턴은 발사 확인 1줄로 수 초에 끝낸다. 라운드 성패 가시성은 openclaw가
-      아니라 Python이 담당(trading.run 실패 시 P1 알림 + 잡별 로그).
+    - **setsid -f 완전 분리 + 즉시 반환**: 긴 라운드를 트리거 LLM이 poll로 babysit하게
+      두면 프로세스 kill·DB 자체 조회(월권), poll 턴 누적으로 모델 rate limit까지 발생.
+      트리거 턴은 발사 확인 1줄로 수 초에 끝낸다. nohup &만으로는 부족 — openclaw exec가
+      **에이전트 턴 종료 시 프로세스 그룹을 정리**해 장시간 라운드가 중도 사망한다
+      (2026-06-11 관측: digest 2초 생존, verify 10분+ 사망). setsid로 세션 분리.
+      라운드 성패 가시성은 openclaw가 아니라 Python이 담당(trading.run 실패 P1 + 잡별 로그).
     """
     log = job_log_path(job)
     return (
         f"cd {shlex.quote(str(_ROOT))} && mkdir -p {shlex.quote(str(log.parent))} && "
-        f"nohup .venv/bin/python -m trading.run {job.round} >> {shlex.quote(str(log))} 2>&1 & "
-        f"echo launched:{job.name}:$!"
+        f"setsid -f sh -c '.venv/bin/python -m trading.run {job.round} "
+        f">> {shlex.quote(str(log))} 2>&1' && echo launched:{job.name}"
     )
 
 
