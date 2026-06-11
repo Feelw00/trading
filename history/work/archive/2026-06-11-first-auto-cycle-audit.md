@@ -17,4 +17,25 @@
 
 ## 교훈
 - **cron status=ok는 신뢰 지표가 아니다** — 세션 로그의 1차 exec 결과까지 봐야 한다. LLM 트리거의 "복구 능력"이 결정론 결함을 가린다.
-- 다음 검증 포인트: 오늘 pm 사이클(16:05 eod → 16:20 news → 16:32 score → 16:45 verify → 16:55 reason → 20:30 synth → 21:00 report)이 **첫 완전 결정론 자동 사이클**.
+
+---
+
+# 후속: drill.py + pm 풀 드릴 → 트리거 아키텍처 3단 진화 (같은 날 오전)
+
+## drill.py (ops/openclaw/) — 슬롯 대기 없는 즉시 테스트 도구
+- `--audit`(최근 런 검증) / `<잡…>` / `--cycle am|pm|all`. 판정 = status ok + **1차 exec 성공 + 임기응변·월권 없음** + (트리거 모드) **잡 로그로 라운드 완주 추적**.
+
+## pm 풀 드릴(10잡)이 연쇄로 들춘 결함과 진화
+1. **v1 절대경로 명령**(아침 수정): 짧은 잡은 해결. 그러나 2분+ 잡은 openclaw exec가 백그라운드 전환(YIELD_MS 클램프 120s — 회피 불가) → 트리거 LLM이 poll 대기 대신 **프로세스 kill(verify-pm R4 사망)·소스 열람·DB 자체 쿼리**(월권).
+2. **v2 프롬프트 강화**("poll만, kill 금지"): poll 턴 누적으로 **무료 티어 모델 rate limit** → 트리거 자체가 429 전멸. LLM babysitting은 프롬프트로 못 고친다.
+3. **v3 fire-and-forget(최종)**: `setsid -f sh -c '… >> .runtime/logs/cron/<잡>.log' && echo launched` — 트리거 턴 수 초 종료. nohup만으론 부족(openclaw가 **턴 종료 시 프로세스 그룹 정리** — digest 2초 생존 vs verify 10분+ 사망으로 격리 확인) → setsid 세션 분리.
+   - 실패 가시성 이관: `trading.run`이 예외·비정상 rc 시 **P1 알림**(가드 스킵 rc=3 제외) + 잡별 로그.
+   - 트리거 모델 **로컬 핀**(qwen2.5:3b, bootstrap이 pull) — 클라우드 쿼터를 크리티컬 패스에서 제거.
+
+## 최종 검증
+- digest-noon: PASS(트리거 58s, 라운드 완주 추적 "P1 다이제스트: 1건 발송").
+- verify-pm: PASS — R4가 트리거 턴 종료 후 분리 생존·완주. 선별 0은 정당(미검증 이벤트 최대 강도 0.35/0.5로 임계 미달).
+- pm 드릴 데이터 실적: 뉴스 564 · 이벤트 71 · 논제 36 · 저녁 보고 1,450자 실발송 · synth-pm 장중 가드 정상 거부.
+
+## 남은 관전
+- 오늘 16:05~21:00 실슬롯 = v3 아키텍처의 첫 무인 사이클. 익일 `drill.py --audit`로 점검.
