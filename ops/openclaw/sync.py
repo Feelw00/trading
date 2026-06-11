@@ -49,8 +49,18 @@ def add_args(job: CronJob) -> list[str]:
         # 채널 미설정 fail-closed로 잡이 error 처리되는 것 방지(2026-06-10 enable 검증).
         "--no-deliver",
         "--",
-        f"python -m trading.run {job.round}",
+        exec_command(job),
     ]
+
+
+def exec_command(job: CronJob) -> str:
+    """결정론 exec 명령 — 절대경로 + cd 필수(2026-06-11 첫 자동 운영일 결함).
+
+    exec cwd는 에이전트 워크스페이스고 PATH의 python은 venv가 아니다 — 상대경로 data/가
+    빈 DB로 열려 조용히 스킵되고, LLM 트리거가 임기응변 복구하는 비결정 경로가 생긴다
+    (SCHED-2 위반). 경로는 sync 시점에 기기별로 렌더(GitOps — clone 위치 무관).
+    """
+    return f"cd {shlex.quote(str(_ROOT))} && .venv/bin/python -m trading.run {job.round}"
 
 
 def _run(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -80,11 +90,13 @@ def matches_manifest(job: CronJob, existing: dict[str, Any]) -> bool:
     if sched.get("expr") != job.cron or sched.get("tz") != TZ:
         return False
     payload = existing.get("payload") or {}
-    if payload.get("message") != f"python -m trading.run {job.round}":
+    if payload.get("message") != exec_command(job):
         return False
     if not payload.get("lightContext"):
         return False
     if set(payload.get("toolsAllow") or []) != {"exec"}:
+        return False
+    if (existing.get("delivery") or {}).get("mode") != "none":
         return False
     return True
 

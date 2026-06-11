@@ -31,7 +31,9 @@ JOBS: tuple[CronJob, ...] = (
     CronJob("score-am", "30 6 * * 1-5", "score-news", comment="R1 게이트→R2 분류·스코어(내부 claude -p, R2_MODEL)"),
     CronJob("verify-am", "45 6 * * 1-5", "verify-catalysts", comment="R4 적대검증(고강도·single_stock 선별, 내부 claude -p)"),
     CronJob("reason-am", "55 6 * * 1-5", "reason-theses", comment="R3 페르소나 분석(촉매 보유 종목, 내부 claude -p ×3)"),
-    CronJob("daily-eod", "0 8 * * 1-5", "daily-eod", comment="전종목→섹터분류→스크리너→fact pack(전일 EOD)"),
+    # 16:05 — data.go.kr T-1 EOD가 08:00엔 미공개(2026-06-11 관측: 09시에도 없음, 전일 14:49엔 있음).
+    # 마감 직후로 옮겨 pm 라운드(16:20~)가 최신 스크리너 후보를 쓰게 한다.
+    CronJob("daily-eod", "5 16 * * 1-5", "daily-eod", comment="전종목→섹터분류→스크리너→fact pack(T-1 EOD)"),
     # --- 오후(마감) ---
     CronJob("news-pm", "20 16 * * 1-5", "collect-news", comment="R0 수집 — 국내 마감 뉴스(네이버 중심)"),
     CronJob("score-pm", "32 16 * * 1-5", "score-news", comment="R1 게이트→R2 분류·스코어(macro-pm와 시각 분리)"),
