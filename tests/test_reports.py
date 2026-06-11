@@ -55,9 +55,10 @@ def test_evening_contains_approvals_and_missing_sections(tmp_path: Path) -> None
     ps.close()
     als.close()
     assert r.kind == "evening"
-    # 승인 요청: draft 상태 초안
-    assert "order.20260610.001740.buy" in r.text and "status=draft" in r.text
-    # 미수집 섹션은 결측 명시(추측 대체 없음)
+    # 승인 요청이 문서 최상단 결정 섹션에
+    assert "order.20260610.001740.buy" in r.text
+    assert r.text.index("결정") < r.text.index("시나리오")
+    # 미수집은 결측 명시(추측 대체 없음)
     assert "KIS" in r.text and "미수집" in r.text
     assert "시나리오" in r.text and "분기 A/B" in r.text
 

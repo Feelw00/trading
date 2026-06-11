@@ -111,11 +111,12 @@ def run(
         return 1
 
     ps = playbook_store if playbook_store is not None else PlaybookStore()
-    day = (result.playbooks[0].as_of if result.playbooks else None)
-    as_of = day.date().isoformat() if day is not None else ""
+    from trading.collectors.base import now_kst as _now_kst
+
+    run_day = (now if now is not None else _now_kst()).date().isoformat()
     stored = ps.append_run(
         result.playbooks, result.drafts,
-        as_of=as_of or "(no-playbook)",
+        as_of=run_day,  # 비거래 런에도 합성 일자 기록(보고 표기·이력 추적)
         scenario_tree=result.scenario_tree,
         checklist=result.checklist,
     )

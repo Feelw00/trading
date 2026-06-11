@@ -7,6 +7,7 @@
   파일이 원본).
 """
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -118,27 +119,69 @@ def render_morning(
                     _guard_length("morning", text, max_chars=max_chars))
 
 
+def _clip(text: str, width: int) -> str:
+    """단어 중간 절단 방지 — width 내 마지막 공백에서 자르고 말줄임."""
+    if len(text) <= width:
+        return text
+    cut = text[:width]
+    if " " in cut[width // 2:]:
+        cut = cut[: cut.rfind(" ")]
+    return cut + " …"
+
+
 def _r4_summary(events_limit: int = 200) -> tuple[dict[str, Any], str]:
     es = EventStore()
     events = es.recent(limit=events_limit)
     es.close()
     verified = [e for e in events if e.verification is not None]
     confirmed = [e for e in verified if e.verification is not None and e.verification.confirmed]
-    lines = [
-        f"[{'생존' if (e.verification and e.verification.confirmed) else '기각'}] "
-        f"({e.catalyst_strength}) {e.summary_1line[:60]}"
-        for e in verified[:8]
-    ]
+    refuted = [e for e in verified if e not in confirmed]
+    refuted.sort(key=lambda e: e.catalyst_strength or 0.0, reverse=True)
+
+    def _line(e: Any) -> str:
+        return f"({e.catalyst_strength}) {_clip(e.summary_1line, 80)}"
+
     as_of = max((e.as_of for e in verified), default=None)
     return (
         {
             "total": len(verified),
             "confirmed": len(confirmed),
-            "refuted": len(verified) - len(confirmed),
-            "lines": lines,
+            "refuted": len(refuted),
+            "confirmed_lines": [_line(e) for e in confirmed],   # 생존은 전부(의사결정 입력)
+            "refuted_lines": [_line(e) for e in refuted[:5]],   # 기각은 강도 상위 5만
         },
         as_of.date().isoformat() if as_of else "(없음)",
     )
+
+
+# R5 시나리오는 통문단으로 오기 쉽다 — 분기·결론 마커에서 결정론 재배열(내용 무변경)
+_SCENARIO_BREAK = re.compile(r"\s*(?=\[분기|\[분기[A-Z]\]|분기 [A-Z]\))|\s+(?=결론\s*:)")
+_BRANCH_MARK = re.compile(r"\[?분기\s*([A-Z가-힣0-9])\]?\)?\s*")
+
+
+def _scenario_lines(text: str) -> list[str]:
+    """시나리오 트리 1문단 → 종목 헤더 + 분기/결론 불릿(텍스트 내용은 그대로)."""
+    if not text.strip():
+        return []
+    out: list[str] = []
+    for block in text.strip().splitlines():
+        block = block.strip()
+        if not block:
+            continue
+        parts = [p.strip() for p in _SCENARIO_BREAK.split(block) if p and p.strip()]
+        if len(parts) <= 1:
+            out.append(block)
+            continue
+        out.append(f"**{parts[0]}**")
+        for p in parts[1:]:
+            m = _BRANCH_MARK.match(p)
+            if m:
+                out.append(f"- 분기 {m.group(1)}: {p[m.end():]}")
+            elif p.startswith("결론"):
+                out.append(f"- **{p}**")
+            else:
+                out.append(f"- {p}")
+    return out
 
 
 def _approval_rows(ps: PlaybookStore, day_compact: str) -> list[dict[str, Any]]:
@@ -186,13 +229,21 @@ def render_evening(
         als.close()
 
     r4, r4_as_of = _r4_summary()
+    synth_as_of = run_meta[0] if run_meta else ""
+    if synth_as_of and not synth_as_of[:1].isdigit():
+        synth_as_of = ""  # "(no-playbook)" 류 코스메틱 값은 표기 생략
+    # 미수집은 빈 섹션 나열 대신 한 군데 모아 명시(읽기 부담 제거, 추측 대체 없음은 유지)
+    notes = [
+        "집행 편차·보유 포지션: KIS 잔고·체결 어댑터 미구현",
+        "수급 확정치(투자자별 매매동향): KRX 접근 미해결",
+    ]
     text = _env().get_template("evening.md.j2").render(
         day=today_iso,
-        executions=[], positions=[], flows=[],     # 어댑터 미구현 — 템플릿이 결측 명시
+        executions=[], positions=[], flows=[],
         r4=r4, r4_as_of=r4_as_of,
-        scenario_tree=(run_meta[1] if run_meta else ""),
-        synth_as_of=(run_meta[0] if run_meta else "(없음)"),
-        approvals=approvals, p2_alerts=p2, notes=[],
+        scenario_lines=_scenario_lines(run_meta[1] if run_meta else ""),
+        synth_as_of=synth_as_of,
+        approvals=approvals, p2_alerts=p2, notes=notes,
     )
     return Rendered("evening", today_iso, _guard_length("evening", text, max_chars=max_chars))
 
