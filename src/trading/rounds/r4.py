@@ -18,12 +18,27 @@ from trading.llm import LLMClient, LLMError, complete_json
 
 LENSES: tuple[str, ...] = ("strength", "linkage", "timing")
 
+# 사실성(가짜뉴스) 렌즈 — discuss 등 "사실 확인" 맥락용(운영자 2026-06-11:
+# "뉴스 검증은 가짜 뉴스를 걸러내는 것이 목표 — 경제 관련 필요없는 뉴스는 없다").
+# 촉매 가치(LENSES)와 직교: 여기서 refute = "사실로 믿기 어려움", survive = "사실로 보임".
+FACT_LENSES: tuple[str, ...] = ("fabrication", "sourcing", "corroboration")
+
 _LENS_TASK: dict[str, str] = {
     "strength": "이 촉매의 시장 임팩트(catalyst_strength)가 과대평가됐는지 공격하라. "
     "이미 가격에 반영됐거나 영향이 미미·일회성이면 refute.",
     "linkage": "affected 종목 연결(relevance)이 실제 근거가 있는지 공격하라. "
     "근거 기사가 해당 종목을 직접 다루지 않거나 연결이 비약이면 refute.",
     "timing": "촉매의 시점 정합성을 공격하라. 이미 지난 일이거나 신선도가 떨어져 지금은 작동 안 하면 refute.",
+    # --- 사실성 렌즈: 뉴스가 '중요한가'가 아니라 '사실인가'만 공격한다 ---
+    "fabrication": "이 사건 내용이 날조·왜곡됐을 가능성을 공격하라. 근거 기사 내부의 수치·인용 "
+    "모순, 비현실적 주장, 제목-본문 불일치(낚시)면 refute. **중요도·신선도는 판단 금지** — "
+    "오래됐어도 사실이면 survive.",
+    "sourcing": "출처 신뢰성을 공격하라. 발행처가 무명·저신뢰이고 1차 출처(공시·공식 발표·실명 "
+    "인용)가 전혀 없으면 refute. 신뢰 가능한 발행처 또는 1차 출처가 있으면 survive. "
+    "**기사의 경제적 가치 판단 금지.**",
+    "corroboration": "교차 확인 가능성을 공격하라. 근거 기사들이 단일 출처의 복제뿐이고 독립 "
+    "소스가 전무하며 내용이 이례적 주장이면 refute. 독립 복수 소스가 같은 사실을 보도하거나 "
+    "통상적 사실 보도면 survive. **중요도 판단 금지.**",
 }
 
 
@@ -123,9 +138,10 @@ def verify_event(
     config: R4Config,
     *,
     source: str = "r4:claude",
+    lenses: tuple[str, ...] = LENSES,
 ) -> Verification:
-    """3렌즈 perspective-diverse 검증 → 다수결 confirmed."""
-    verdicts = [verify_lens(client, event, lens, evidence) for lens in LENSES]
+    """3렌즈 perspective-diverse 검증 → 다수결 confirmed. 렌즈 셋 주입 가능(촉매/사실성)."""
+    verdicts = [verify_lens(client, event, lens, evidence) for lens in lenses]
     survived = sum(1 for v in verdicts if v.survived)
     notes = [f"{survived}/{len(verdicts)} 렌즈 생존(min={config.min_survived})"]
     return Verification(
@@ -144,17 +160,19 @@ def run_r4(
     config: R4Config | None = None,
     source: str = "r4:claude",
     on_event: Callable[[EventProgress], None] | None = None,
+    lenses: tuple[str, ...] = LENSES,
 ) -> R4Result:
     """선별 → 이벤트별 3렌즈 검증 → verification 부착한 새 version 이벤트 반환.
 
     ``on_event`` 가 주어지면 이벤트 검증 직후마다 호출(장시간 실행 가시성 + incremental 적재).
+    ``lenses``: 기본=촉매 가치(LENSES), 사실성 확인은 FACT_LENSES(discuss 등).
     """
     cfg = config if config is not None else R4Config()
     selected = select_events(events, cfg)
     verified: list[EventRecord] = []
     for idx, e in enumerate(selected, start=1):
         evidence = [evidence_by_id[i] for i in e.evidence if i in evidence_by_id]
-        verification = verify_event(client, e, evidence, cfg, source=source)
+        verification = verify_event(client, e, evidence, cfg, source=source, lenses=lenses)
         new_version = e.model_copy(update={"verification": verification})
         verified.append(new_version)
         if on_event is not None:
@@ -164,6 +182,7 @@ def run_r4(
 
 
 __all__ = [
+    "FACT_LENSES",
     "LENSES",
     "EventProgress",
     "R4Config",

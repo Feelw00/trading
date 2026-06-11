@@ -126,6 +126,11 @@ class FlowStore:
         self._conn.close()
 
 
+def collect_stock(client: KisClient, store: FlowStore, code: str, name: str, bas_dt: str) -> int:
+    """단일 종목 수급 적재(KIS 1콜 ≈ 최근 30거래일). 신규 행 수 반환. 실패는 CollectError 전파."""
+    return store.upsert("stock", code, name, client.investor_flows_by_stock(code, bas_dt))
+
+
 def collect(
     client: KisClient,
     store: FlowStore,
@@ -291,6 +296,7 @@ __all__ = [
     "SOURCE",
     "FlowStore",
     "collect",
+    "collect_stock",
     "intraday_lines",
     "main",
     "report_lines",

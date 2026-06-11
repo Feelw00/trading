@@ -113,3 +113,51 @@ R7이 스코어 적중도를 사후 캘리브레이션해 `catalyst_strength` �
 - ✅ **cron 슬롯 배선**(2026-06-09): `ops/openclaw/cron_jobs.py`에 뉴스 촉매 파이프라인 슬롯 — am `collect-news`(06:20)→`score-news`(06:30)→`verify-catalysts`(06:45), pm(16:20/32/45). 9잡 전부 **`mode=exec`**(R2/R4도 — openclaw는 exec만, claude -p는 Python 내부 호출, NEWS-R2/SCHED-3). `sync.py` round 정합성 통과(dry-run). test_dispatch `_EXPECTED` 갱신.
 - ✅ **R3 페르소나가 EventStore 소비**(2026-06-09, 다운스트림): `rounds/r3.py` — 촉매 보유 종목별 3페르소나(수급/사이클/매크로) **입력격리**(catalyst_type으로 촉매 분배 + 페르소나별 데이터) → ThesisRecord(invalidation 필수·1회 재생성). `ThesisStore`(append-only) + `reason_news.py` + `reason-theses` 라운드 + cron(06:55/16:55). 미수집 핵심지표(투자자별 매매·DRAM가격 🔴)는 **보류·저확신**(추측 금지). 라이브 입증: 수급 페르소나가 "보류"(conf 0.15)·사이클이 재무 grounded short.
 - ⬜ 인덱싱(P-3 확장 — FTS5 등, 선택) · ⬜ R3 산출의 R4 적대검증(설계서 R4 thesis-kill, 별도) · ⬜ R5 합성.
+
+---
+
+## 💡 P-5 — DiscussPack: 종목 토론 컨텍스트 사전 조립 + 캐싱 (discuss 개편)
+
+**동기 (운영자, 2026-06-11):** `/discuss <종목>`이 토론 전에 필요한 컨텍스트(종목·테마, 관련 뉴스+사실검증,
+가격 추이, 투자자별 수급 포지션)를 **미리 결정론 조립**하고 **별도 DB에 캐싱** — 같은 종목 재질문 시
+갱신 여부를 운영자에게 확인 후 재사용. 현재 discuss는 factpack 단일종목 조회만 쓰고, 뉴스 검증·수급
+누적 포지션·캐시가 없다.
+
+### 산출물: `DiscussPack` (pydantic 계약 — FactPack 확장이 아니라 별도 계약)
+| 섹션 | 내용 | 소스(결정론) |
+|---|---|---|
+| identity | srtn_cd·name·market·시총·**섹터/테마 태그** | market.sqlite(stock_sectors: llm-cls-v1→dart-ksic-v1) |
+| price_trend | 최근 5/20/60거래일 변동률·거래대금 서지·252d 신고가 근접·일별 요약 N건 | market.sqlite (스크리너 신호 함수 재사용) |
+| flows_position | **개인/외인/연기금/기관(연기금外)** 최근 5/20일 누적 순매수(억원) + 일별 5건 | flows.sqlite — 없으면 KIS 종목별 TR 1콜(≈30거래일) 즉시 수집 |
+| news | 해당 종목 entity 매칭 최근 뉴스 ≤8 (trust·R1 플래그) | news.sqlite `recent_for` — 빈약하면 종목명 쿼리 수집(COLLECT-4 범위) |
+| verified_events | **뉴스 사실검증(멀티에이전트)**: 기존 검증된 이벤트(EventStore) + 미평가 뉴스만 scoped R2(이벤트화)→R4(3렌즈 적대검증) | EventStore + rounds/r2·r4 재사용(claude -p) |
+| disclosures/financials | 공시 90d·재무 YoY | DART (factpack 로직 재사용) |
+| meta | built_at(KST)·섹션별 as_of·notes(결측 사유) | — |
+
+### 캐시: `data/discuss.sqlite` `discuss_packs` (append-only)
+- `(srtn_cd, version, built_at, price_as_of, pack_json)` — 갱신=새 version(UPDATE 금지). 최신 version 조회.
+- **신선도 판정(결정론)**: `price_as_of < 시세 DB 최신 거래일` → STALE 라벨. 뉴스 최신 fetched_at도 비교 표기.
+
+### 조립기: `src/trading/discuss_pack.py` (CLI)
+- `--check <종목>`: 캐시 유무·version·built_at·STALE 여부 출력 → **스킬이 "갱신할까?" 질문에 사용**
+- `--build <종목> [--no-verify]`: 결정론 수집(가격·수급·뉴스·공시) → 신규 뉴스만 R2→R4 검증 → 새 version 저장 + 요약 출력
+- 기본 `<종목>`: 캐시 최신 version 출력(없으면 build 안내)
+
+### 스킬 흐름 (discuss SKILL.md 개정)
+1. `--check` → **캐시 있으면 운영자에게 갱신 여부 질문**(STALE이면 갱신 권장 명시) — 운영자 지시: 자동 갱신 아님
+2. 갱신 OK/캐시 없음 → `--build` (LLM은 트리거만)
+3. pack을 grounding으로 기존 적대 토론(§2~5) — §4 "수급 데이터 없음" 문구 폐기(flows로 대체)
+
+### LLM 경계 (절대금지 #2 정합)
+- 조립·캐시·신선도·수급·가격 = **순수 코드**. LLM 개입은 ① 뉴스 검증(기존 승인 경로 R2→R4 그대로) ② 토론 자체, 둘뿐.
+- 비용: build당 claude -p는 **신규(미평가) 뉴스에 비례**(기검증 이벤트 재사용, 상한 8건) — 캐시가 반복 비용 상쇄.
+
+**영향범위:** `contracts/discuss.py`(신규)·`discuss_pack.py`(신규)·`journal/discuss.py`(캐시 스토어)·
+`collectors/flows.py`(단일종목 수집 함수)·`.claude/skills/discuss/SKILL.md`(개정). 기존 라운드 무변경.
+
+**미결 해소(운영자 결정 2026-06-11):** ① 뉴스 보강 **build 내장** ② TTL 없이 **영구 보존**(append-only)
+③ 이벤트 범위 = **종목 + 소속 섹터(sector_theme)까지**(broad_market 제외).
+
+**상태:** 👍채택·구현 완료(2026-06-11) — `contracts/discuss.py`·`journal/discuss.py`(DiscussStore)·
+`discuss_pack.py`(--check/--build/기본)·`flows.collect_stock`·discuss SKILL.md 개정. pytest 289·mypy 0.
+실거동: 후성 v1(--no-verify)→v2(풀 빌드: R2 신규 8건→이벤트 1, R4 선별 1·검증 1) 캐시 적재 확인.
