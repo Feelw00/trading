@@ -1,12 +1,13 @@
 # 현재 작업 (CURRENT)
 
 > 슬림 유지. 완료된 작업은 `archive/YYYY-MM-DD-<slug>.md`로 떨구고 여기엔 한 줄 + 링크만.
-> 최종 갱신: 2026-06-10 (KST)
+> 최종 갱신: 2026-06-11 (KST)
 
 ## 진행 중
 - _(없음 — 다음 세션 진입 시 채움)_
 
 ## 최근 완료
+- 2026-06-11 — **첫 자동 사이클 점검: 18슬롯 ok였으나 exec 비결정(임기응변 복구) 발견 → 절대경로 명령 복원 + daily-eod 16:05 이동. 모닝 브리핑 자동 발송 확인** → [archive](archive/2026-06-11-first-auto-cycle-audit.md)
 - 2026-06-10 — **M3 R7 평가: 결정론 채점기(적중률·캘리브레이션·R4 정확도·레짐 프록시) + 해석 claude -p(자동 적용 금지) — M3 완결, R0~R7 전 라운드 배선** → [archive](archive/2026-06-10-m3-r7-evaluation.md)
 - 2026-06-10 — **M3 R6 보고: Jinja2 모닝/저녁 렌더 + 분량 가드(실패+P1, 축약 없음) + Telegram 실발송 검증(1,420자)** → [archive](archive/2026-06-10-m3-r6-reports.md)
 - 2026-06-10 — **M3 R5.5 선택기: 순수 함수 평가 엔진 + approved-only arm(P1 알림) + 장중·휴장 가드, SEL-1 등록** → [archive](archive/2026-06-10-m3-r55-selector.md)
