@@ -16,13 +16,16 @@ import json
 import os
 import sqlite3
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
-from trading.collectors.base import now_kst
+from trading.collectors.base import KST, now_kst
 from trading.collectors.kis import KisClient, client_from_env
-from trading.market_calendar.calendar import in_krx_session
+from trading.market_calendar.calendar import MarketCalendar, in_krx_session
+
+# 일별 확정치 가용 마진 — 15:30 마감 후 집계 반영 시간(15:38 가용 실측, 보수 마진)
+_DAILY_SETTLED_AFTER = time(15, 40)
 
 DEFAULT_DB = Path("data") / "flows.sqlite"
 SOURCE = "kis:투자자매매동향(일별)"
@@ -124,6 +127,21 @@ class FlowStore:
 
     def close(self) -> None:
         self._conn.close()
+
+
+def latest_settled_bas_dt(now: datetime | None = None) -> str:
+    """수급 확정치 기준일(YYYYMMDD) — 시세 DB가 아니라 **시장 캘린더** 기준.
+
+    data.go.kr EOD 공개 시차에 수급 신선도가 끌려가지 않게 분리(2026-06-11 운영자 지적
+    — "수집이 완료되고 보고해야지"). 거래일 15:40 이후면 당일(확정 집계 가용 실측),
+    그 전(장중·장전)이면 직전 거래일.
+    """
+    resolved = (now if now is not None else now_kst()).astimezone(KST)
+    cal = MarketCalendar.default()
+    d = resolved.date()
+    if cal.is_trading_day(d) and resolved.time() >= _DAILY_SETTLED_AFTER:
+        return d.strftime("%Y%m%d")
+    return cal.latest_trading_day(d - timedelta(days=1)).strftime("%Y%m%d")
 
 
 def collect_stock(client: KisClient, store: FlowStore, code: str, name: str, bas_dt: str) -> int:
@@ -261,13 +279,15 @@ def run(top_n: int = 15) -> int:
         return 0
     store = FlowStore()
     pairs = [(c.srtn_cd, c.name) for c in res.candidates]
-    result = collect(client, store, pairs, res.as_of)
+    bas_dt = latest_settled_bas_dt()  # 시세 DB가 아니라 캘린더 기준(공개 시차 비동조)
+    result = collect(client, store, pairs, bas_dt)
     total, latest = store.count(), store.latest_date()
     store.close()
     failed = sorted(k for k, v in result.items() if v < 0)
     new_rows = sum(v for v in result.values() if v > 0)
     print(
-        f"수급 적재 as_of={res.as_of}: 대상 {len(result)}(시장 2+후보 {len(pairs)}) · "
+        f"수급 적재 bas_dt={bas_dt}(후보 스크리너 as_of={res.as_of}): "
+        f"대상 {len(result)}(시장 2+후보 {len(pairs)}) · "
         f"신규 {new_rows}행 · DB 총 {total}행(최신 {latest})"
         + (f" · 실패 {len(failed)}: {', '.join(failed)}" if failed else "")
     )

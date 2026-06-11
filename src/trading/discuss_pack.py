@@ -19,7 +19,7 @@ import re
 import sys
 
 from trading.collectors.base import CollectError, now_kst
-from trading.collectors.flows import FlowStore, collect_stock
+from trading.collectors.flows import FlowStore, collect_stock, latest_settled_bas_dt
 from trading.collectors.kis import client_from_env as kis_from_env
 from trading.collectors.market import MarketStore
 from trading.collectors.news import NewsStore, build_query_plan, collect_news
@@ -184,9 +184,18 @@ def _flows_cumulative(code: str, store: FlowStore | None = None) -> list[FlowCum
     return out
 
 
+def _all_lenses_failed(v: object) -> bool:
+    """렌즈 전부가 LLM 호출 실패 — 판정이 아니라 미검증(기각 누명 방지, 2026-06-11 관측)."""
+    verdicts = getattr(v, "lens_verdicts", [])
+    return bool(verdicts) and all(lv.reason.startswith("검증 호출 실패") for lv in verdicts)
+
+
 def _brief(e: EventRecord) -> EventBrief:
     v = e.verification
-    status = "unverified" if v is None else ("confirmed" if v.confirmed else "refuted")
+    if v is not None and _all_lenses_failed(v):
+        status = "unverified"  # 호출 실패는 기각이 아님 — 사실성 라벨 오염 방지
+    else:
+        status = "unverified" if v is None else ("confirmed" if v.confirmed else "refuted")
     lenses: str | None = None
     lens_notes: list[str] = []
     if v is not None:
@@ -267,7 +276,10 @@ def _verify_events(
                     f"(폐기 {r2.rejected}, LLM에러 {len(r2.batch_errors)})"
                 )
                 events = _stock_events(es, code, name)
-        unverified = [e for e in events if e.verification is None][:R4_DISCUSS_MAX]
+        unverified = [
+            e for e in events
+            if e.verification is None or _all_lenses_failed(e.verification)
+        ][:R4_DISCUSS_MAX]
         if unverified:
             need = sorted({eid for e in unverified for eid in e.evidence})
             nstore2 = NewsStore()
@@ -277,6 +289,9 @@ def _verify_events(
                 nstore2.close()
 
             def _on_event(p: EventProgress) -> None:
+                # 전 렌즈 호출 실패면 박제하지 않는다 — 다음 빌드에서 재검증 가능하게 유지
+                if p.event.verification is not None and _all_lenses_failed(p.event.verification):
+                    return
                 es.append([p.event])
 
             # 토론 전수검증 — 선별 임계 해제(0.0), 상한만 유지.
@@ -321,9 +336,8 @@ def build(ident: str, *, verify: bool = True) -> tuple[int, DiscussPack] | None:
         if resolved is None:
             return None
         code, name = resolved
-        latest = mstore.latest_date() or ""
         _enrich_news(code, name, notes)
-        _enrich_flows(code, name, latest, notes)
+        _enrich_flows(code, name, latest_settled_bas_dt(), notes)  # 캘린더 기준(시세 공개시차 비동조)
         fact = build_fact_pack_for(code, store=mstore)
         if fact is None:
             return None

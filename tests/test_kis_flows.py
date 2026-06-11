@@ -13,7 +13,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from trading.collectors.base import CollectError
-from trading.collectors.flows import FlowStore, collect, intraday_lines, report_lines
+from trading.collectors.flows import (
+    FlowStore,
+    collect,
+    intraday_lines,
+    latest_settled_bas_dt,
+    report_lines,
+)
 from trading.collectors.kis import (
     TR_INVESTOR_BY_MARKET,
     TR_INVESTOR_BY_STOCK,
@@ -216,6 +222,18 @@ def test_intraday_param_pairs_and_parse(tmp_path: Path) -> None:
     assert "FID_INPUT_ISCD_2=S101" in url
     with pytest.raises(ValueError):
         c.investor_flows_intraday("NIKKEI")
+
+
+def test_latest_settled_bas_dt_calendar_based() -> None:
+    """수급 기준일은 캘린더 기준 — 마감(15:40)후=당일, 장중·장전=직전 거래일, 주말=금요일."""
+    after_close = datetime(2026, 6, 11, 16, 5, tzinfo=KST)   # 목 마감 후
+    in_session = datetime(2026, 6, 11, 10, 0, tzinfo=KST)    # 목 장중
+    pre_open = datetime(2026, 6, 11, 8, 0, tzinfo=KST)       # 목 장전
+    saturday = datetime(2026, 6, 13, 12, 0, tzinfo=KST)      # 토
+    assert latest_settled_bas_dt(after_close) == "20260611"
+    assert latest_settled_bas_dt(in_session) == "20260610"
+    assert latest_settled_bas_dt(pre_open) == "20260610"
+    assert latest_settled_bas_dt(saturday) == "20260612"     # 금요일
 
 
 def test_intraday_lines_session_gate() -> None:
