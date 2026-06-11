@@ -62,6 +62,15 @@ if [ ! -x "$HOME/.openclaw/bin/openclaw" ]; then
 fi
 log "OpenClaw: $($HOME/.openclaw/bin/openclaw --version 2>&1 | head -1)"
 
+# --- 6.5. 트리거 모델(로컬 핀) — cron 트리거 턴 전용. 클라우드 쿼터를 크리티컬 패스에서 제거
+#     (2026-06-11: minimax 무료 티어 rate limit으로 트리거 전멸 → 로컬 소형 모델 전환).
+command -v ollama >/dev/null || die "ollama 미설치 — https://ollama.com/download"
+TRIGGER_MODEL="qwen2.5:3b"  # openclaw.template.json agents.defaults.model과 일치 유지
+ollama list 2>/dev/null | grep -q "^${TRIGGER_MODEL}" || {
+  log "트리거 모델 pull: $TRIGGER_MODEL"
+  ollama pull "$TRIGGER_MODEL"
+}
+
 # --- 7. .runtime/openclaw 상태 디렉토리 ---
 mkdir -p .runtime/openclaw/workspace
 chmod 700 .runtime/openclaw
