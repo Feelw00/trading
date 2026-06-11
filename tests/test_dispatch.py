@@ -28,8 +28,11 @@ def test_list_empty_and_unknown() -> None:
 
 
 def test_dispatch_routes_to_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(run, "_alert_round_failure", lambda n, d: calls.append((n, d)))
     monkeypatch.setitem(ROUNDS, "_dummy", lambda: 7)
     assert main(["_dummy"]) == 7
+    assert calls == [("_dummy", "rc=7")]  # P1 경로 호출 확인(실발송은 conftest가 차단)
 
 
 def test_daily_eod_chain_stops_on_first_failure(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -91,3 +91,16 @@ def order_kwargs() -> dict[str, Any]:
         "fetched_at": FETCHED,
         "source": "sample_fake",
     }
+
+
+@pytest.fixture(autouse=True)
+def _no_real_round_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """trading.run 실패 경로가 실제 AlertStore/Telegram에 닿지 않게 전역 차단.
+
+    2026-06-11 사고: 디스패치 실패 테스트(_dummy rc=7)가 운영 AlertStore에 P1을 적재,
+    pytest 실행 횟수만큼(14건) digest-close가 실제 Telegram 발송. 알림 경로를 검증하려는
+    테스트는 이 fixture 위에 다시 monkeypatch로 recorder를 얹으면 된다.
+    """
+    import trading.run as _run
+
+    monkeypatch.setattr(_run, "_alert_round_failure", lambda name, detail: None)
