@@ -23,6 +23,12 @@ description: 부팅 컨텍스트 — DB에서 데이터 신선도·스크리너 
   - 키 없으면 → **'키 필요 — `.env`에 `NAVER_CLIENT_ID`/`NAVER_CLIENT_SECRET`(국내) 또는 `SEARXNG_URL`(해외)'** 명시(흉내내기 금지, COLLECT-3).
 - **이유:** 뉴스 없이 분석하면 fact pack의 뉴스 촉매가 빈다(가격·공시·재무는 grounded). 종목 분석(`discuss`)·전망 전에 이 신선도를 먼저 본다.
 
+## 1c. 자동 사이클 점검 (cron 18슬롯 가동 중 — 2026-06-10~)
+- 전일~금일 자동 사이클 사후 검증(트리거 안 함, 판정만):
+  `poetry run python ops/openclaw/drill.py --audit`
+- **PASS만이면 한 줄 요약. WARN/FAIL 있으면 ⚠️ 잡명+사유 보고**(잡별 로그 `.runtime/logs/cron/<잡>.log` 참조). 라운드 실패 P1 알림(Telegram) 수신분과 대조.
+- 게이트웨이 생존도 함께: tmux `openclaw-trading` 세션 + 포트 18790 (죽었으면 `bash ops/openclaw/start-gateway.sh` 제안).
+
 ## 2. 오늘 후보 (스크리너 — DB 위, 수집 없음)
 - `poetry run python -m trading.screener` → 상위 후보 + 섹터 태그. **기존 DB로만 계산**(라이브 수집 안 함).
 
