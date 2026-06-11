@@ -8,16 +8,34 @@
 이벤트 트리거는 알림·체크리스트 갱신까지만 — **신규 주문 초안을 생성하지 않는다**(§8).
 """
 
+import html as _html
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
-from trading.alerts.channels import Channel, ChannelError, LogChannel, channel_from_env
-from trading.alerts.model import Alert, Severity, format_alert
+from trading.alerts.channels import (
+    Channel,
+    ChannelError,
+    LogChannel,
+    TelegramChannel,
+    channel_from_env,
+)
+from trading.alerts.model import Alert, Severity, format_alert, format_alert_html
 from trading.alerts.store import AlertStore
 
 logger = logging.getLogger("trading.alerts")
 
 _DIGEST_HEADER = "[P1 다이제스트] {n}건"
+
+
+def _deliver(channel: Channel, plain: str, rich: str) -> None:
+    """발송 — Telegram이면 HTML(서식), 거부 시 평문 폴백. 그 외 채널은 평문."""
+    if isinstance(channel, TelegramChannel):
+        try:
+            replace(channel, parse_mode="HTML").send(rich)
+            return
+        except ChannelError:
+            pass  # HTML 거부(엔티티 오류 등) → 평문으로 — 알림 미달이 최악
+    channel.send(plain)
 
 
 @dataclass
@@ -34,7 +52,7 @@ class AlertDispatcher:
         if alert.severity is Severity.P0:
             channel = self.channel
             try:
-                channel.send(format_alert(alert))
+                _deliver(channel, format_alert(alert), format_alert_html(alert))
             except ChannelError as e:
                 logger.error("P0 발송 실패 — 로그 폴백: %s", e)
                 channel = self.fallback
@@ -53,11 +71,15 @@ class AlertDispatcher:
         pending = self.store.pending(Severity.P1.value)
         if not pending:
             return 0
-        body = "\n\n".join(format_alert(a) for _, a in pending)
-        text = _DIGEST_HEADER.format(n=len(pending)) + "\n\n" + body
+        header = _DIGEST_HEADER.format(n=len(pending))
+        text = header + "\n\n" + "\n\n".join(format_alert(a) for _, a in pending)
+        rich = (
+            f"<b>{_html.escape(header, quote=False)}</b>\n\n"
+            + "\n\n".join(format_alert_html(a) for _, a in pending)
+        )
         channel = self.channel
         try:
-            channel.send(text)
+            _deliver(channel, text, rich)
         except ChannelError as e:
             logger.error("P1 다이제스트 발송 실패 — 로그 폴백: %s", e)
             channel = self.fallback

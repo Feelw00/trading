@@ -11,6 +11,7 @@
 알림은 신규 주문 초안을 생성하지 않는다(§8) — 이 모듈엔 주문 관련 코드가 존재하지 않는다.
 """
 
+import html
 from enum import Enum
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
@@ -52,7 +53,7 @@ class Alert(BaseModel):
 
 
 def format_alert(alert: Alert) -> str:
-    """채널 발송용 평문 — 4요소 고정 순서."""
+    """채널 발송용 평문 — 4요소 고정 순서. (로그 폴백·비텔레그램 채널용)"""
     lines = [f"[{alert.severity.value}] {alert.what}", f"규칙: {alert.rule}"]
     if alert.severity is not Severity.P2:
         lines += [f"행동: {alert.action}", f"기한: {alert.deadline}"]
@@ -60,4 +61,23 @@ def format_alert(alert: Alert) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["Alert", "Severity", "format_alert"]
+def format_alert_html(alert: Alert) -> str:
+    """Telegram parse_mode=HTML 발송용 — 평문과 동일 4요소, 등급·행동만 강조.
+
+    전 필드 HTML 이스케이프(환율 임계 "<1540" 류 안전). 텔레그램은 마크다운을
+    렌더하지 않으므로(R6과 동일) 서식은 HTML 엔티티로만.
+    """
+    lines = [
+        f"<b>[{alert.severity.value}] {html.escape(alert.what, quote=False)}</b>",
+        f"규칙: {html.escape(alert.rule, quote=False)}",
+    ]
+    if alert.severity is not Severity.P2:
+        lines += [
+            f"행동: <b>{html.escape(alert.action, quote=False)}</b>",
+            f"기한: {html.escape(alert.deadline, quote=False)}",
+        ]
+    lines.append(f"({alert.created_at.isoformat(timespec='minutes')})")
+    return "\n".join(lines)
+
+
+__all__ = ["Alert", "Severity", "format_alert", "format_alert_html"]

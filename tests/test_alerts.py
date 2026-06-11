@@ -194,3 +194,47 @@ def test_store_appends_and_recent_roundtrip(tmp_path: Path) -> None:
     [back] = s.recent(limit=1)
     assert back == _alert()
     s.close()
+
+
+def test_format_alert_html_escapes_and_bolds() -> None:
+    from trading.alerts.model import format_alert_html
+
+    a = _alert(what="USD/KRW <1540 이탈 & 재돌파", rule="환율 임계 <1540")
+    out = format_alert_html(a)
+    assert out.startswith("<b>[P0] USD/KRW &lt;1540 이탈 &amp; 재돌파</b>")
+    assert "규칙: 환율 임계 &lt;1540" in out
+    assert "행동: <b>" in out
+
+
+def test_p0_to_telegram_uses_html_parse_mode(tmp_path: Path) -> None:
+    sink: list[bytes] = []
+
+    def opener(url: str, body: bytes, timeout: float) -> bytes:
+        sink.append(body)
+        return b'{"ok": true}'
+
+    tg = TelegramChannel(token="t", chat_id="c", opener=opener)
+    d = AlertDispatcher(channel=tg, store=AlertStore(tmp_path / "a.sqlite"))
+    assert d.notify(_alert()) == "sent:telegram"
+    payload = json.loads(sink[0])
+    assert payload["parse_mode"] == "HTML" and payload["text"].startswith("<b>[P0]")
+
+
+def test_digest_to_telegram_html_with_plain_fallback(tmp_path: Path) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def opener(url: str, body: bytes, timeout: float) -> bytes:
+        payload = json.loads(body)
+        calls.append(payload)
+        # HTML 발송은 거부 → 평문 폴백 검증
+        if payload.get("parse_mode") == "HTML":
+            return json.dumps({"ok": False, "description": "can't parse entities"}).encode()
+        return b'{"ok": true}'
+
+    tg = TelegramChannel(token="t", chat_id="c", opener=opener)
+    d = AlertDispatcher(channel=tg, store=AlertStore(tmp_path / "a.sqlite"))
+    d.notify(_alert(severity=Severity.P1))
+    assert d.flush_digest() == 1
+    assert calls[0]["parse_mode"] == "HTML" and "<b>[P1 다이제스트]" in calls[0]["text"]
+    assert "parse_mode" not in calls[1] and calls[1]["text"].startswith("[P1 다이제스트]")
+    assert d.flush_digest() == 0  # 폴백 발송도 dispatched 기록 — 재발송 없음
