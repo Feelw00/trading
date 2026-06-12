@@ -6,8 +6,11 @@
 - 가장 흔한 출력은 "오늘 해당 없음, **비거래**"여야 정상(갭 전략의 엣지는 분포가 쏠린 날만).
 - 조건 평가는 AND — arm_conditions 전부 충족해야 활성.
 - **관측치 누락·평가 불가 조건 = 미충족**(보수 기본값). 값을 추측하지 않는다(환각 가드).
-- 조건식 문법은 ``<op><숫자>`` (op: <, <=, >, >=, ==) — R5가 산출하는 흐름 변수 조건의
-  계약. 비숫자 조건(시각 등)은 평가 불가 → 비활성 + 사유 박제.
+- 조건식 문법(R5↔R5.5 계약):
+  - ``<op><숫자>`` (op: <, <=, >, >=, ==) — 연속 흐름변수(갭·거래량·체결강도 등).
+  - ``==true`` / ``==false`` — boolean 흐름변수(전고 회복·거래량 클라이맥스·신저가 갱신 실패).
+    관측치 1.0=참 / 0.0=거짓(flowsnap 인코딩)으로 평가(SEL-2, 2026-06-12).
+  - 그 외(시각 ``09:30`` 등)는 평가 불가 → 비활성 + 사유 박제.
 """
 
 import re
@@ -20,6 +23,8 @@ from trading.contracts.playbook import Playbook, PlaybookState
 FlowSnapshot = Mapping[str, Mapping[str, float]]
 
 _COND = re.compile(r"^\s*(<=|>=|==|<|>)\s*(-?\d+(?:\.\d+)?)\s*$")
+# boolean 흐름변수 조건(SEL-2) — 관측치 1.0=참/0.0=거짓
+_BOOL = re.compile(r"^\s*(==|!=)\s*(true|false)\s*$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -60,6 +65,12 @@ def eval_condition(var: str, expr: str, observed: float | None) -> ConditionEval
     """조건 1개 평가 — 관측치 없음/문법 불일치는 미충족(추측 금지)."""
     if observed is None:
         return ConditionEval(var, expr, None, met=False, note="관측치 없음")
+    mb = _BOOL.match(expr)
+    if mb is not None:  # boolean 흐름변수: 관측치 비0=참
+        op, want = mb.group(1), mb.group(2).lower() == "true"
+        is_true = observed != 0.0
+        met = (is_true == want) if op == "==" else (is_true != want)
+        return ConditionEval(var, expr, observed, met=met)
     m = _COND.match(expr)
     if m is None:
         return ConditionEval(var, expr, observed, met=False, note=f"평가 불가 조건식: {expr!r}")

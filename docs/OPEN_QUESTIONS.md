@@ -132,14 +132,17 @@
   같은 `flowsnap.build_snapshot`(KIS 실시간 + 주입 파일)으로 일원화, `load_snapshot` 제거.
   검증: `test_runner_arms_across_date_label_mismatch`(6/11 승인 → 6/12 아침 arm), 실DB 6/12 실행 정상.
 
-### 🟡 SEL-2 — R5 흐름변수 boolean 조건과 selector 숫자 문법 불일치 (2026-06-12 발견)
+### 🟢 SEL-2 — R5 흐름변수 boolean 조건과 selector 숫자 문법 불일치 — **2026-06-12 해소**
 - **맥락:** R5가 `prev_day_high_reclaim ==true`처럼 boolean 흐름변수 조건을 산출하는데, selector(`engine._COND`)는
-  `<op><숫자>`만 평가 → `==true`는 **평가 불가=미충족**으로 빠진다(arm-check 실호출에서 노출). 현재가가
-  전고를 회복(1.0)해도 발동 판정에 반영되지 않는다.
-- **잠정 처리:** arm-check가 "평가 불가" 명시로 가시화(임의 보정 금지). flowsnap은 prev_day_high_reclaim을
-  1.0/0.0으로 채워 둠 — selector가 숫자 조건이면 즉시 작동.
-- **해소책(택1):** ① selector에 `==true/==false`→1.0/0.0 평가 추가 ② R5 프롬프트가 boolean 변수에 `>=1` 류
-  숫자 조건을 내게 가이드. R5 프롬프트·selector 계약 동시 변경이라 P-6 범위 밖 — 별도 결정.
+  `<op><숫자>`만 평가 → `==true`는 평가 불가=미충족으로 빠졌다(arm-check 실호출에서 노출). 현재가가
+  전고를 회복(1.0)해도 발동 판정에 반영되지 않았다.
+- **해소(택1 — 둘 다 적용):** ① selector `engine.eval_condition`에 `==true/==false`(대소문자 무관) 평가 추가
+  (`_BOOL`, 관측치 1.0=참/0.0=거짓 — flowsnap 인코딩과 정합). ② R5 프롬프트에 조건식 문법 가이드
+  명시(연속 변수=`<op><숫자>`, boolean 변수=`==true/==false`, 시각·문자열 금지). explain도 boolean을
+  '= 예/아니오'로 표기. 기존 6/11 데이터(`==true`)가 재산출 없이 즉시 평가됨(실증). 시각(`09:30`)
+  등은 여전히 평가 불가.
+- 검증: `test_boolean_condition_eval`·`test_boolean_arm_condition_activates`(end-to-end), 실DB arm-check
+  에서 `prev_day_high_reclaim = 예(true) → 충족(O)` 확인.
 
 ### 🟡 R7-1 — R7 채점·레짐의 입력 데이터 갭
 - **맥락:** 설계서 §3 R7 채점은 "트리거 발동 후 시계 내 방향 일치"·운영자 준수율, 레짐은 시초 1시간 변동성·개인 강도 프록시(신용잔고·예탁금·레버리지 ETF)를 요구. 현재 ①흐름 데이터 부재로 트리거 발동 감지 불가 ②집행 데이터 부재(KIS 미구현)로 준수율 측정 불가 ③레짐 입력(금융투자협회 신용잔고 등, 부록 A) 수집기 부재.

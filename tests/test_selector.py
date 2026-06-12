@@ -54,6 +54,18 @@ def test_condition_operators() -> None:
     assert not eval_condition("volume_climax", ">2", 2.0).met
 
 
+def test_boolean_condition_eval() -> None:
+    # SEL-2: ==true/==false 평가 — 관측치 1.0=참 / 0.0=거짓(flowsnap 인코딩)
+    assert eval_condition("prev_day_high_reclaim", "==true", 1.0).met
+    assert not eval_condition("prev_day_high_reclaim", "==true", 0.0).met
+    assert eval_condition("volume_climax", "==false", 0.0).met
+    assert not eval_condition("volume_climax", "==false", 1.0).met
+    assert eval_condition("new_low_renewal_fail", "!=true", 0.0).met
+    # 대소문자 무관, 사유 없음(평가됨)
+    ev = eval_condition("prev_day_high_reclaim", "==TRUE", 1.0)
+    assert ev.met and ev.note == ""
+
+
 def test_missing_observation_is_unmet_not_guessed() -> None:
     ev = eval_condition("gap_pct", "<-3.0", None)
     assert not ev.met and ev.note == "관측치 없음"

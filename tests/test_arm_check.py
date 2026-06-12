@@ -117,6 +117,30 @@ def test_candidate_shows_would_arm_preview(tmp_path: Path, monkeypatch: Any) -> 
     assert "지금 승인 시 발동 1건" in arm_check.render_text(r)
 
 
+def test_boolean_arm_condition_activates(tmp_path: Path, monkeypatch: Any) -> None:
+    # SEL-2 end-to-end: prev_day_high_reclaim ==true 조건이 발동까지 반영된다
+    _no_kis(monkeypatch)
+    inj = tmp_path / "flow"
+    inj.mkdir()
+    (inj / "20260611.json").write_text(
+        json.dumps({"001740": {"prev_day_high_reclaim": 1.0}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(flowsnap, "INJECT_DIR", inj)
+    ps = PlaybookStore(tmp_path / "pb.sqlite")
+    res = run_r5(
+        _OneShotClient({"playbooks": [_proposal(arm_conditions={"prev_day_high_reclaim": "==true"})],
+                        "checklist": [], "scenario_tree": []}),
+        [_thesis()], [], [], now=SYNTH,
+    )
+    ps.append_run(res.playbooks, res.drafts, as_of="2026-06-10",
+                  scenario_tree=res.scenario_tree, checklist=res.checklist)
+    for d in res.drafts:
+        ps.append_draft(d.model_copy(update={"status": OrderStatus.APPROVED}))
+    r = arm_check.assess(now=NEXT_AM, playbook_store=ps)
+    ps.close()
+    assert r.active_count == 1  # boolean 조건 충족 → 발동(과거엔 '평가 불가'로 빠졌음)
+
+
 def test_ttl_expired_setup_excluded(tmp_path: Path, monkeypatch: Any) -> None:
     _no_kis(monkeypatch)
     monkeypatch.setattr(flowsnap, "INJECT_DIR", tmp_path / "noflow")

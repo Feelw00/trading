@@ -21,9 +21,15 @@ def test_explain_condition_numeric() -> None:
     assert "-3.0 미만" in explain.explain_condition("gap_pct", "<-3.0")
 
 
-def test_explain_condition_non_numeric_flags_unevaluable() -> None:
-    # selector가 평가 못 하는 비숫자 조건은 '평가 불가' 명시(R5↔selector 계약 틈 노출)
-    out = explain.explain_condition("prev_day_high_reclaim", "==true")
+def test_explain_condition_boolean() -> None:
+    # SEL-2: boolean 흐름변수는 '= 예/아니오'로 — 평가 불가가 아니다
+    assert "예(true)" in explain.explain_condition("prev_day_high_reclaim", "==true")
+    assert "아니오(false)" in explain.explain_condition("volume_climax", "==false")
+
+
+def test_explain_condition_still_unevaluable_for_non_numeric_non_bool() -> None:
+    # 시각·문자열 등 진짜 평가 불가 조건은 여전히 명시
+    out = explain.explain_condition("new_low_after", "09:30")
     assert "평가 불가" in out
 
 

@@ -35,6 +35,8 @@ _OP_KO = {">=": "이상", ">": "초과", "<=": "이하", "<": "미만", "==": "�
 
 # selector 계약: 조건식은 <op><숫자> (engine._COND와 동일 의미) — 그 외는 평가 불가
 _COND = re.compile(r"^\s*(<=|>=|==|<|>)\s*(-?\d+(?:\.\d+)?)\s*$")
+# boolean 흐름변수 조건(engine._BOOL과 동일) — SEL-2
+_BOOL = re.compile(r"^\s*(==|!=)\s*(true|false)\s*$", re.IGNORECASE)
 
 
 def var_label(var: str) -> str:
@@ -44,10 +46,15 @@ def var_label(var: str) -> str:
 
 
 def explain_condition(var: str, expr: str) -> str:
-    """'execution_strength', '>=110' → '체결강도(...) 110 이상'. 비숫자 조건은 평가불가 표기."""
+    """조건식 해설. 숫자는 '... N 이상', boolean은 '... = 예/아니오', 그 외는 평가불가 표기."""
+    mb = _BOOL.match(expr)
+    if mb is not None:
+        sign = "=" if mb.group(1) == "==" else "≠"
+        val = "예(true)" if mb.group(2).lower() == "true" else "아니오(false)"
+        return f"{var_label(var)} {sign} {val}"
     m = _COND.match(expr)
     if m is None:
-        return f"{var_label(var)} {expr} (평가 불가 — 숫자 조건식 아님)"
+        return f"{var_label(var)} {expr} (평가 불가 — 숫자/boolean 조건식 아님)"
     op, num = m.group(1), m.group(2)
     return f"{var_label(var)} {num} {_OP_KO[op]}"
 
