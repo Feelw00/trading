@@ -97,3 +97,21 @@ def test_event_unknown_catalyst_type_rejected(event_kwargs: dict[str, Any]) -> N
 def test_affected_relevance_out_of_range_rejected(bad: float) -> None:
     with pytest.raises(ValidationError):
         AffectedStock(srtn_cd="005930", relevance=bad)
+
+
+# --- ScenarioAxis (R5 시나리오 구조화 — 저장 왕복·레거시 산문 호환) ---
+
+
+def test_scenario_axes_stored_roundtrip() -> None:
+    from trading.contracts.scenario import ScenarioAxis, axes_from_stored, axes_to_stored
+
+    axes = [ScenarioAxis(title="축1(장비)", lines=["분기 A-1: SOX 보합 이상"])]
+    assert axes_from_stored(axes_to_stored(axes)) == axes
+    assert axes_from_stored("") == []
+
+
+def test_scenario_legacy_prose_wrapped_without_loss() -> None:
+    from trading.contracts.scenario import axes_from_stored
+
+    [ax] = axes_from_stored("축1: 첫 줄\n축2: 둘째 줄\n")
+    assert ax.title == "" and ax.lines == ["축1: 첫 줄", "축2: 둘째 줄"]

@@ -1,7 +1,7 @@
 # 모닝 브리핑 — {{ day }} (읽기 전용)
 
 ## 오늘 플레이북 / 예약 주문
-{% if playbooks %}{% for p in playbooks %}- {{ p.id }} → 초안 {{ p.draft_id }}: **{{ p.status }}**{% if p.arm %} | arm 조건: {{ p.arm }}{% endif %}
+{% if playbooks %}{% for p in playbooks %}- {% if p.label %}**{{ p.label }}** {% endif %}`{{ p.id }}` → 초안 `{{ p.draft_id }}`: **{{ p.status }}**{% if p.arm %} | 발동 조건: {{ p.arm }}{% endif %}
 {% endfor %}{% else %}**오늘 할 일 없음 — 비거래.** (대부분의 날의 정상 결론. 분석은 어젯밤에 끝났다.)
 {% endif %}
 

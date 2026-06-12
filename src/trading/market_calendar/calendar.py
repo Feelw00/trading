@@ -85,6 +85,15 @@ class MarketCalendar:
             cur += timedelta(days=1)
         raise MarketGuardError(f"no trading day within a year after {d}")
 
+    def add_trading_days(self, d: date, n: int) -> date:
+        """d로부터 n거래일 후(d 미포함). n=0이면 d 그대로. OrderDraft TTL 만료일 계산."""
+        if n <= 0:
+            return d
+        cur = d
+        for _ in range(n):
+            cur = self.next_trading_day(cur)
+        return cur
+
 
 def _as_kst(dt: datetime) -> datetime:
     if dt.tzinfo is None:

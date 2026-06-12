@@ -1,9 +1,10 @@
 # 저녁 결재 보고 — {{ day }}
 
-## 결정 — 내일 OrderDraft 승인 요청
-{% if approvals %}{% for a in approvals %}- **{{ a.id }}** {{ a.symbol }} {{ a.side }} | 스탑 {{ a.stop }} | 시간손절 {{ a.time_stop }}일 | 상한 {{ a.cap }}
-{% endfor %}> 검토 후 approved 전이 → 예약 주문 직접 입력 (수동 — 의도된 마찰).
-{% else %}**승인 요청 없음 — 내일 비거래.** (대부분의 날의 정상 결론)
+## 내일 검토 후보 (아침 arm-check에서 승인)
+{% if approvals %}{% for a in approvals %}- **{{ a.label }} {{ a.side }}** — {{ a.summary }}
+  발동 조건: {{ a.arm }} | 스탑 {{ a.stop }} | 시간손절 {{ a.time_stop }}일 | 상한 {{ a.cap }} | `{{ a.id }}`
+{% endfor %}> 내일 아침 `/arm-check`에서 흐름과 함께 검토·승인 → 예약 주문 직접 입력 (수동 — 의도된 마찰).
+{% else %}**검토 후보 없음 — 내일 비거래.** (대부분의 날의 정상 결론)
 {% endif %}
 
 ## 시나리오 (R5{% if synth_as_of %}, {{ synth_as_of }}{% endif %})

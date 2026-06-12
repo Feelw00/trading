@@ -55,9 +55,14 @@ def test_evening_contains_approvals_and_missing_sections(tmp_path: Path) -> None
     ps.close()
     als.close()
     assert r.kind == "evening"
-    # 승인 요청이 문서 최상단 결정 섹션에
-    assert "order.20260610.001740.buy" in r.text
-    assert r.text.index("결정") < r.text.index("시나리오")
+    # 검토 후보가 문서 최상단에 — 승인은 내일 아침 arm-check로 이관
+    assert "`order.20260610.001740.buy`" in r.text   # ID는 코드 표기(텔레그램 자동 링크 차단)
+    assert "플러시 롱" in r.text                      # 근거 1줄(R5 summary) 병기
+    assert "발동 조건: gap_pct <-3.0" in r.text       # arm 조건 병기
+    assert "기본단위의 50%" in r.text                  # "0.5 * normal_unit" 내부 표현식 노출 금지
+    assert "매수" in r.text                           # side 한국어 표기
+    assert "아침 `/arm-check`에서" in r.text          # 승인은 아침으로 이관
+    assert r.text.index("검토 후보") < r.text.index("시나리오")
     # 미수집은 결측 명시(추측 대체 없음)
     assert "KIS" in r.text and "미수집" in r.text
     assert "시나리오" in r.text and "분기 A/B" in r.text
@@ -72,7 +77,45 @@ def test_evening_excludes_already_approved_from_requests(tmp_path: Path) -> None
     r = render_evening(now=NOW, playbook_store=ps, alert_store=als)
     ps.close()
     als.close()
-    assert "승인 요청 없음" in r.text
+    assert "검토 후보 없음" in r.text
+
+
+def test_evening_scenario_axes_render_as_title_and_bullets(tmp_path: Path) -> None:
+    ps = PlaybookStore(tmp_path / "pb.sqlite")
+    res = run_r5(
+        _OneShotClient({"playbooks": [], "checklist": [], "scenario_tree": [
+            {"title": "축1(반도체 장비)", "lines": ["분기 A-1: SOX 보합 이상", "공통 리스크: 단기 선반영"]},
+        ]}),
+        [_thesis()], [], [], now=NOW,
+    )
+    ps.append_run(res.playbooks, res.drafts, as_of="2026-06-10",
+                  scenario_tree=res.scenario_tree, checklist=res.checklist)
+    als = AlertStore(tmp_path / "al.sqlite")
+    r = render_evening(now=NOW, playbook_store=ps, alert_store=als)
+    ps.close()
+    als.close()
+    assert "**축1(반도체 장비)**" in r.text       # 축 제목은 굵게 — 통문단 금지
+    assert "- 분기 A-1: SOX 보합 이상" in r.text  # 분기는 1줄 1불릿
+    assert "- 공통 리스크: 단기 선반영" in r.text
+
+
+def test_evening_legacy_prose_scenario_still_renders(tmp_path: Path) -> None:
+    # 구조화 이전 적재분(산문 TEXT) — 내용 무변경으로 줄 단위 표시(하위 호환)
+    import sqlite3 as _sq
+
+    ps = PlaybookStore(tmp_path / "pb.sqlite")
+    ps.close()
+    conn = _sq.connect(str(tmp_path / "pb.sqlite"))
+    conn.execute("INSERT INTO synth_runs (as_of, scenario_tree, checklist) VALUES (?,?,?)",
+                 ("2026-06-10", "축1(장비): 분기 A-1 어쩌고. 축2: 과열 배제.", "[]"))
+    conn.commit()
+    conn.close()
+    ps = PlaybookStore(tmp_path / "pb.sqlite")
+    als = AlertStore(tmp_path / "al.sqlite")
+    r = render_evening(now=NOW, playbook_store=ps, alert_store=als)
+    ps.close()
+    als.close()
+    assert "축1(장비): 분기 A-1 어쩌고. 축2: 과열 배제." in r.text
 
 
 def test_length_guard_fails_not_truncates(tmp_path: Path) -> None:
@@ -111,19 +154,22 @@ def test_tgfmt_converts_report_subset() -> None:
 
     md = (
         "# 저녁 결재 보고 — 2026-06-11\n\n\n"
-        "## 결정 — 내일 OrderDraft 승인 요청\n"
-        "**승인 요청 없음 — 내일 비거래.** (정상)\n"
+        "## 내일 검토 후보 (아침 arm-check에서 승인)\n"
+        "**검토 후보 없음 — 내일 비거래.** (정상)\n"
         "> 검토 후 approved 전이\n"
         "- 분기 A: 갭<-3 & 거래량>2배\n"
+        "- 스탑 47000 | `order.20260611.170920.buy`\n"
         "- [ ] 갭 확인\n"
     )
     out = to_telegram_html(md)
     assert "<b>저녁 결재 보고 — 2026-06-11</b>" in out
-    assert "<b>승인 요청 없음 — 내일 비거래.</b> (정상)" in out
+    assert "<b>검토 후보 없음 — 내일 비거래.</b> (정상)" in out
     assert "<i>검토 후 approved 전이</i>" in out
     assert "• 분기 A: 갭&lt;-3 &amp; 거래량&gt;2배" in out  # 본문 HTML 이스케이프
+    # ID는 <code> 엔티티 — 텔레그램이 .buy gTLD를 URL로 오인해 링크 거는 것을 차단
+    assert "<code>order.20260611.170920.buy</code>" in out
     assert "□ 갭 확인" in out
-    assert "#" not in out and "**" not in out
+    assert "#" not in out and "**" not in out and "`" not in out
     assert "\n\n\n" not in out  # 연속 빈 줄 압축
 
 

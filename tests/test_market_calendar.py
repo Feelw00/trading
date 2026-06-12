@@ -62,6 +62,15 @@ def test_latest_and_next_trading_day_skip_closures() -> None:
     assert cal.latest_trading_day(date(2026, 6, 14)) == date(2026, 6, 12)
 
 
+def test_add_trading_days_skips_weekends_and_holidays() -> None:
+    cal = MarketCalendar()
+    # 6/10(수)부터 3거래일 후 = 6/15(월) (6/13~14 주말 건너뜀)
+    assert cal.add_trading_days(date(2026, 6, 10), 3) == date(2026, 6, 15)
+    assert cal.add_trading_days(date(2026, 6, 10), 0) == date(2026, 6, 10)  # n=0 그대로
+    # 한글날(10/9 금) 포함 구간 건너뜀: 10/8(목)+1거래일=10/12(월)
+    assert cal.add_trading_days(date(2026, 10, 8), 1) == date(2026, 10, 12)
+
+
 # --- 장중 세션 ---
 
 

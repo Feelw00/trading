@@ -9,6 +9,7 @@
 
 import re
 import sqlite3
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +20,9 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from trading.alerts.model import Severity
 from trading.alerts.store import AlertStore
 from trading.collectors.base import KST, now_kst
+from trading.collectors.market import DEFAULT_DB as MARKET_DB
 from trading.contracts.order import OrderDraft, OrderStatus
+from trading.contracts.scenario import ScenarioAxis
 from trading.journal.events import EventStore
 from trading.journal.playbooks import PlaybookStore
 
@@ -90,15 +93,17 @@ def render_morning(
     day_compact = resolved.strftime("%Y%m%d")
     ps = playbook_store if playbook_store is not None else PlaybookStore()
     playbooks = ps.playbooks_for_day(day_compact)
+    pairs = [(pb, ps.draft(pb.order_draft_ref)) for pb in playbooks]
+    names = _symbol_names(d.symbol for _, d in pairs if d is not None)
     rows: list[dict[str, Any]] = []
-    for pb in playbooks:
-        draft = ps.draft(pb.order_draft_ref)
+    for pb, draft in pairs:
         rows.append(
             {
                 "id": pb.id,
                 "draft_id": pb.order_draft_ref,
+                "label": _label(draft.symbol, names) if draft else "",
                 "status": draft.status.value if draft else "초안 없음",
-                "arm": dict(pb.arm_conditions),
+                "arm": ", ".join(f"{k} {v}" for k, v in pb.arm_conditions.items()),
             }
         )
     run_meta = ps.latest_run()
@@ -120,13 +125,54 @@ def render_morning(
 
 
 def _clip(text: str, width: int) -> str:
-    """단어 중간 절단 방지 — width 내 마지막 공백에서 자르고 말줄임."""
+    """문장 경계 우선 절단 — width 내 마지막 문장 끝, 없으면 마지막 공백에서 말줄임."""
     if len(text) <= width:
         return text
     cut = text[:width]
+    dot = cut.rfind(". ")
+    if dot >= width // 2:
+        return cut[: dot + 1]
     if " " in cut[width // 2:]:
         cut = cut[: cut.rfind(" ")]
     return cut + " …"
+
+
+def _symbol_names(srtns: Iterable[str]) -> dict[str, str]:
+    """시세 DB(daily_quotes)에서 종목명 조회 — DB 부재·미등재는 조용히 코드 표기 폴백."""
+    wanted = sorted(set(srtns))
+    if not wanted or not MARKET_DB.exists():
+        return {}
+    out: dict[str, str] = {}
+    try:
+        conn = sqlite3.connect(str(MARKET_DB))
+        for s in wanted:
+            row = conn.execute(
+                "SELECT name FROM daily_quotes WHERE srtn_cd=? AND name IS NOT NULL "
+                "ORDER BY bas_dt DESC LIMIT 1",
+                (s,),
+            ).fetchone()
+            if row and row[0]:
+                out[s] = str(row[0])
+        conn.close()
+    except sqlite3.Error:
+        return out
+    return out
+
+
+def _label(srtn: str, names: dict[str, str]) -> str:
+    name = names.get(srtn)
+    return f"{name}({srtn})" if name else srtn
+
+
+_CAP_EXPR = re.compile(r"^([0-9.]+)\s*\*\s*normal_unit$")
+
+
+def _humanize_cap(cap: str | None) -> str:
+    """"0.5 * normal_unit" → "기본단위의 50%". 그 외 표현식은 원문 유지."""
+    m = _CAP_EXPR.match(cap or "")
+    if not m:
+        return cap or "(미지정)"
+    return f"기본단위의 {float(m.group(1)) * 100:g}%"
 
 
 def _r4_summary(events_limit: int = 200) -> tuple[dict[str, Any], str]:
@@ -139,7 +185,7 @@ def _r4_summary(events_limit: int = 200) -> tuple[dict[str, Any], str]:
     refuted.sort(key=lambda e: e.catalyst_strength or 0.0, reverse=True)
 
     def _line(e: Any) -> str:
-        return f"({e.catalyst_strength}) {_clip(e.summary_1line, 80)}"
+        return f"(강도 {e.catalyst_strength}) {_clip(e.summary_1line, 110)}"
 
     as_of = max((e.as_of for e in verified), default=None)
     return (
@@ -154,47 +200,40 @@ def _r4_summary(events_limit: int = 200) -> tuple[dict[str, Any], str]:
     )
 
 
-# R5 시나리오는 통문단으로 오기 쉽다 — 분기·결론 마커에서 결정론 재배열(내용 무변경)
-_SCENARIO_BREAK = re.compile(r"\s*(?=\[분기|\[분기[A-Z]\]|분기 [A-Z]\))|\s+(?=결론\s*:)")
-_BRANCH_MARK = re.compile(r"\[?분기\s*([A-Z가-힣0-9])\]?\)?\s*")
-
-
-def _scenario_lines(text: str) -> list[str]:
-    """시나리오 트리 1문단 → 종목 헤더 + 분기/결론 불릿(텍스트 내용은 그대로)."""
-    if not text.strip():
-        return []
+def _scenario_lines(axes: Sequence[ScenarioAxis]) -> list[str]:
+    """ScenarioAxis 목록 → 축 제목(굵게) + 분기 불릿. 구조는 R5 산출 시점에 강제(scenario 계약)."""
     out: list[str] = []
-    for block in text.strip().splitlines():
-        block = block.strip()
-        if not block:
-            continue
-        parts = [p.strip() for p in _SCENARIO_BREAK.split(block) if p and p.strip()]
-        if len(parts) <= 1:
-            out.append(block)
-            continue
-        out.append(f"**{parts[0]}**")
-        for p in parts[1:]:
-            m = _BRANCH_MARK.match(p)
-            if m:
-                out.append(f"- 분기 {m.group(1)}: {p[m.end():]}")
-            elif p.startswith("결론"):
-                out.append(f"- **{p}**")
-            else:
-                out.append(f"- {p}")
+    for ax in axes:
+        if ax.title:
+            out.append(f"**{ax.title}**")
+        out.extend(f"- {ln}" for ln in ax.lines)
     return out
 
 
+_SIDE_KO = {"buy": "매수", "sell": "매도"}
+
+
 def _approval_rows(ps: PlaybookStore, day_compact: str) -> list[dict[str, Any]]:
+    """승인 요청 행 — 결재가 이 섹션만으로 끝나도록 종목명·근거 1줄·arm 조건까지 병기."""
+    pbs = [
+        (pb, ps.draft(pb.order_draft_ref))
+        for pb in ps.playbooks_for_day(day_compact)
+    ]
+    names = _symbol_names(d.symbol for _, d in pbs if d is not None)
     rows: list[dict[str, Any]] = []
-    for pb in ps.playbooks_for_day(day_compact):
-        draft: OrderDraft | None = ps.draft(pb.order_draft_ref)
+    for pb, draft in pbs:
         if draft is None or draft.status is not OrderStatus.DRAFT:
             continue  # 승인 요청은 미결재(draft)만
         rows.append(
             {
-                "id": draft.id, "symbol": draft.symbol, "side": draft.side.value,
+                "id": draft.id,
+                "label": _label(draft.symbol, names),
+                "side": _SIDE_KO.get(draft.side.value, draft.side.value),
+                "summary": pb.summary or "(근거 미기재 — 시나리오 섹션 참조)",
+                "arm": ", ".join(f"{k} {v}" for k, v in pb.arm_conditions.items()),
                 "stop": draft.stop.level if draft.stop else None,
-                "time_stop": draft.time_stop_days, "cap": draft.total_size_cap,
+                "time_stop": draft.time_stop_days,
+                "cap": _humanize_cap(draft.total_size_cap),
                 "status": draft.status.value,
             }
         )
@@ -241,7 +280,7 @@ def render_evening(
         day=today_iso,
         executions=[], positions=[], flows=[],
         r4=r4, r4_as_of=r4_as_of,
-        scenario_lines=_scenario_lines(run_meta[1] if run_meta else ""),
+        scenario_lines=_scenario_lines(run_meta[1] if run_meta else []),
         synth_as_of=synth_as_of,
         approvals=approvals, p2_alerts=p2, notes=notes,
     )

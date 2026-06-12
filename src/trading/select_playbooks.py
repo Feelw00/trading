@@ -1,50 +1,37 @@
 """R5.5 실행 러너 — ``python -m trading.select_playbooks``. (synth_playbooks 패턴, 순수 코드)
 
-당일 PlaybookSet(PlaybookStore) + 흐름 관측 스냅샷 → 활성화 결정 → **승인된(approved)**
-주문 초안만 ``armed`` 새 version append + P1 알림(§8: 플레이북 arm). cron 08:50(select-am).
+**활성 approved 풀**(PlaybookStore.active_playbooks — status·TTL, 날짜 라벨 비의존) +
+흐름 관측 스냅샷 → 활성화 결정 → ``armed`` 새 version append + P1 알림(§8). cron 08:50(select-am).
+
+날짜 어긋남 해소(SEL-3, 2026-06-12): 기존 ``playbooks_for_day(today)`` 는 R5 생성일(전일 밤)과
+조회일(아침)이 어긋나 전일 승인분을 못 찾았다. arm-check와 같은 ``active_playbooks`` 로 통일 —
+status=approved + TTL(time_stop_days 거래일) 미경과 풀을 조회한다.
 
 가드(잡 내부, SCHED-1):
 - **장중 실행 거부** — 08~10시 경로에 새로운 판단은 없고, 장중 arm은 즉흥 매매 경로다.
 - 휴장일 스킵(``require_trading_day``).
 
-흐름 관측치 소스: NXT 프리마켓 어댑터 미구현(🔴/SEL-1) — ``.runtime/flow/<YYYYMMDD>.json``
-(``{"<srtn>": {"gap_pct": -3.5, …}}``) 주입 파일만 읽는다. **파일 없음 = 빈 스냅샷 =
-전부 비활성(비거래)** — 관측치를 추측하지 않는다.
+흐름 관측치: arm-check와 동일 ``flowsnap.build_snapshot`` (KIS 실시간 + 주입 파일
+``<flow_dir>/<YYYYMMDD>.json``). **둘 다 없음 = 빈 스냅샷 = 전부 비활성(비거래)** — 추측 금지.
 """
 
-import json
 from datetime import datetime
 from pathlib import Path
 
 from trading.alerts import Alert, AlertDispatcher, Severity
-from trading.collectors.base import KST, now_kst
+from trading.collectors.base import now_kst
+from trading.collectors.kis import client_from_env as kis_from_env
 from trading.contracts.order import OrderStatus
+from trading.flowsnap import build_snapshot
 from trading.journal.playbooks import PlaybookStore
 from trading.market_calendar.calendar import (
     MarketGuardError,
     in_krx_session,
     require_trading_day,
 )
-from trading.selector import FlowSnapshot, select
+from trading.selector import select
 
 DEFAULT_FLOW_DIR = Path(".runtime") / "flow"
-
-
-def load_snapshot(day: str, *, flow_dir: Path = DEFAULT_FLOW_DIR) -> FlowSnapshot:
-    """주입 스냅샷 로드 — 없으면 빈 dict(전부 비활성). 숫자 외 값은 버린다(평가 불가)."""
-    path = flow_dir / f"{day}.json"
-    if not path.exists():
-        return {}
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        return {}
-    out: dict[str, dict[str, float]] = {}
-    for srtn, obs in raw.items():
-        if isinstance(obs, dict):
-            out[str(srtn)] = {
-                str(k): float(v) for k, v in obs.items() if isinstance(v, (int, float))
-            }
-    return out
 
 
 def run(
@@ -53,8 +40,9 @@ def run(
     playbook_store: PlaybookStore | None = None,
     dispatcher: AlertDispatcher | None = None,
     flow_dir: Path = DEFAULT_FLOW_DIR,
+    kis_client: object | None = None,
 ) -> int:
-    """당일 플레이북 선택·arm. 장중 rc=3, 휴장일 rc=3, 그 외 0(비거래 포함 — 정상)."""
+    """활성 풀 선택·arm. 장중 rc=3, 휴장일 rc=3, 그 외 0(비거래 포함 — 정상)."""
     resolved_now = now if now is not None else now_kst()
     try:
         require_trading_day(resolved_now)
@@ -65,18 +53,21 @@ def run(
         print("R5.5 거부 — 장중 arm 금지(아침 08:50 경로 전용, 설계서 §3 R5.5)")
         return 3
 
-    day = resolved_now.astimezone(KST).strftime("%Y%m%d")
     ps = playbook_store if playbook_store is not None else PlaybookStore()
-    playbooks = ps.playbooks_for_day(day)
-    if not playbooks:
-        print(f"R5.5: 당일({day}) 플레이북 없음 — 비거래")
+    active = ps.active_playbooks(resolved_now)   # approved + TTL(날짜 라벨 비의존)
+    if not active:
+        print("R5.5: 활성 approved 풀 없음 — 비거래(승인 대기/만료 점검)")
         if playbook_store is None:
             ps.close()
         return 0
 
-    snapshot = load_snapshot(day, flow_dir=flow_dir)
-    if not snapshot:
-        print("R5.5: 흐름 관측치 없음(SEL-1, NXT 어댑터 미구현) — 전 플레이북 비활성")
+    playbooks = [pb for pb, _, _ in active]
+    drafts_by_pb = {pb.id: draft for pb, draft, _ in active}
+    srtns = [draft.symbol for _, draft, _ in active]
+    client = kis_client if kis_client is not None else kis_from_env()
+    snapshot, _notes = build_snapshot(
+        srtns, kis_client=client, now=resolved_now, inject_dir=flow_dir  # type: ignore[arg-type]
+    )
     result = select(playbooks, snapshot)
 
     d = dispatcher if dispatcher is not None else AlertDispatcher()
@@ -90,14 +81,7 @@ def run(
         print(f"  {act.playbook.id}: {act.state.value} [{marks}]")
         if not act.active:
             continue
-        draft = ps.draft(act.playbook.order_draft_ref)
-        if draft is None:
-            print(f"    ⚠ 참조 초안 없음: {act.playbook.order_draft_ref}")
-            continue
-        if draft.status is not OrderStatus.APPROVED:
-            # §6 워크플로: 21:00 저녁 결재 승인 없인 arm 불가(의도된 마찰)
-            print(f"    arm 보류 — 초안 status={draft.status.value} (approved 아님)")
-            continue
+        draft = drafts_by_pb[act.playbook.id]  # active_playbooks가 approved 보장
         ps.append_draft(draft.model_copy(update={"status": OrderStatus.ARMED}))
         armed += 1
         d.notify(
@@ -126,7 +110,7 @@ def main() -> int:
     return run()
 
 
-__all__ = ["load_snapshot", "run"]
+__all__ = ["run"]
 
 
 if __name__ == "__main__":

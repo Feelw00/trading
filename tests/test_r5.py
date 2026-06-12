@@ -121,6 +121,7 @@ def test_discipline_params_injected_ignoring_llm() -> None:
     assert draft.created_when_market.value == "closed"
     [pb] = res.playbooks
     assert pb.order_draft_ref == draft.id and pb.default is PlaybookState.INACTIVE
+    assert pb.summary == "플러시 롱"   # 저녁 결재 근거 1줄 보존(버리지 않는다)
 
 
 def test_missing_stop_level_rejected_not_invented() -> None:
@@ -147,7 +148,7 @@ def test_unknown_thesis_ref_rejected() -> None:
 def test_flat_theses_produce_no_trade() -> None:
     res = _run(None, theses=[_thesis(direction=Direction.FLAT)])
     assert res.playbooks == [] and res.drafts == []
-    assert "비거래" in res.scenario_tree
+    assert "비거래" in res.scenario_tree[0].title
 
 
 def test_non_flow_arm_condition_from_llm_rejected() -> None:
@@ -158,6 +159,31 @@ def test_non_flow_arm_condition_from_llm_rejected() -> None:
 def test_empty_playbooks_is_normal_path() -> None:
     res = _run({"playbooks": [], "scenario_tree": "조건 미충족", "checklist": []})
     assert res.playbooks == [] and res.rejected == 0 and res.error is None
+
+
+# --- 시나리오 구조화 (2026-06-12 가독성 개편: 통문단 금지, 산출 시점 강제) ---
+
+
+def test_scenario_tree_structured_axes_parsed() -> None:
+    res = _run({
+        "playbooks": [],
+        "scenario_tree": [
+            {"title": "축1(반도체 장비)", "lines": ["분기 A-1: SOX 보합 이상", "분기 A-2: 환율 1540 상회 시 비활성"]},
+            {"title": "축2(과열 배제)", "lines": ["climax 미소진 — 신규 진입 배제"]},
+            {"title": "", "lines": []},                  # 빈 축은 버림
+            "통문단 문자열",                              # 비객체 항목은 버림
+        ],
+        "checklist": [],
+    })
+    assert [a.title for a in res.scenario_tree] == ["축1(반도체 장비)", "축2(과열 배제)"]
+    assert res.scenario_tree[0].lines == ["분기 A-1: SOX 보합 이상", "분기 A-2: 환율 1540 상회 시 비활성"]
+
+
+def test_scenario_tree_string_fallback_preserves_lines() -> None:
+    # 스키마 불복종(문자열)도 데이터 유실 없이 줄 단위 보존
+    res = _run({"playbooks": [], "scenario_tree": "첫 줄\n둘째 줄\n", "checklist": []})
+    assert len(res.scenario_tree) == 1 and res.scenario_tree[0].title == ""
+    assert res.scenario_tree[0].lines == ["첫 줄", "둘째 줄"]
 
 
 def test_llm_failure_surfaces_error() -> None:

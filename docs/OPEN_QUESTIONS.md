@@ -102,10 +102,44 @@
 
 ## 라운드 파이프라인
 
-### 🟡 SEL-1 — R5.5 흐름 관측치 소스 (NXT 프리마켓 어댑터 부재)
+### 🟡 SEL-1 — R5.5 흐름 관측치 소스 (NXT 프리마켓 어댑터 부재) — **2026-06-12 부분 해소**
 - **맥락:** R5.5 선택기 입력(갭·프리마켓 거래량·미국 마감·환율 개장가) 중 프리마켓 계열은 NXT 데이터(🔴 외부 의존) 필요. 어댑터 미구현.
-- **잠정 처리(보수):** 선택기는 순수 함수로 완성, 관측치는 `.runtime/flow/<YYYYMMDD>.json` 주입 파일만 읽음. **파일 없음=빈 스냅샷=전 플레이북 비활성(비거래)** — 관측치 추측 금지. 조건식 문법은 `<op><숫자>`(R5↔R5.5 계약), 비숫자 조건은 평가 불가=미충족.
-- **해소책:** NXT 소스 확정(🔴) 후 스냅샷 생성 어댑터 구현 — 선택기 변경 불필요(입력만 채워짐).
+- **2026-06-12 부분 해소(P-6 arm-check):** `flowsnap.build_snapshot`이 KIS 실시간(KIS-RT-1)으로
+  **체결강도(execution_strength)·전일고가 회복(prev_day_high_reclaim)·호가 불균형(orderbook_imbalance)**
+  3종을 실데이터로 채움(2026-06-12 장중 실호출 검증). **프리마켓 거래량(premkt_volume_ratio)·갭(gap_pct)은
+  여전히 NXT 의존 🔴** — "관측치 없음"으로 정직 표기. 잔여 NXT 변수는 주입 파일 보충 경로 유지.
+- **잠정 처리(보수):** 선택기는 순수 함수, 관측치는 KIS 실시간 + `.runtime/flow/<YYYYMMDD>.json` 주입 파일.
+  **둘 다 없음=빈 스냅샷=전 플레이북 비활성(비거래)** — 관측치 추측 금지. 조건식 문법은 `<op><숫자>`
+  (R5↔R5.5 계약), 비숫자 조건은 평가 불가=미충족.
+- **해소책:** NXT 소스 확정(🔴) 후 premkt 계열 스냅샷 보강 — 선택기 변경 불필요(입력만 채워짐).
+
+### 🟢 KIS-RT-1 — KIS 실시간 시세성 TR (P-6 arm-check) — **2026-06-12 관측 확정**
+- **맥락:** arm-check가 9~10시 흐름 관측치를 KIS 실시간으로 채우려면 현재가·체결강도·호가 TR 필요.
+- **관측 확정(2026-06-12 장중 실호출):**
+  - 주식현재가 체결 `GET /uapi/domestic-stock/v1/quotations/inquire-ccnl` TR `FHKST01010300` —
+    output[0]에 `stck_prpr`(현재가)·`tday_rltv`(당일 체결강도, 100 기준) 관측. (현재가 시세 `inquire-price`
+    `FHKST01010100`엔 체결강도 필드 없음 — 미사용 확인.)
+  - 주식현재가 호가 `GET /uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn` TR `FHKST01010200` —
+    output1에 `total_bidp_rsqn`·`total_askp_rsqn`(매수/매도 총호가잔량) → imbalance=(bid−ask)/(bid+ask) 관측.
+- **상태:** 🟢 확정. `collectors/kis.py`(quote_ccnl·quote_asking_price), 결측·비수치는 None=관측치 없음(추측 금지).
+
+### 🟢 SEL-3 — R5.5 cron(select-am) 날짜 라벨 어긋남 — **2026-06-12 해소**
+- **맥락(2026-06-12 발견):** R5(synth-pm, 밤 20:30)는 `pb.<당일>`로 생성하는데 R5.5(select-am,
+  다음날 아침)·기존 arm-check는 `playbooks_for_day(<다음날>)`로 조회 → 하루 어긋나 전일 밤 승인분을
+  못 찾았다(실증: 6/12 아침이 `pb.20260611`을 못 봄). 자동 arm이 사실상 빈 풀로 동작했을 가능성.
+- **해소(P-7):** arm-check·`select_playbooks` 둘 다 `PlaybookStore.active_playbooks`(status=approved
+  + TTL(time_stop_days 거래일), 날짜 라벨 비의존)로 통일. select_playbooks의 흐름 소스도 arm-check와
+  같은 `flowsnap.build_snapshot`(KIS 실시간 + 주입 파일)으로 일원화, `load_snapshot` 제거.
+  검증: `test_runner_arms_across_date_label_mismatch`(6/11 승인 → 6/12 아침 arm), 실DB 6/12 실행 정상.
+
+### 🟡 SEL-2 — R5 흐름변수 boolean 조건과 selector 숫자 문법 불일치 (2026-06-12 발견)
+- **맥락:** R5가 `prev_day_high_reclaim ==true`처럼 boolean 흐름변수 조건을 산출하는데, selector(`engine._COND`)는
+  `<op><숫자>`만 평가 → `==true`는 **평가 불가=미충족**으로 빠진다(arm-check 실호출에서 노출). 현재가가
+  전고를 회복(1.0)해도 발동 판정에 반영되지 않는다.
+- **잠정 처리:** arm-check가 "평가 불가" 명시로 가시화(임의 보정 금지). flowsnap은 prev_day_high_reclaim을
+  1.0/0.0으로 채워 둠 — selector가 숫자 조건이면 즉시 작동.
+- **해소책(택1):** ① selector에 `==true/==false`→1.0/0.0 평가 추가 ② R5 프롬프트가 boolean 변수에 `>=1` 류
+  숫자 조건을 내게 가이드. R5 프롬프트·selector 계약 동시 변경이라 P-6 범위 밖 — 별도 결정.
 
 ### 🟡 R7-1 — R7 채점·레짐의 입력 데이터 갭
 - **맥락:** 설계서 §3 R7 채점은 "트리거 발동 후 시계 내 방향 일치"·운영자 준수율, 레짐은 시초 1시간 변동성·개인 강도 프록시(신용잔고·예탁금·레버리지 ETF)를 요구. 현재 ①흐름 데이터 부재로 트리거 발동 감지 불가 ②집행 데이터 부재(KIS 미구현)로 준수율 측정 불가 ③레짐 입력(금융투자협회 신용잔고 등, 부록 A) 수집기 부재.

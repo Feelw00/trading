@@ -44,6 +44,7 @@ class Playbook(BaseRecord):
     abort_conditions: dict[NonEmptyStr, NonEmptyStr] = Field(default_factory=dict)
     order_draft_ref: NonEmptyStr
     default: PlaybookState = PlaybookState.INACTIVE
+    summary: str = ""   # 저녁 결재 보고용 근거 1줄(R5 산출) — 구필드 레코드 호환 위해 기본값
 
     @model_validator(mode="after")
     def _flow_variables_only(self) -> "Playbook":

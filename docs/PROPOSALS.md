@@ -161,3 +161,89 @@ R7이 스코어 적중도를 사후 캘리브레이션해 `catalyst_strength` �
 **상태:** 👍채택·구현 완료(2026-06-11) — `contracts/discuss.py`·`journal/discuss.py`(DiscussStore)·
 `discuss_pack.py`(--check/--build/기본)·`flows.collect_stock`·discuss SKILL.md 개정. pytest 289·mypy 0.
 실거동: 후성 v1(--no-verify)→v2(풀 빌드: R2 신규 8건→이벤트 1, R4 선별 1·검증 1) 캐시 적재 확인.
+
+## 👍 P-6 — 아침 arm-check: 온디맨드 발동 판단 + 해설 + LLM 분석 (운영자 9~10시 집행 보조)
+
+**상태:** 👍채택(운영자 결정 2026-06-12 "KIS 실시간 + 골격 동시") — 구현 진행.
+
+### 문제
+저녁 결재 보고는 승인 요청(OrderDraft)을 내지만, 9~10시 실제 집행 시점에 운영자가
+"지금 이 주문의 발동 조건이 충족됐나? 이게 무슨 뜻이냐"를 매번 사람(또는 Claude 세션)에게
+물어 코드를 뒤져야 한다(2026-06-12 피드백). R5.5 선택기는 cron(08:50)으로 돌지만 그 산출은
+arm/P1 알림이고, **운영자가 집행 직전 온디맨드로 "판단+해설"을 받는 경로**가 없다.
+
+### 산출: `/arm-check` 스킬 + `trading.arm_check` 러너
+운영자가 9~10시에 `/arm-check` 실행 →
+1. **로드(결정론)**: 당일(또는 지정일) approved OrderDraft + 플레이북.
+2. **흐름 관측치 수집(결정론)**: KIS 실시간(현재가 체결강도·전일고가 회복·호가 불균형) +
+   market.sqlite 전일고가. 프리마켓 거래량(premkt_volume_ratio)은 NXT 부재(SEL-1 🔴)로 미수집 →
+   "관측치 없음". KIS 미설정/실패 시 `.runtime/flow/<날짜>.json` 주입 파일 폴백, 그것도 없으면 빈 스냅샷.
+3. **발동 판단(순수 코드)**: 기존 `selector/engine.py`의 `select()` 재사용 — arm_conditions AND,
+   미충족 사유까지. **LLM 미개입(절대금지 #2).**
+4. **결정론 해설**: 흐름변수 한국어 번역 + 3트랜치 진입 구조 + 스탑/시간손절 의미 + cap 표현식 풀이.
+5. **LLM 분석 해설**: 스킬(이 Claude 세션)이 3·4의 결정론 산출을 받아 리스크·맥락 코멘터리.
+   **판단은 코드가 끝냈고 LLM은 해설만** — discuss 패턴과 동일(결정론 grounding → LLM 토론).
+
+### LLM 경계 (절대금지 #2 정합)
+- 로드·흐름 수집·발동 판단·결정론 해설 = **순수 코드**(`trading.arm_check` JSON 산출).
+- LLM 개입은 **5단계 분석 해설뿐** — 발동 여부 결정에 미개입(코드가 ACTIVE/INACTIVE 확정 후 설명만).
+
+### 데이터 소스 (절대금지 #1 정합 — 추측 구현 금지)
+- KIS 실시간 TR(현재가 `inquire-price` / 호가 `inquire-asking-price-exp-ccn`)은 공식 표준 TR로
+  구현하되 **장중 실호출 미검증**(밤 구현, 장 폐장). OPEN_QUESTIONS에 **장중 1회 검증 게이트** 등록 →
+  운영 전 검증 필수. 미검증 동안 응답 필드 불확실분은 **None=관측치 없음**(보수, 추측 금지).
+- premkt_volume_ratio·gap 등 NXT 의존분은 여전히 SEL-1 🔴 — "관측치 없음"으로 정직 표기.
+
+### 영향범위
+`collectors/kis.py`(현재가·호가 TR 추가)·`flowsnap.py`(신규: KIS→FlowSnapshot)·
+`reports/explain.py`(신규: 흐름변수·트랜치 결정론 해설)·`arm_check.py`(신규 러너)·
+`.claude/skills/arm-check/SKILL.md`(신규). 기존 라운드·selector·R5 무변경(재사용만).
+
+### 미해소(등록)
+- SEL-1: premkt_volume_ratio NXT 소스 — 잔존 🔴(이 기능은 KIS 가용분으로 부분 충족).
+- KIS-RT-1(신규): KIS 실시간 현재가·호가 TR 장중 실호출 검증.
+
+## 👍 P-7 — approved 활성 풀 + TTL + 승인 도구 (OrderDraft 다일 생명주기)
+
+**상태:** 👍채택(운영자 결정 2026-06-12 "2번으로, time_stop_days TTL + 승인 도구 같이") — 구현 완료.
+
+### 문제 (2번 선택의 배경)
+arm-check/R5.5가 **당일 날짜 라벨**(`playbooks_for_day(today)`)로 플레이북을 조회한다. 그런데:
+1. **날짜 어긋남 버그**: R5(synth-pm)는 밤 20:30에 `pb.<당일>`로 생성, R5.5(select-am)·arm-check는
+   다음날 아침에 `playbooks_for_day(<다음날>)`로 조회 → **하루 어긋나 전일 밤 승인분을 못 찾는다**
+   (6/12 아침 arm-check가 `pb.20260611`을 못 봄, 실증).
+2. **다일 셋업 누락**: 3트랜치의 flush(투매일 지정가 매집 50%)는 갭다운 날을 기다리는 셋업 — 며칠
+   안 올 수 있다. R5가 매일 새로 도니 "어제 승인·오늘 미발동 → 모레 진입"이 사라진다.
+3. **승인 수단 부재**: draft→approved 전이 도구가 없어 승인 자체가 불가능했다.
+
+### 산출
+- **`PlaybookStore.active_playbooks(now)`**: 날짜가 아니라 **status=approved + TTL(초안 거래일 +
+  time_stop_days 거래일) 미경과**로 조회. 같은 (종목, 방향)은 최신 초안만(매일 R5 재생성 중복 제거).
+  → 날짜 어긋남 버그가 구조적으로 사라진다(라벨 비의존).
+- **`MarketCalendar.add_trading_days(d, n)`**: TTL 만료일(거래일 단위) 계산.
+- **`trading.approve`**: draft→approved CLI(`--list` + id 명시, append-only). 자동 승인 없음(마찰은 의도).
+- **arm-check**: `active_playbooks` 조회로 전환. 만료일 표기 + "승인 대기 N건" 힌트.
+- **`/approve` 스킬**: 저녁 결재 후 운영자 확인 → 승인.
+
+### TTL 정의 (운영자 결정)
+`time_stop_days`를 셋업 유효기간으로 재사용(스키마 추가 없음). 의미: "이 셋업이 유효한 거래일 수" —
+그 안에 arm 조건이 안 오면 만료(추격 금지). 진입 후 시간손절과 동일 파라미터를 진입 전 대기 한도로 공용.
+
+### 영향범위
+`journal/playbooks.py`(active_playbooks·pending_drafts)·`market_calendar/calendar.py`(add_trading_days)·
+`arm_check.py`·`select_playbooks.py`(둘 다 풀 조회로 전환)·`flowsnap.py`(inject_dir 파라미터)·
+`approve.py`(신규)·`.claude/skills/approve/`(신규)·arm-check SKILL.md(개정). 저녁보고·R5 무변경.
+
+### SEL-3 동반 해소(2026-06-12)
+R5.5 cron(`select_playbooks`)도 `active_playbooks` + `flowsnap.build_snapshot`으로 통일(날짜 라벨·
+흐름 소스 일원화, `load_snapshot` 제거). 날짜 어긋남 자동 arm 경로까지 해소.
+
+### 승인을 아침 arm-check에 통합(2026-06-12, 운영자 결정 "아침 통합")
+저녁 CLI 강제·id 타이핑이 번거롭다는 피드백 → 승인 단계를 저녁에서 **아침 arm-check로 이관**.
+"검토 후 의식적 승인"이라는 본질적 마찰(§6 충동 차단)은 유지하되, 우발적 마찰(타이핑·저녁 CLI)은 제거.
+- `PlaybookStore.candidate_playbooks`: 미승인(draft) 후보 풀(TTL 미적용, 만료일은 "승인 시 유효기간" 참고).
+- `arm_check`: **승인된 셋업**(활성 풀) + **승인 후보**(미승인) 두 섹션. 후보도 흐름 판단해 "지금 승인 시
+  발동" 미리보기. 각 후보에 `approve <id>` 명령 동봉.
+- arm-check 스킬: 후보 검토 정보 제시 → 운영자에게 승인 질문(자동 승인 금지) → 승인 → 갱신 판단.
+- 저녁 보고: "결정 — 승인 요청" → "내일 검토 후보(아침 arm-check에서 승인)"로 톤 조정.
+- 텔레그램 양방향 직접 승인은 채널 발신 전용·openclaw 수신 인프라 부재로 보류(후속).

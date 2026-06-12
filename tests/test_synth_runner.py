@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from trading import synth_playbooks
 from trading.alerts import AlertDispatcher, AlertStore, Severity
 from trading.contracts.order import OrderStatus
+from trading.contracts.scenario import ScenarioAxis
 from trading.journal.playbooks import PlaybookStore
 from trading.journal.theses import ThesisStore
 from trading.llm import LLMError
@@ -84,9 +85,10 @@ def test_store_roundtrip_for_r55_and_r6(tmp_path: Path) -> None:
     [pb] = ps.playbooks_for_day("20260610")
     draft = ps.draft(pb.order_draft_ref)
     assert draft is not None and draft.symbol == "001740"
-    # R6 경로: 합성 메타
+    # R6 경로: 합성 메타 — 문자열 산출(스키마 불복종)도 줄 단위 축으로 보존·왕복
     run_meta = ps.latest_run()
-    assert run_meta is not None and run_meta[1] == "트리" and run_meta[2] == ["갭 확인"]
+    assert run_meta is not None and run_meta[2] == ["갭 확인"]
+    assert run_meta[1] == [ScenarioAxis(title="", lines=["트리"])]
     # status 전이는 새 version append로만
     approved = draft.model_copy(update={"status": OrderStatus.APPROVED})
     assert ps.append_draft(approved) == 2

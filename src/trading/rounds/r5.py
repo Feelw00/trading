@@ -36,6 +36,7 @@ from trading.contracts.order import (
     Tranche,
 )
 from trading.contracts.playbook import FLOW_VARIABLES, Playbook
+from trading.contracts.scenario import ScenarioAxis
 from trading.contracts.thesis import Direction, ThesisRecord
 from trading.collectors.base import now_kst
 from trading.llm import LLMClient, LLMError, complete_json
@@ -54,7 +55,7 @@ class R5Config:
 class R5Result:
     playbooks: list[Playbook]
     drafts: list[OrderDraft]
-    scenario_tree: str                # 시나리오 합성 요약(저녁 보고용)
+    scenario_tree: list[ScenarioAxis]  # 시나리오 합성(축 구조 — 저녁 보고 렌더 단위)
     checklist: list[str]              # 익일 관측 체크리스트
     rejected: int                     # 규율·스키마 위반으로 폐기된 제안 수
     rejected_reasons: list[str] = field(default_factory=list)
@@ -106,7 +107,8 @@ def build_prompt(
         f"## 거시 백드롭\n{macro}\n\n"
         "## 출력 스키마 (JSON, 다른 텍스트 금지)\n"
         "{\n"
-        '  "scenario_tree": "<시나리오 분기 요약, 사실·조건문만>",\n'
+        '  "scenario_tree": [{"title": "<축 제목 — 테마/리스크 축 하나>",\n'
+        '                     "lines": ["<분기·조건·리스크 1줄(예: 분기 A-1: …). 1줄 1항목, 통문단 금지>"]}],\n'
         '  "checklist": ["<익일 관측 항목>"],\n'
         '  "playbooks": [{\n'
         '    "thesis_ref": "<위 논제 id>",\n'
@@ -120,6 +122,8 @@ def build_prompt(
         "  }]\n"
         "}\n\n"
         "## 절대 규칙\n"
+        "- scenario_tree 는 축(title)별로 나누고 lines 한 항목엔 분기 하나만(사실·조건문만) — "
+        "통문단 금지, 한 줄 120자 이내.\n"
         "- arm/abort 조건 키는 위 흐름 변수만. 가치·내러티브 변수(밸류에이션·컨센서스·목표가) 금지.\n"
         "- stop_level 은 '논리적 지지선'이 아니라 심리적 합의 레벨(라운드 넘버, 전저점·전고점)로.\n"
         "  근거 가격(위 컨텍스트)에 없는 레벨을 지어내지 마라 — 불확실하면 그 플레이북을 내지 마라.\n"
@@ -208,9 +212,33 @@ def _to_records(
         arm_conditions=arm_d,                          # 화이트리스트는 계약이 검증
         abort_conditions=abort_d,
         order_draft_ref=draft.id,
+        summary=str(pb.get("summary") or "").strip()[:120],  # 저녁 결재 근거 1줄
         # default=inactive — 발동 여부는 아침 R5.5(코드)가 결정
     )
     return playbook, draft
+
+
+def _parse_scenario(raw: object) -> list[ScenarioAxis]:
+    """LLM scenario_tree → ScenarioAxis 목록. 문자열(스키마 불복종)은 줄 단위 보존."""
+    if isinstance(raw, str):
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        return [ScenarioAxis(title="", lines=lines)] if lines else []
+    if not isinstance(raw, list):
+        return []
+    out: list[ScenarioAxis] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or item.get("axis") or "").strip()
+        raw_lines = item.get("lines")
+        lines = (
+            [str(ln).strip() for ln in raw_lines if str(ln).strip()]
+            if isinstance(raw_lines, list)
+            else []
+        )
+        if title or lines:
+            out.append(ScenarioAxis(title=title, lines=lines))
+    return out
 
 
 def run_r5(
@@ -230,19 +258,20 @@ def run_r5(
     actionable = [t for t in theses if t.direction is not Direction.FLAT]
     if not actionable:
         return R5Result(
-            playbooks=[], drafts=[], scenario_tree="(논제 없음 — 비거래)",
+            playbooks=[], drafts=[],
+            scenario_tree=[ScenarioAxis(title="(논제 없음 — 비거래)")],
             checklist=[], rejected=0,
         )
     try:
         data = complete_json(client, build_prompt(actionable, events, packs, macro_lines, cfg))
     except LLMError as e:
         return R5Result(
-            playbooks=[], drafts=[], scenario_tree="", checklist=[], rejected=0,
+            playbooks=[], drafts=[], scenario_tree=[], checklist=[], rejected=0,
             error=str(e),
         )
     if not isinstance(data, dict):
         return R5Result(
-            playbooks=[], drafts=[], scenario_tree="", checklist=[], rejected=0,
+            playbooks=[], drafts=[], scenario_tree=[], checklist=[], rejected=0,
             error="응답이 객체 아님",
         )
 
@@ -273,7 +302,7 @@ def run_r5(
     checklist = [str(c) for c in raw_cl if str(c).strip()] if isinstance(raw_cl, list) else []
     return R5Result(
         playbooks=playbooks, drafts=drafts,
-        scenario_tree=str(data.get("scenario_tree") or "").strip(),
+        scenario_tree=_parse_scenario(data.get("scenario_tree")),
         checklist=checklist, rejected=rejected, rejected_reasons=reasons,
     )
 

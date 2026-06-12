@@ -21,9 +21,11 @@ from trading.collectors.flows import (
     report_lines,
 )
 from trading.collectors.kis import (
+    TR_ASKING_PRICE,
     TR_INVESTOR_BY_MARKET,
     TR_INVESTOR_BY_STOCK,
     TR_INVESTOR_INTRADAY,
+    TR_QUOTE_CCNL,
     KisClient,
 )
 
@@ -149,6 +151,46 @@ def test_rt_cd_error_raises_collect_error(tmp_path: Path) -> None:
 def test_account_type_validation() -> None:
     with pytest.raises(ValueError):
         KisClient("k", "s", account_type="PAPER")
+
+
+# --- 실시간 시세성 TR (P-6 arm-check, 2026-06-12 관측 확정) ---
+
+
+def test_quote_ccnl_returns_latest_ccn_row(tmp_path: Path) -> None:
+    # inquire-ccnl output은 체결 리스트 — [0]행(현재가·체결강도)을 반환
+    http = _FakeHttp({
+        "/oauth2/tokenP": TOKEN_RESP,
+        "inquire-ccnl": {"rt_cd": "0", "output": [
+            {"stck_prpr": "76100", "tday_rltv": "50.07"},
+            {"stck_prpr": "76050", "tday_rltv": "49.9"},
+        ]},
+    })
+    c = _client(tmp_path, http)
+    row = c.quote_ccnl("219130")
+    assert row["stck_prpr"] == "76100" and row["tday_rltv"] == "50.07"
+    url, headers = http.calls[-1]
+    assert headers["tr_id"] == TR_QUOTE_CCNL
+    assert "FID_INPUT_ISCD=219130" in url
+
+
+def test_quote_asking_price_returns_output1(tmp_path: Path) -> None:
+    http = _FakeHttp({
+        "/oauth2/tokenP": TOKEN_RESP,
+        "inquire-asking-price-exp-ccn": {"rt_cd": "0", "output1": {
+            "total_bidp_rsqn": "13000", "total_askp_rsqn": "10000"}},
+    })
+    c = _client(tmp_path, http)
+    row = c.quote_asking_price("219130")
+    assert row["total_bidp_rsqn"] == "13000"
+    assert http.calls[-1][1]["tr_id"] == TR_ASKING_PRICE
+
+
+def test_quote_ccnl_empty_output_safe(tmp_path: Path) -> None:
+    http = _FakeHttp({
+        "/oauth2/tokenP": TOKEN_RESP,
+        "inquire-ccnl": {"rt_cd": "0", "output": []},
+    })
+    assert _client(tmp_path, http).quote_ccnl("219130") == {}
 
 
 # --- FlowStore ---

@@ -42,6 +42,9 @@
 - **cron 18개 일괄 enable + 운영 안정화** (06-10 저녁~06-11): 트리거 모델 로컬 핀(qwen2.5:3b — 클라우드 쿼터 제거), `--no-deliver`, **fire-and-forget(setsid) 아키텍처**(LLM babysitting 제거 — kill 월권·rate limit 해소), trading.run 실패 P1 + 잡별 로그, daily-eod 16:05 이동(EOD 공개 시차), **drill.py**(슬롯 대기 없는 즉시 트리거+결정론 검증: PASS/WARN/FAIL). 첫 풀 사이클(저녁 결재+모닝 브리핑 자동 발송) 완주. → `2026-06-11-first-auto-cycle-audit.md`
 - **보고·알림 UX**: 저녁 결재 "결정 우선" 재설계 + Telegram HTML 서식 통일(보고·P0·P1, md 미지원 해소). → `2026-06-11-telegram-format.md`
 - **수급(투자자별 매매동향) 해소** (06-11): KIS TR 2종 공식 확정+실호출 검증 → `collectors/kis.py`(토큰 캐시)+`flows.py`(`data/flows.sqlite`)+`collect-flows` 라운드(daily-eod 체인)+FactPack `flows`(R3 수급 grounding). 🔴 KRX 정보데이터시스템 의존 해소. 거시 수집은 report-am/pm 라운드 내장으로 이동(cron 18→16슬롯). → `2026-06-11-kis-investor-flows.md`
+- **R6 보고 가독성 2차 개편** (06-12, 운영자 피드백): R5 시나리오를 산출 시점에 축 구조(`ScenarioAxis`)로 강제(통문단·사후 정규식 재구성 제거), 결재 섹션 자기완결화(종목명+근거 1줄 `Playbook.summary`+발동 조건), ID `<code>`화로 텔레그램 `.buy` gTLD 자동링크 차단. → `2026-06-12-report-readability.md`
+- **arm-check 온디맨드 집행 보조** (06-12, P-6): 9~10시 운영자 실행 → 흐름 관측치 수집(KIS 실시간 체결강도·호가·전고회복 — KIS-RT-1 관측 확정) → `selector` 순수 판단 → 흐름변수·트랜치 결정론 해설(`explain.py`) → 스킬 LLM 분석. 판단=코드/분석=LLM 분리(절대금지 #2). SEL-1 부분 해소(premkt만 NXT 잔존), SEL-2(==true 계약 틈) 발견·등록. → `2026-06-12-arm-check.md`
+- **approved 활성 풀 + TTL + 승인 통합** (06-12, P-7): arm-check·R5.5 cron 당일 날짜 조회 → **status=approved + TTL(time_stop_days 거래일) 풀**로 전환 — **날짜 어긋남 버그**(SEL-3 🟢)·다일 셋업 누락 해소. 승인을 저녁 CLI→**아침 arm-check에 통합**(승인 후보 섹션 + "승인 시 발동" 미리보기 + `approve` 동봉). `MarketCalendar.add_trading_days`, `PlaybookStore.active/candidate_playbooks`, `flowsnap` 일원화, `trading.approve` CLI + `/approve` 스킬, 저녁 보고 "검토 후보"로 톤 조정. → `2026-06-12-approved-pool-ttl.md`
 
 **검증 (AC)**: pytest **272 passed**, mypy **0 issues (103 files)**. 운영: 16슬롯 자동 가동 중(06-11 거시 수집을 report 라운드에 내장, macro-am/pm 슬롯 제거).
 

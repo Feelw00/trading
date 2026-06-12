@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from trading import select_playbooks
+import pytest
+
+from trading import flowsnap, select_playbooks
 from trading.alerts import AlertDispatcher, AlertStore, Severity
 from trading.contracts.order import OrderStatus
 from trading.contracts.playbook import Playbook, PlaybookState
@@ -24,6 +26,12 @@ NIGHT = datetime(2026, 6, 10, 20, 30, tzinfo=KST)     # 전일 밤(R5)
 MORNING = datetime(2026, 6, 11, 8, 50, tzinfo=KST)    # 목, 08:50
 SESSION = datetime(2026, 6, 11, 10, 0, tzinfo=KST)    # 목, 장중
 SUNDAY = datetime(2026, 6, 14, 8, 50, tzinfo=KST)
+
+
+@pytest.fixture(autouse=True)
+def _no_kis(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 러너가 흐름 스냅샷에서 KIS env를 건드리지 않도록 격리(테스트는 주입 파일만)
+    monkeypatch.setattr("trading.select_playbooks.kis_from_env", lambda: None)
 
 
 def _playbook(arm: dict[str, str], *, srtn: str = "001740", day: str = "20260611") -> Playbook:
@@ -81,7 +89,8 @@ def _seed(tmp_path: Path, *, status: OrderStatus = OrderStatus.APPROVED) -> tupl
         [_thesis()], [], [], now=datetime(2026, 6, 11, 20, 30, tzinfo=KST),
     )
     # 테스트 편의: R5 산출 id가 당일(20260611) 규약이 되도록 now를 6/11로 — 6/11 아침이 읽는다
-    ps.append_run(res.playbooks, res.drafts, as_of="2026-06-11", scenario_tree="s", checklist=[])
+    ps.append_run(res.playbooks, res.drafts, as_of="2026-06-11",
+                  scenario_tree=res.scenario_tree, checklist=[])
     if status is not OrderStatus.DRAFT:
         draft = res.drafts[0]
         ps.append_draft(draft.model_copy(update={"status": status}))
@@ -148,10 +157,24 @@ def test_runner_holds_unapproved_draft(tmp_path: Path) -> None:
     ps.close()
 
 
-def test_load_snapshot_drops_non_numeric(tmp_path: Path) -> None:
-    flow_dir = _flow(tmp_path, {"001740": {"gap_pct": -3.5, "note": "텍스트"}})
-    snap = select_playbooks.load_snapshot("20260611", flow_dir=flow_dir)
-    assert snap == {"001740": {"gap_pct": -3.5}}
+def test_runner_arms_across_date_label_mismatch(tmp_path: Path) -> None:
+    # SEL-3 해소: R5 산출일(6/11 밤)과 조회일(6/12 아침)이 달라도 approved 풀로 찾아 arm.
+    # 과거 playbooks_for_day(20260612)는 pb.20260611을 못 찾아 arm 0이었다.
+    ps, d = _seed(tmp_path)  # pb.20260611, approved, as_of 6/11
+    flow_dir = tmp_path / "flow"
+    flow_dir.mkdir()
+    (flow_dir / "20260612.json").write_text(
+        json.dumps({"001740": {"gap_pct": -4.0, "premkt_volume_rank": 10}}), encoding="utf-8"
+    )
+    rc = select_playbooks.run(
+        now=datetime(2026, 6, 12, 8, 50, tzinfo=KST),
+        playbook_store=ps, dispatcher=d, flow_dir=flow_dir,
+    )
+    assert rc == 0
+    draft = ps.draft("order.20260611.001740.buy")
+    assert draft is not None and draft.status is OrderStatus.ARMED  # 날짜 라벨 무관 arm
+    assert len(d.store.pending(Severity.P1.value)) == 1
+    ps.close()
 
 
 def test_activation_state_enum() -> None:
