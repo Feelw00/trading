@@ -16,7 +16,8 @@ from trading.contracts.order import OrderStatus, OrderType, Side
 from trading.contracts.playbook import FLOW_VARIABLES, Playbook, PlaybookState
 from trading.contracts.thesis import Direction, Persona, ThesisRecord
 from trading.llm import LLMError
-from trading.rounds.r5 import TOTAL_SIZE_CAP, R5Config, run_r5
+from trading.flowsnap import OBSERVABLE_FLOW_VARS
+from trading.rounds.r5 import TOTAL_SIZE_CAP, R5Config, build_prompt, run_r5
 
 KST = ZoneInfo("Asia/Seoul")
 NOW = datetime(2026, 6, 10, 20, 30, tzinfo=KST)
@@ -184,6 +185,18 @@ def test_scenario_tree_string_fallback_preserves_lines() -> None:
     res = _run({"playbooks": [], "scenario_tree": "첫 줄\n둘째 줄\n", "checklist": []})
     assert len(res.scenario_tree) == 1 and res.scenario_tree[0].title == ""
     assert res.scenario_tree[0].lines == ["첫 줄", "둘째 줄"]
+
+
+# --- 프롬프트: 관측 가능 흐름변수로 조건 제약 (NXT 미수집 변수 사용 금지) ---
+
+
+def test_prompt_constrains_arm_to_observable_flow_vars() -> None:
+    p = build_prompt([_thesis()], [], [], [], R5Config())
+    for v in OBSERVABLE_FLOW_VARS:                       # 관측 가능 변수는 허용 목록에 명시
+        assert v in p
+    # NXT/미배선 변수는 '미관측 — 영영 미충족, 쓰지 마라' 맥락에 등장
+    assert "premkt_volume_ratio" in p and "gap_pct" in p
+    assert "관측 가능" in p and "영영 미충족" in p
 
 
 def test_llm_failure_surfaces_error() -> None:

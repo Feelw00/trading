@@ -37,6 +37,7 @@ from trading.contracts.order import (
 )
 from trading.contracts.playbook import FLOW_VARIABLES, Playbook
 from trading.contracts.scenario import ScenarioAxis
+from trading.flowsnap import OBSERVABLE_FLOW_VARS
 from trading.contracts.thesis import Direction, ThesisRecord
 from trading.collectors.base import now_kst
 from trading.llm import LLMClient, LLMError, complete_json
@@ -95,7 +96,8 @@ def build_prompt(
     macro_lines: Sequence[str],
     config: R5Config,
 ) -> str:
-    flow_vars = ", ".join(sorted(FLOW_VARIABLES))
+    observable = ", ".join(sorted(OBSERVABLE_FLOW_VARS))
+    unobserved = ", ".join(sorted(FLOW_VARIABLES - OBSERVABLE_FLOW_VARS))
     macro = "\n".join(f"- {m}" for m in macro_lines) or "  (없음)"
     return (
         "너는 스윙 트레이딩 시스템의 야간 합성 라운드(R5)다. "
@@ -113,7 +115,7 @@ def build_prompt(
         '  "playbooks": [{\n'
         '    "thesis_ref": "<위 논제 id>",\n'
         '    "srtn_cd": "<6자리>", "side": "buy|sell",\n'
-        f'    "arm_conditions": {{"<흐름변수>": "<조건식>"}},  // 허용 변수: {flow_vars}\n'
+        f'    "arm_conditions": {{"<흐름변수>": "<조건식>"}},  // 현재 관측 가능 변수만: {observable}\n'
         '    "abort_conditions": {"<흐름변수>": "<조건식>"},\n'
         '    "stop_level": <가격 손절 레벨(숫자) — 심리적 합의 레벨(라운드 넘버·전저점·전고점)만>,\n'
         '    "confirmation_condition": "<확인 트랜치 조건(가격 상승으로만 충족) — 흐름변수 키>",\n'
@@ -124,7 +126,9 @@ def build_prompt(
         "## 절대 규칙\n"
         "- scenario_tree 는 축(title)별로 나누고 lines 한 항목엔 분기 하나만(사실·조건문만) — "
         "통문단 금지, 한 줄 120자 이내.\n"
-        "- arm/abort 조건 키는 위 흐름 변수만. 가치·내러티브 변수(밸류에이션·컨센서스·목표가) 금지.\n"
+        f"- arm/abort/confirmation 조건은 **현재 관측 가능 흐름변수만**: {observable}. "
+        f"미관측 변수({unobserved})는 NXT/소스 부재로 매일 '관측치 없음'이라 영영 미충족이 된다 — "
+        "절대 쓰지 마라(쓰면 그 플레이북은 발동 불가). 가치·내러티브 변수도 금지.\n"
         "- 조건식 문법: 연속 변수(갭·거래량·체결강도·호가)는 `<op><숫자>`(<,<=,>,>=,==), "
         "boolean 변수(prev_day_high_reclaim·volume_climax·new_low_renewal_fail)는 `==true`/`==false`로. "
         "시각·문자열 등 그 외 형식 금지(선택기가 평가 불가 → 미충족 처리).\n"
