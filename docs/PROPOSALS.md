@@ -247,3 +247,34 @@ R5.5 cron(`select_playbooks`)도 `active_playbooks` + `flowsnap.build_snapshot`�
 - arm-check 스킬: 후보 검토 정보 제시 → 운영자에게 승인 질문(자동 승인 금지) → 승인 → 갱신 판단.
 - 저녁 보고: "결정 — 승인 요청" → "내일 검토 후보(아침 arm-check에서 승인)"로 톤 조정.
 - 텔레그램 양방향 직접 승인은 채널 발신 전용·openclaw 수신 인프라 부재로 보류(후속).
+
+## 👍 P-8 — 포지션 관리 레이어 (보유 테이블 + 계획 스냅샷 + 정리 점검)
+
+**상태:** 👍채택(운영자 요청 2026-06-12) — 구현 진행.
+
+### 문제
+시스템이 "사기 전"(후보→승인→발동)만 관리하고 "산 후"가 비어 있다. 설계서 §8 저녁 결재 보고의
+"보유 포지션의 무효화 조건 잔여 거리" 항목이 "KIS 잔고 어댑터 미구현" 결측으로 방치. discuss가
+만든 조건문(가설·트리거·무효화·스탑·시계·확신도)도 세션이 끝나면 휘발 — 보유 중 무효화 감시에
+재사용되지 않는다.
+
+### 산출
+- **`contracts/position.py`**: PositionRecord — 종목·수량·평단 + **계획 스냅샷**(hypothesis·
+  trigger_text·invalidation_text·stop_level·time_stop_days·confidence·plan_doc 전문·source_ref)
+  + status(open/closed). 분석 문서를 그대로 박제(운영자 요청 "분석 문서 그대로 저장").
+- **`journal/positions.py`**: PositionStore(`data/positions.sqlite`, append-only — close=새 version).
+- **포지션 점검(순수 코드)**: 현재가(KIS 실시간 → EOD 폴백, as_of 표기) 대비 손익%·스탑 거리%·
+  시간손절 잔여 거래일(market_calendar) → **정리 검토 플래그**(스탑 이탈/시간손절 도래).
+  자유문 무효화 조건은 코드가 평가하지 않고 표시만 — 스킬(LLM)이 최신 이벤트와 대조 해설,
+  **정리 판단은 운영자**(절대금지 #2: 판단=코드/운영자, LLM=해설).
+- **`trading.positions` CLI**: add(계획 스냅샷 포함 등록)·list(점검 포함)·close(사유 박제).
+  등록은 수동 — KIS 잔고·체결 어댑터는 별도 미해소 항목 유지(잔고 대사는 후속).
+- **노출 3곳**: ① arm-check "보유 포지션 점검" 섹션(아침) ② 저녁 보고 포지션 섹션(§8 결측 해소)
+  ③ `/positions` 스킬(등록·정리·점검 인터랙티브, boot에서 점검 호출).
+
+### 영향범위
+contracts/position.py·journal/positions.py·position_check.py·positions.py(신규),
+arm_check.py·reports/render.py(섹션 추가), .claude/skills/positions/(신규)·work-boot/arm-check SKILL 갱신.
+
+### 미해소(유지)
+- KIS 잔고·체결 어댑터 — 수동 등록과 실계좌 대사(체결 자동 반영)는 후속.

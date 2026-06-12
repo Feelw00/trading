@@ -26,6 +26,8 @@ from trading.contracts.order import OrderDraft
 from trading.flowsnap import build_snapshot
 from trading.journal.playbooks import PlaybookStore
 from trading.market_calendar.calendar import in_krx_session
+from trading.position_check import PositionView, check_positions
+from trading.position_check import render_lines as render_position_lines
 from trading.reports import explain
 from trading.reports.render import _symbol_names  # 종목명 조회(시세 DB) 재사용
 from trading.selector import select
@@ -63,6 +65,7 @@ class AssessResult:
     snapshot_notes: list[str]
     items: list[ItemView]                       # 활성 approved 풀(발동 판단)
     candidates: list[ItemView] = field(default_factory=list)  # 미승인 후보(승인 시 발동 미리보기)
+    positions: list[PositionView] = field(default_factory=list)  # 보유 포지션 점검(P-8)
     field_notes: list[str] = field(default_factory=list)
 
     @property
@@ -139,6 +142,9 @@ def assess(
     if playbook_store is None:
         ps.close()
 
+    # 보유 포지션 점검 — 같은 KIS 클라이언트 재사용(스탑 거리·시간손절은 순수 계산)
+    position_views = check_positions(now=resolved, kis_client=client)  # type: ignore[arg-type]
+
     return AssessResult(
         day=resolved.date().isoformat(),
         now_iso=resolved.isoformat(timespec="minutes"),
@@ -146,6 +152,7 @@ def assess(
         snapshot_notes=snap_notes,
         items=items,
         candidates=candidate_items,
+        positions=position_views,
     )
 
 
@@ -195,6 +202,12 @@ def render_text(r: AssessResult) -> str:
         )
         for it in r.candidates:
             lines.extend(_render_item(it, candidate=True))
+
+    if r.positions:
+        n_review = sum(1 for v in r.positions if v.review_needed)
+        lines.append(f"\n## 보유 포지션 점검({len(r.positions)}건) — 정리 검토 {n_review}건")
+        lines.extend(f"- {ln}" if not ln.startswith("  ") else ln
+                     for ln in render_position_lines(r.positions))
 
     lines.append("\n## 흐름 관측 결측")
     for n in r.snapshot_notes:

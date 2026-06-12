@@ -271,14 +271,20 @@ def render_evening(
     synth_as_of = run_meta[0] if run_meta else ""
     if synth_as_of and not synth_as_of[:1].isdigit():
         synth_as_of = ""  # "(no-playbook)" 류 코스메틱 값은 표기 생략
+
+    # 보유 포지션(P-8, 수동 등록 기반) — §8 "무효화 조건 잔여 거리". EOD 가격으로 점검(밤 21:00).
+    from trading.position_check import check_positions, render_lines
+
+    position_lines = render_lines(check_positions(now=resolved, kis_client=None))
+
     # 미수집은 빈 섹션 나열 대신 한 군데 모아 명시(읽기 부담 제거, 추측 대체 없음은 유지)
     notes = [
-        "집행 편차·보유 포지션: KIS 잔고·체결 어댑터 미구현",
+        "집행 편차: KIS 잔고·체결 어댑터 미구현 — 포지션은 수동 등록 기반(실계좌 대사 후속)",
         "수급(투자자별 매매동향): KIS flows 수집 중(daily-eod) — 보고 섹션 배선은 후속",
     ]
     text = _env().get_template("evening.md.j2").render(
         day=today_iso,
-        executions=[], positions=[], flows=[],
+        executions=[], positions=position_lines, flows=[],
         r4=r4, r4_as_of=r4_as_of,
         scenario_lines=_scenario_lines(run_meta[1] if run_meta else []),
         synth_as_of=synth_as_of,

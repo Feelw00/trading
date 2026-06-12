@@ -94,6 +94,18 @@ def order_kwargs() -> dict[str, Any]:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_positions_db(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """포지션 DB 전역 격리 — 테스트가 운영 data/positions.sqlite를 만들지 않게.
+
+    arm_check.assess·render_evening이 기본 PositionStore()를 열므로(P-8 통합),
+    기본 경로를 테스트 tmp로 돌린다(2026-06-11 AlertStore 사고와 동일 원칙).
+    """
+    import trading.journal.positions as _jp
+
+    monkeypatch.setattr(_jp, "DEFAULT_POSITIONS_DB", tmp_path / "positions-isolated.sqlite")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_round_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
     """trading.run 실패 경로가 실제 AlertStore/Telegram에 닿지 않게 전역 차단.
 

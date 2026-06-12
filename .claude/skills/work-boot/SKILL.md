@@ -33,6 +33,11 @@ description: 부팅 컨텍스트 — DB에서 데이터 신선도·스크리너 
 ## 2. 오늘 후보 (스크리너 — DB 위)
 - `poetry run python -m trading.screener` → 상위 후보 + 섹터 태그. **1a 자동 수집이 있었으면 수집 완료 후에 실행**(최신 시세 기준 후보).
 
+## 2b. 보유 포지션 점검 (P-8)
+- `poetry run python -m trading.positions` — open 포지션의 손익·스탑 잔여 거리·시간손절 잔여.
+- **[정리 검토] 플래그가 있으면 부팅 보고 맨 앞에 올린다**(스탑 이탈·시간손절 도래 — 운영자 판단 필요).
+  깊은 점검·무효화 대조는 `/positions` 스킬로. 보유 없음이면 한 줄로 생략.
+
 ## 3. 읽기 (history + 마일스톤)
 - **자동 읽기**: `history/work/CURRENT.md`(진행 중·다음 후보), `docs/PROGRESS.md`(마일스톤 원장 — coarse).
 - **가벼운 스캔**: `history/trading/INDEX.md`(최근 N), `docs/OPEN_QUESTIONS.md`(🔴 항목만).
