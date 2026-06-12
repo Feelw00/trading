@@ -43,7 +43,19 @@ def test_runner_refuses_during_session(tmp_path: Path) -> None:
         now=SESSION, client=_OneShotClient({}),
         thesis_store=ts, playbook_store=ps, dispatcher=d,
     )
-    assert rc == 3  # 장중 주문 설계 금지(설계서 §1·§5)
+    assert rc == 3  # 장중 주문 설계 금지(설계서 §1·§5) — cron 자동 경로
+
+
+def test_runner_force_runs_during_session(tmp_path: Path) -> None:
+    # 수동 --force: 장중 가드 우회(입력 EOD·산출 draft라 충동 집행 차단 유지)
+    ts, ps, d = _stores(tmp_path)
+    ts.append("001740", [_thesis()])
+    rc = synth_playbooks.run(
+        now=SESSION,
+        client=_OneShotClient({"playbooks": [], "scenario_tree": "조건 미충족", "checklist": []}),
+        thesis_store=ts, playbook_store=ps, dispatcher=d, force=True,
+    )
+    assert rc == 0  # 장중이어도 실행됨(비거래 정상 경로)
 
 
 def test_runner_skips_without_theses(tmp_path: Path) -> None:

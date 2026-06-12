@@ -13,13 +13,18 @@ from datetime import datetime
 from pathlib import Path
 
 from trading.alerts import Alert, AlertDispatcher, Severity
+from trading.collectors.base import now_kst
 from trading.contracts.factpack import FactPack
 from trading.factpack import build_fact_pack_for
 from trading.journal.events import EventStore
 from trading.journal.playbooks import PlaybookStore
 from trading.journal.theses import ThesisStore
 from trading.llm import LLMClient, client_from_env
-from trading.market_calendar.calendar import MarketGuardError, require_market_closed
+from trading.market_calendar.calendar import (
+    MarketGuardError,
+    in_krx_session,
+    require_market_closed,
+)
 from trading.rounds.r5 import R5Config, R5Result, run_r5
 
 DEFAULT_THESES_LIMIT = 60
@@ -71,13 +76,25 @@ def run(
     event_store: EventStore | None = None,
     playbook_store: PlaybookStore | None = None,
     dispatcher: AlertDispatcher | None = None,
+    force: bool = False,
 ) -> int:
-    """논제 → R5 합성 → PlaybookStore. 장중이면 거부(rc=3), LLM 장애면 P1 알림(rc=1)."""
-    try:
-        require_market_closed(now)
-    except MarketGuardError as e:
-        print(f"R5 거부 — {e}")
-        return 3
+    """논제 → R5 합성 → PlaybookStore. 장중이면 거부(rc=3), LLM 장애면 P1 알림(rc=1).
+
+    ``force``(수동 CLI 전용, cron은 미사용): 장중 가드를 우회한다. R5 입력은 EOD라 장중
+    실시간 가격에 휩쓸리지 않고, 산출은 draft → 다음 거래일 아침 arm-check 승인이므로 충동
+    집행은 차단된다(설계서 §1·§5 완화, 운영자 결정 2026-06-12). 휴장일·장외는 force 없이도 통과.
+    """
+    if not force:
+        try:
+            require_market_closed(now)
+        except MarketGuardError as e:
+            print(f"R5 거부 — {e} (수동 강제 실행: --force)")
+            return 3
+    elif in_krx_session(now if now is not None else now_kst()):
+        print(
+            "R5 장중 강제 실행(--force) — 입력은 EOD, 산출은 draft. "
+            "집행은 다음 거래일 아침 /arm-check 승인 후(충동 집행 차단 유지)."
+        )
 
     ts = thesis_store if thesis_store is not None else ThesisStore()
     theses = ts.recent(limit=theses_limit)
@@ -111,9 +128,7 @@ def run(
         return 1
 
     ps = playbook_store if playbook_store is not None else PlaybookStore()
-    from trading.collectors.base import now_kst as _now_kst
-
-    run_day = (now if now is not None else _now_kst()).date().isoformat()
+    run_day = (now if now is not None else now_kst()).date().isoformat()
     stored = ps.append_run(
         result.playbooks, result.drafts,
         as_of=run_day,  # 비거래 런에도 합성 일자 기록(보고 표기·이력 추적)
@@ -135,7 +150,9 @@ def run(
 
 
 def main() -> int:
-    return run()
+    import sys
+
+    return run(force="--force" in sys.argv[1:])
 
 
 __all__ = ["run"]
