@@ -197,6 +197,8 @@ def test_prompt_constrains_arm_to_observable_flow_vars() -> None:
     # NXT/미배선 변수는 '미관측 — 영영 미충족, 쓰지 마라' 맥락에 등장
     assert "premkt_volume_ratio" in p and "gap_pct" in p
     assert "관측 가능" in p and "영영 미충족" in p
+    # 변수 범위·단위 명시(R5가 범위 밖 임계값 짓지 않도록) — orderbook 범위·체결강도 기준
+    assert "-1.0~+1.0" in p and "100 기준" in p
 
 
 def test_llm_failure_surfaces_error() -> None:
@@ -213,6 +215,14 @@ def test_max_playbooks_cap() -> None:
 def test_confirmation_condition_must_be_flow_variable() -> None:
     res = _run({"playbooks": [_proposal(confirmation_condition="목표가 도달")]})
     assert res.rejected == 1 and "흐름 변수" in res.rejected_reasons[0]
+
+
+def test_confirmation_condition_strips_operator_to_key() -> None:
+    # R5가 키에 조건식을 붙여 와도(prev_day_high_reclaim==true) 키만 추출(폐기 아님)
+    res = _run({"playbooks": [_proposal(confirmation_condition="prev_day_high_reclaim==true")]})
+    assert res.rejected == 0
+    [draft] = res.drafts
+    assert draft.tranches[2].condition == "prev_day_high_reclaim"
 
 
 def test_whitelist_matches_design_doc() -> None:

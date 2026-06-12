@@ -37,7 +37,7 @@ from trading.contracts.order import (
 )
 from trading.contracts.playbook import FLOW_VARIABLES, Playbook
 from trading.contracts.scenario import ScenarioAxis
-from trading.flowsnap import OBSERVABLE_FLOW_VARS
+from trading.flowsnap import OBSERVABLE_FLOW_DESC, OBSERVABLE_FLOW_VARS
 from trading.contracts.thesis import Direction, ThesisRecord
 from trading.collectors.base import now_kst
 from trading.llm import LLMClient, LLMError, complete_json
@@ -97,6 +97,9 @@ def build_prompt(
     config: R5Config,
 ) -> str:
     observable = ", ".join(sorted(OBSERVABLE_FLOW_VARS))
+    observable_desc = "\n".join(
+        f"  - {k}: {OBSERVABLE_FLOW_DESC[k]}" for k in sorted(OBSERVABLE_FLOW_DESC)
+    )
     unobserved = ", ".join(sorted(FLOW_VARIABLES - OBSERVABLE_FLOW_VARS))
     macro = "\n".join(f"- {m}" for m in macro_lines) or "  (없음)"
     return (
@@ -118,7 +121,7 @@ def build_prompt(
         f'    "arm_conditions": {{"<흐름변수>": "<조건식>"}},  // 현재 관측 가능 변수만: {observable}\n'
         '    "abort_conditions": {"<흐름변수>": "<조건식>"},\n'
         '    "stop_level": <가격 손절 레벨(숫자) — 심리적 합의 레벨(라운드 넘버·전저점·전고점)만>,\n'
-        '    "confirmation_condition": "<확인 트랜치 조건(가격 상승으로만 충족) — 흐름변수 키>",\n'
+        '    "confirmation_condition": "<관측 가능 흐름변수 키 1개만 — 조건식·연산자 금지, 예: prev_day_high_reclaim>",\n'
         '    "time_stop_days": <거래일 단위>,\n'
         '    "summary": "<저녁 결재 보고용 1줄>"\n'
         "  }]\n"
@@ -126,9 +129,12 @@ def build_prompt(
         "## 절대 규칙\n"
         "- scenario_tree 는 축(title)별로 나누고 lines 한 항목엔 분기 하나만(사실·조건문만) — "
         "통문단 금지, 한 줄 120자 이내.\n"
-        f"- arm/abort/confirmation 조건은 **현재 관측 가능 흐름변수만**: {observable}. "
-        f"미관측 변수({unobserved})는 NXT/소스 부재로 매일 '관측치 없음'이라 영영 미충족이 된다 — "
+        f"- arm/abort 조건은 **현재 관측 가능 흐름변수만**(범위 준수 — 임계값을 범위 밖으로 "
+        f"지어내지 마라, 예: orderbook_imbalance>1.15는 불가):\n{observable_desc}\n"
+        f"  미관측 변수({unobserved})는 NXT/소스 부재로 매일 '관측치 없음'이라 영영 미충족이 된다 — "
         "절대 쓰지 마라(쓰면 그 플레이북은 발동 불가). 가치·내러티브 변수도 금지.\n"
+        "- confirmation_condition 은 관측 가능 흐름변수 **키 1개만**(조건식·==true 등 붙이지 마라 — "
+        "키만, 보통 prev_day_high_reclaim).\n"
         "- 조건식 문법: 연속 변수(갭·거래량·체결강도·호가)는 `<op><숫자>`(<,<=,>,>=,==), "
         "boolean 변수(prev_day_high_reclaim·volume_climax·new_low_renewal_fail)는 `==true`/`==false`로. "
         "시각·문자열 등 그 외 형식 금지(선택기가 평가 불가 → 미충족 처리).\n"
@@ -192,9 +198,12 @@ def _to_records(
         else thesis.horizon_days  # grounded 폴백(논제 시계)
     )
 
-    confirmation = str(pb.get("confirmation_condition") or _CONFIRMATION_DEFAULT)
+    confirmation_raw = str(pb.get("confirmation_condition") or _CONFIRMATION_DEFAULT).strip()
+    # R5가 키에 조건식(==true 등)을 붙여 와도 흐름변수 키만 사용(코드 강제 — confirmation은 키 1개)
+    key_match = re.match(r"[a-z_]+", confirmation_raw)
+    confirmation = key_match.group(0) if key_match else confirmation_raw
     if confirmation not in FLOW_VARIABLES:
-        raise ValueError(f"확인 트랜치 조건이 흐름 변수가 아님: {confirmation!r}")
+        raise ValueError(f"확인 트랜치 조건이 흐름 변수가 아님: {confirmation_raw!r}")
 
     arm = pb.get("arm_conditions")
     abort = pb.get("abort_conditions")

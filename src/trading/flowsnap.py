@@ -28,13 +28,13 @@ INJECT_DIR = Path(".runtime") / "flow"
 # NXT 의존(premkt_volume_ratio·premkt_volume_rank·gap_pct·auction_projection)·미배선
 # (volume_climax·new_low_renewal_fail·new_low_after)은 제외 → R5 arm/abort 조건은 이 집합으로만
 # 짜야 "영영 미충족"을 피한다. NXT 어댑터가 생기면 여기에 추가(R5 프롬프트가 자동 반영).
-OBSERVABLE_FLOW_VARS: frozenset[str] = frozenset(
-    {
-        "prev_day_high_reclaim",   # 현재가 > 전일 고가 (KIS 체결)
-        "orderbook_imbalance",     # 호가 매수/매도 잔량 불균형 (KIS 호가)
-        "execution_strength",      # 당일 체결강도 (KIS 체결)
-    }
-)
+# 값은 범위·단위 설명 — R5가 임계값을 범위 밖(예: imbalance>1.15)으로 지어내지 않도록 프롬프트에 주입.
+OBSERVABLE_FLOW_DESC: dict[str, str] = {
+    "prev_day_high_reclaim": "전일 고가 회복 여부(boolean) — 조건식 ==true/==false만",
+    "orderbook_imbalance": "호가 (매수-매도)/(매수+매도) 잔량비, 범위 -1.0~+1.0, >0 매수우위(통상 ±0.3)",
+    "execution_strength": "당일 체결강도, 100 기준(>100 매수체결 우세), 통상 80~150",
+}
+OBSERVABLE_FLOW_VARS: frozenset[str] = frozenset(OBSERVABLE_FLOW_DESC)
 
 # KIS 원시 응답 필드(2026-06-12 장중 실호출 관측 확정 — KIS-RT-1). 부재/비수치는 관측치 없음으로.
 _F_EXEC_STRENGTH = "tday_rltv"     # 체결 output: 당일 체결강도(100 기준)
@@ -139,4 +139,4 @@ def build_snapshot(
     return snapshot, notes
 
 
-__all__ = ["INJECT_DIR", "OBSERVABLE_FLOW_VARS", "build_snapshot"]
+__all__ = ["INJECT_DIR", "OBSERVABLE_FLOW_DESC", "OBSERVABLE_FLOW_VARS", "build_snapshot"]
