@@ -148,3 +148,68 @@ def test_us_session_kst_winter_est() -> None:
 def test_default_calendar_loads_packaged_file() -> None:
     cal = MarketCalendar.default()
     assert isinstance(cal.extra_holidays, frozenset)
+
+
+# --- CAL-1 종결: 확인된 휴장일이 달력에 반영됐는가 ---
+
+# 연속성 가드가 소스 무자료로 관측한 9일(data/market.sqlite no_data_days) — 전부 공식 확인분.
+_OBSERVED_CLOSED = [
+    date(2025, 10, 6), date(2025, 10, 7), date(2025, 10, 8),      # 추석 연휴 + 대체
+    date(2026, 2, 16), date(2026, 2, 17), date(2026, 2, 18),      # 설 연휴
+    date(2026, 3, 2),                                              # 삼일절 대체
+    date(2026, 5, 25),                                             # 부처님오신날 대체
+    date(2026, 6, 3),                                              # 지방선거
+]
+
+
+@pytest.mark.parametrize("d", _OBSERVED_CLOSED)
+def test_observed_closures_registered_in_calendar(d: date) -> None:
+    """관측된 휴장일이 달력에 등록됐다 — 미등록이면 갭 오경보·거래일 오판이 재발한다."""
+    assert not MarketCalendar.default().is_trading_day(d)
+
+
+def test_future_closures_from_krx_notice() -> None:
+    """관측 이후(미래) 휴장일 — KRX 공지 확인분. 미등록이면 잡이 휴장일에 거래일로 착각한다."""
+    cal = MarketCalendar.default()
+    assert not cal.is_trading_day(date(2026, 7, 17))   # 제헌절(2026 재지정)
+    assert not cal.is_trading_day(date(2026, 8, 17))   # 광복절 대체
+    assert not cal.is_trading_day(date(2026, 9, 24))   # 추석 연휴
+    assert not cal.is_trading_day(date(2026, 9, 25))   # 추석
+    assert not cal.is_trading_day(date(2026, 10, 5))   # 개천절 대체
+
+
+def test_constitution_day_is_year_scoped_not_fixed() -> None:
+    """제헌절은 2026년부터 공휴일 — 고정 목록에 넣으면 2025년 거래일을 휴장으로 오판한다."""
+    cal = MarketCalendar.default()
+    assert cal.is_trading_day(date(2025, 7, 17))       # 목요일, 당시 정상 거래일
+    assert not cal.is_trading_day(date(2026, 7, 17))
+
+
+def test_chuseok_2026_has_no_substitute_monday() -> None:
+    """설·추석 대체공휴일은 일요일 중복 시에만 — 2026 추석(9/26 토)은 9/28 대체 없음(추측 금지)."""
+    assert MarketCalendar.default().is_trading_day(date(2026, 9, 28))
+
+
+def test_coverage_boundary_flags_unverified_years() -> None:
+    """확인 범위를 넘긴 날짜는 is_covered=False — 음력·대체공휴일 미등록을 침묵시키지 않는다."""
+    cal = MarketCalendar.default()
+    assert cal.covered_through == date(2026, 12, 31)
+    assert cal.is_covered(date(2026, 12, 31))
+    assert not cal.is_covered(date(2027, 1, 4))
+
+
+def test_from_file_accepts_object_entries(tmp_path: Path) -> None:
+    p = tmp_path / "krx.json"
+    p.write_text(
+        json.dumps(
+            {
+                "covered_through": "2026-12-31",
+                "holidays": [{"date": "2026-06-10", "name": "테스트 휴장"}, "2026-06-11"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    cal = MarketCalendar.from_file(p)
+    assert not cal.is_trading_day(date(2026, 6, 10))  # 객체 항목
+    assert not cal.is_trading_day(date(2026, 6, 11))  # 문자열 항목(구 포맷 호환)
+    assert cal.covered_through == date(2026, 12, 31)

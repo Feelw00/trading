@@ -11,6 +11,7 @@
 - 세션 진입 시 점검: `poetry run python ops/openclaw/drill.py --audit` (전일 사이클 PASS/WARN/FAIL) + 라운드 실패 P1 알림 수신 여부.
 
 ## 최근 완료
+- 2026-07-11 — **CAL-1 종결: 관측 휴장 9일 공식 공지 대조(9/9 일치) + 미래 휴장 5일 등록(2026-07-17 제헌절·8/17·9/24-25·10/5). `covered_through`+`--check` 만료 경고로 내년 재발 차단. CAL-3(거래시간 연장 9/14) 신규 등록** → [archive](archive/2026-07-11-cal1-holidays.md)
 - 2026-07-11 — **시세 갭 백필(16거래일) + 1년치 히스토리(262일자) + 연속성 가드(자가 치유·`--check`·`no_data_days` 박제) + 스크리너/FactPack 폴백 침묵 제거(`mom_*_ok`·`float|None`·R3 "미산출"). CAL-1 실체 적발(달력 미등록 휴장 9일)** → [archive](archive/2026-07-11-continuity-guard.md)
 - 2026-06-12 — **포지션 관리 레이어(P-8): PositionRecord(계획 스냅샷 박제)+PositionStore+점검(손익·스탑 거리·시간손절→[정리 검토])+positions CLI+/positions 스킬. arm-check·저녁 보고(§8 무효화 잔여 거리 결측 해소)·boot 배선** → [archive](archive/2026-06-12-position-layer.md)
 - 2026-06-12 — **R5 수동 `--force` 장중 실행(CAL-2 🟢): cron 자동은 장중 가드 유지, 수동 CLI만 `--force`로 우회(입력 EOD·산출 draft·아침 승인이라 충동 집행 차단 유지). `python -m trading.synth_playbooks --force`**
@@ -37,8 +38,7 @@
 **다음 세션 첫 작업**
 1. `drill.py --audit` — 게이트웨이 재기동(7/11 18:18)·codex 플러그인 비활성화 이후 **첫 무인 사이클** 점검.
    (7/11 감사분은 FAIL 14/no-run이었으나 원인은 그 시각까지 게이트웨이 다운 — 아키텍처 결함 아님)
-2. CAL-1 종결 — 관측된 달력 미등록 휴장 9일(추석·설·대체공휴일·지방선거)을 KRX 공지로 확인 →
-   `krx_holidays.json` 반영 (현재는 `no_data_days` 관측 박제로 우회 중)
+2. ~~CAL-1 종결~~ → **07-11 완료** (아래 최근 완료). ⚠️ **2026-07-17(금) 제헌절 휴장** — 이번 주 금요일 잡 무동작이 정상.
 3. ~~결측기 뉴스·공시·flows 백필~~ → 07-11 실사 완료: **flows 백필 완료**(KIS 30거래일 창), **공시는 온디맨드라 대상 아님**,
    **뉴스는 승인 어댑터로 백필 불가(blocked)** — 2026-06-15~07-10 뉴스 영구 공백.
    ⚠️ 그 구간 뉴스 부재를 "촉매 없음"으로 오독하지 않도록 소비자(R7·discuss) 명시 처리 검토(②와 같은 계열).
@@ -52,8 +52,9 @@
 **빠른 슬라이스 (틈새)**
 - **DiscussPack에 주요 공시 원문 요약 포함** — 공정공시·계약 공시 등은 DART `document.xml`로 원문을 받아 팩에 발췌(공시가 뉴스보다 상위 근거 — 네이버 AI 팩토리 사례). 임원·주요주주 보고는 elestock 계열 정형 API 검토.
 - R6 보고 `_macro_lines`의 `GROUP BY name` 버그 — 같은 지표 다중 수집분 중 임의 행 선택(6/09 KOSPI가 6/11 보고에 나갈 수 있음) → 지표별 최신 as_of 행 선택으로 수정
-- CAL-1: 2026년 음력·대체공휴일 KRX 공지 확인 → `krx_holidays.json`
 - R1 일반 게이트 운영 배선 — landing→FactRecord 변환 계층
+- 🟡 CAL-3(신규): KRX 거래시간 연장 **2026-09-14 시행**(프리 07:00~07:50·애프터) — 세션 가드·장중 휴면 범위 재확인, SEL-1(프리마켓 흐름변수) NXT 의존 해소 가능성. 시행 전 KRX 최종 공지 확인.
+- 2027년 휴장일 갱신 — `krx_holidays.json`의 `covered_through=2026-12-31` 만료 시 `--check`가 ⚠️ 경고(연 1회 운영 작업)
 
 **외부 의존 해소** (병행 가능)
 - NXT 프리·애프터 데이터 소스 조사 → SEL-1·R7-1 해소 (KRX 수급은 6/11 KIS TR로 해소됨)

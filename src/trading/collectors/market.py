@@ -360,13 +360,26 @@ def main() -> int:
     gaps, pending = split_pending(missing, today, cal)
 
     if check_only:
-        closed = len(store.no_data_days())
+        # 관측 휴장일(소스 무자료)을 달력 등록분/미등록분으로 나눈다 — 미등록분만 CAL-1 갱신 대상.
+        observed = sorted(store.no_data_days())
+        unregistered = [
+            ymd
+            for ymd in observed
+            if date(int(ymd[:4]), int(ymd[4:6]), int(ymd[6:8])) not in cal.extra_holidays
+        ]
         print(
             f"연속성 점검: 갭 {len(gaps)}거래일 · 공개대기 {len(pending)}거래일 · "
-            f"휴장 관측 {closed}일(달력 미등록)"
+            f"휴장 관측 {len(observed)}일(달력 미등록 {len(unregistered)}일)"
         )
         if gaps:
             print("⚠️ 갭: " + ", ".join(d.strftime("%Y%m%d") for d in gaps))
+        if unregistered:
+            print("⚠️ 달력 미등록 휴장 관측(CAL-1 갱신 대상): " + ", ".join(unregistered))
+        if not cal.is_covered(today):
+            print(
+                f"⚠️ 휴장일 확인 범위 만료(covered_through={cal.covered_through}) — "
+                "다음 연도 KRX 공지로 krx_holidays.json 갱신 필요(CAL-1)"
+            )
         store.close()
         return 0
 

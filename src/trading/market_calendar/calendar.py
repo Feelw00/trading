@@ -43,15 +43,32 @@ class MarketGuardError(RuntimeError):
 
 @dataclass(frozen=True)
 class MarketCalendar:
-    """KRX 거래일 판정. ``extra_holidays`` = KRX 공지로 확인된 명시 휴장일(YYYY-MM-DD)."""
+    """KRX 거래일 판정. ``extra_holidays`` = KRX 공지로 확인된 명시 휴장일(YYYY-MM-DD).
+
+    ``covered_through`` = 그 확인이 미치는 마지막 날. 이 날을 넘긴 시점의 판정은 음력·대체공휴일이
+    비어 있을 수 있다(다음 해 공지 미반영) — :meth:`is_covered`로 드러내고 침묵하지 않는다.
+    """
 
     extra_holidays: frozenset[date] = field(default_factory=frozenset)
+    covered_through: date | None = None
 
     @classmethod
     def from_file(cls, path: str | Path) -> "MarketCalendar":
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        days = frozenset(date.fromisoformat(d) for d in raw.get("holidays", []))
-        return cls(extra_holidays=days)
+        # 항목은 "YYYY-MM-DD" 또는 {"date": "YYYY-MM-DD", "name": ..., ...} 둘 다 허용.
+        days = frozenset(
+            date.fromisoformat(h if isinstance(h, str) else h["date"])
+            for h in raw.get("holidays", [])
+        )
+        through = raw.get("covered_through")
+        return cls(
+            extra_holidays=days,
+            covered_through=date.fromisoformat(through) if through else None,
+        )
+
+    def is_covered(self, d: date) -> bool:
+        """d가 휴장일 확인 범위 안인가. False면 음력·대체공휴일 미등록 가능(CAL-1 갱신 필요)."""
+        return self.covered_through is None or d <= self.covered_through
 
     @classmethod
     def default(cls) -> "MarketCalendar":
