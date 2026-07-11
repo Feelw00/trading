@@ -25,6 +25,7 @@ from trading.contracts.order import OrderDraft, OrderStatus
 from trading.contracts.scenario import ScenarioAxis
 from trading.journal.events import EventStore
 from trading.journal.playbooks import PlaybookStore
+from trading.reports.explain import explain_condition, explain_condition_compact
 
 _TEMPLATES = Path(__file__).parent / "templates"
 _MACRO_GLOB = "macro_indicators.sqlite"
@@ -42,6 +43,9 @@ class Rendered:
     kind: str           # morning | evening
     day: str            # YYYY-MM-DD
     text: str
+    # 채널(Telegram) 발송용 결재 다이제스트 — None이면 text 그대로 발송.
+    # 2026-07-12 운영자 피드백(가독성 3차): 결재에 필요한 것만 폰 1.5화면, 전문은 파일.
+    digest: str | None = None
 
 
 def _env() -> Environment:
@@ -230,7 +234,14 @@ def _approval_rows(ps: PlaybookStore, day_compact: str) -> list[dict[str, Any]]:
                 "label": _label(draft.symbol, names),
                 "side": _SIDE_KO.get(draft.side.value, draft.side.value),
                 "summary": pb.summary or "(근거 미기재 — 시나리오 섹션 참조)",
-                "arm": ", ".join(f"{k} {v}" for k, v in pb.arm_conditions.items()),
+                # 변수명 원문이 아니라 한국어 해설(P-6 explain 재사용) — 2026-07-12 운영자
+                # 피드백: 결재자가 기계 문자열을 읽게 하지 마라. 원문은 id로 역추적 가능.
+                "arm": " + ".join(
+                    explain_condition(k, v) for k, v in pb.arm_conditions.items()
+                ),
+                "arm_compact": " + ".join(
+                    explain_condition_compact(k, v) for k, v in pb.arm_conditions.items()
+                ),
                 "stop": draft.stop.level if draft.stop else None,
                 "time_stop": draft.time_stop_days,
                 "cap": _humanize_cap(draft.total_size_cap),
@@ -284,16 +295,85 @@ def render_evening(
         "집행 편차: KIS 잔고·체결 어댑터 미구현 — 포지션은 수동 등록 기반(실계좌 대사 후속)",
         "수급(투자자별 매매동향): KIS flows 수집 중(daily-eod) — 보고 섹션 배선은 후속",
     ]
+    axes = run_meta[1] if run_meta else []
     text = _env().get_template("evening.md.j2").render(
         day=today_iso,
         executions=[], positions=position_lines, flows=[],
         r4=r4, r4_as_of=r4_as_of,
-        scenario_lines=_scenario_lines(run_meta[1] if run_meta else []),
+        scenario_lines=_scenario_lines(axes),
         synth_as_of=synth_as_of,
         swing_lines=swing_lines, swing_as_of=swing_as_of,
         approvals=approvals, p2_alerts=p2, notes=notes,
     )
-    return Rendered("evening", today_iso, _guard_length("evening", text, max_chars=max_chars))
+    digest = _evening_digest(today_iso, approvals, axes, swing_lines, swing_as_of, r4, r4_as_of)
+    return Rendered(
+        "evening", today_iso, _guard_length("evening", text, max_chars=max_chars), digest=digest
+    )
+
+
+_RISK_MARKERS = ("금지", "일괄 무효", "동시 무효", "일괄 소멸", "판단 불가", "재검증")
+
+
+def _risk_lines(axes: Sequence[ScenarioAxis], *, limit: int = 5) -> list[str]:
+    """시나리오 축에서 결재 직결 경고만 추출(결정론 키워드 필터) — 다이제스트 '결재 유의'용.
+
+    R5 산출 규약상 경고 라인은 '리스크 X-N:' 접두 또는 금지/무효 어휘를 가진다.
+    접두 라벨은 떼고 본문만 — 결재자는 축 번호가 아니라 내용을 읽는다.
+    """
+    out: list[str] = []
+    for ax in axes:
+        for ln in ax.lines:
+            body = ln.split(":", 1)[1].strip() if ":" in ln[:14] else ln
+            if ln.lstrip().startswith("리스크") or any(m in ln for m in _RISK_MARKERS):
+                out.append(body)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _evening_digest(
+    day: str,
+    approvals: list[dict[str, Any]],
+    axes: Sequence[ScenarioAxis],
+    swing_lines: list[str],
+    swing_as_of: str,
+    r4: Any,
+    r4_as_of: str,
+) -> str:
+    """텔레그램 결재 다이제스트 — 승인 카드 + 결재 유의 + 참고 1줄씩. 전문은 파일 참조."""
+    lines = [f"# 저녁 결재 — {day}", ""]
+    if approvals:
+        lines.append(f"## 승인 대기 {len(approvals)}건 → 내일 아침 `/arm-check`")
+        for i, a in enumerate(approvals, 1):
+            stop = f"{a['stop']:g}" if a["stop"] is not None else "없음"
+            ts = f"{a['time_stop']}일" if a["time_stop"] is not None else "없음"
+            lines.append(f"{i}. **{a['label']} {a['side']}** — {a['summary']}")
+            lines.append(f"   진입: {a['arm_compact']}")
+            lines.append(f"   손절 {stop} · 시간손절 {ts} · {a['cap']} · `{a['id']}`")
+    else:
+        lines.append("**검토 후보 없음 — 내일 비거래.** (대부분의 날의 정상 결론)")
+    cautions = _risk_lines(axes)
+    if cautions:
+        lines.append("")
+        lines.append("## ⚠️ 결재 유의")
+        lines.extend(f"- {c}" for c in cautions)
+    lines.append("")
+    lines.append("## 참고")
+    if swing_as_of:
+        if swing_lines:
+            tops = [ln.split(" — ", 1)[0] for ln in swing_lines[:3]]
+            n_more = max(0, len(swing_lines) - 3)
+            more = f" 외 {n_more}" if n_more else ""
+            lines.append(f"- 스윙 기회({swing_as_of}): {' · '.join(tops)}{more} — 관심 후보, 주문 아님")
+        else:
+            lines.append(f"- 스윙 기회({swing_as_of}): 오늘 트리거 없음")
+    conf_head = r4["confirmed_lines"][0] if r4.get("confirmed_lines") else None
+    r4_line = f"- R4({r4_as_of}): 생존 {r4['confirmed']} / 기각 {r4['refuted']}"
+    if conf_head:
+        r4_line += f" — 생존: {conf_head[:60]}…" if len(conf_head) > 60 else f" — 생존: {conf_head}"
+    lines.append(r4_line)
+    lines.append(f"- 시나리오·기각 상세 전문: `.runtime/reports/{day}-evening.md`")
+    return "\n".join(lines)
 
 
 def _swing_lines(limit: int = 8) -> tuple[list[str], str]:

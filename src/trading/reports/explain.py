@@ -59,6 +59,27 @@ def explain_condition(var: str, expr: str) -> str:
     return f"{var_label(var)} {num} {_OP_KO[op]}"
 
 
+_SHORT_OP = {">": "↑", ">=": "↑", "<": "↓", "<=": "↓"}
+
+
+def explain_condition_compact(var: str, expr: str) -> str:
+    """다이제스트용 압축 해설 — '체결강도 105↑', boolean true는 라벨만(가독성 3차, 2026-07-12).
+
+    상세 추적이 필요한 전문 보고는 :func:`explain_condition`(키 병기)을 그대로 쓴다.
+    """
+    label = (FLOW_VAR_KO.get(var) or var).split("(")[0]
+    mb = _BOOL.match(expr)
+    if mb is not None:
+        yes = (mb.group(1) == "==") == (mb.group(2).lower() == "true")
+        return label if yes else f"{label} 아님"
+    m = _COND.match(expr)
+    if m is None:
+        return f"{label} {expr}"
+    op, num = m.group(1), m.group(2)
+    short = _SHORT_OP.get(op)
+    return f"{label} {num}{short}" if short else f"{label} {num} {_OP_KO[op]}"
+
+
 def humanize_cap(cap: str | None) -> str:
     """'0.5 * normal_unit' → '기본단위의 50%'. 그 외 표현식은 원문 유지(추측 금지)."""
     m = re.match(r"^([0-9.]+)\s*\*\s*normal_unit$", cap or "")
@@ -109,6 +130,7 @@ __all__ = [
     "FLOW_VAR_KO",
     "draft_headline",
     "explain_condition",
+    "explain_condition_compact",
     "explain_stop",
     "explain_tranches",
     "humanize_cap",

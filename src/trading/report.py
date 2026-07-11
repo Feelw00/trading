@@ -55,6 +55,9 @@ def run(
     path = out_dir / f"{rendered.day}-{rendered.kind}.md"
     path.write_text(rendered.text, encoding="utf-8")
 
+    # 채널 페이로드: 다이제스트가 있으면 그것만(결재 요약 — 가독성 3차, 2026-07-12 운영자 피드백).
+    # 전문은 위에서 파일로 이미 박제됐다 — 텔레그램은 폰에서 30초 결재가 목표.
+    payload = rendered.digest if rendered.digest is not None else rendered.text
     sent = "미발송(send=False)"
     if send:
         channel = channel_from_env()
@@ -62,16 +65,17 @@ def run(
             if isinstance(channel, TelegramChannel):
                 # 텔레그램은 마크다운을 렌더하지 않음 → HTML 변환 발송, 실패 시 평문 폴백
                 try:
-                    replace(channel, parse_mode="HTML").send(to_telegram_html(rendered.text))
+                    replace(channel, parse_mode="HTML").send(to_telegram_html(payload))
                 except ChannelError:
-                    channel.send(rendered.text)
+                    channel.send(payload)
             else:
-                channel.send(rendered.text)
+                channel.send(payload)
             sent = f"발송: {channel.name}"
         except ChannelError as e:
             print(f"  발송 실패(파일은 저장됨): {e}")
             sent = "발송 실패"
-    print(f"R6 {rendered.kind}: {len(rendered.text)}자 → {path} / {sent}")
+    digest_note = f" · 다이제스트 {len(payload)}자 발송" if rendered.digest is not None else ""
+    print(f"R6 {rendered.kind}: {len(rendered.text)}자 → {path}{digest_note} / {sent}")
     return 0
 
 
