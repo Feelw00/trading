@@ -1,6 +1,7 @@
 """테스트 공용 — 각 계약의 유효 kwargs 빌더(테스트마다 fresh dict)."""
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -94,7 +95,7 @@ def order_kwargs() -> dict[str, Any]:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_positions_db(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolate_positions_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """포지션 DB 전역 격리 — 테스트가 운영 data/positions.sqlite를 만들지 않게.
 
     arm_check.assess·render_evening이 기본 PositionStore()를 열므로(P-8 통합),
