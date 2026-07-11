@@ -29,13 +29,13 @@
     }
   },
   "plugins": {
-    "allow": ["codex"],
+    "allow": [],
     "entries": {
       "openai": {
         "enabled": true
       },
       "codex": {
-        "enabled": true
+        "enabled": false
       },
       "telegram": {
         "enabled": false
