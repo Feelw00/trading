@@ -57,6 +57,13 @@ def _swing() -> int:
     return swing.main()
 
 
+def _arm_watch() -> int:
+    """장중 발동 감시 루프(순수 코드, 15:00 자기 종료) — cron 09:00 기동·12:00 재기동."""
+    from trading.watch.arm_watch import run_loop
+
+    return run_loop()
+
+
 def _screen() -> int:
     from trading import screener
 
@@ -174,6 +181,7 @@ ROUNDS: dict[str, Callable[[], int]] = {
     "sector-llm": _sector_llm,
     "collect-fins": _collect_fins,
     "swing": _swing,
+    "arm-watch": _arm_watch,
     "screen": _screen,
     "factpack": _factpack,
     "score-news": _score_news,
