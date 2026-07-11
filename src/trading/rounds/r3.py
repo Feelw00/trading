@@ -135,6 +135,7 @@ def build_prompt(
     macro_lines: Sequence[str],
     *,
     strict_invalidation: bool = False,
+    extra_lines: Sequence[str] = (),
 ) -> str:
     srtn, name = candidate
     sectors = ", ".join(fp.sectors) if fp and fp.sectors else "미분류"
@@ -143,6 +144,8 @@ def build_prompt(
         slice_parts.append(_financial_lines(fp))
     if spec.persona == Persona.MACRO and macro_lines:
         slice_parts.append("거시 백드롭:\n" + "\n".join(f"  {m}" for m in macro_lines))
+    if extra_lines:  # 스윙 승격 근거 등 코드 계산 컨텍스트(P-9 3단계) — 전 페르소나 공통 주입
+        slice_parts.append("\n".join(extra_lines))
     slice_parts.append("담당 촉매(EventStore):\n" + _event_lines(events))
     grounding = "\n".join(slice_parts)
     strict = (
@@ -217,6 +220,7 @@ def run_r3(
     events: Sequence[EventRecord],
     *,
     macro_lines: Sequence[str] = (),
+    extra_lines: Sequence[str] = (),
     now: datetime | None = None,
     config: R3Config | None = None,
     source: str = "r3:claude",
@@ -231,7 +235,10 @@ def run_r3(
         p_events = events_for_persona(spec.persona, events)
         thesis: ThesisRecord | None = None
         for strict in (False, True):  # 1회 재생성(strict invalidation)
-            prompt = build_prompt(spec, candidate, factpack, p_events, macro_lines, strict_invalidation=strict)
+            prompt = build_prompt(
+                spec, candidate, factpack, p_events, macro_lines,
+                strict_invalidation=strict, extra_lines=extra_lines,
+            )
             try:
                 data = complete_json(client, prompt)
             except LLMError as e:
