@@ -39,6 +39,24 @@ def _classify_sectors() -> int:
     return sectors.main()
 
 
+def _sector_llm() -> int:
+    from trading import sector_llm
+
+    return sector_llm.main()
+
+
+def _collect_fins() -> int:
+    from trading.collectors import fins
+
+    return fins.main()
+
+
+def _swing() -> int:
+    from trading import swing
+
+    return swing.main()
+
+
 def _screen() -> int:
     from trading import screener
 
@@ -123,18 +141,27 @@ def _report_evening() -> int:
 
 
 def _daily_eod() -> int:
-    """EOD 디스커버리 파이프라인: 전종목 → 섹터분류 → 스크리너 → 수급 → fact pack.
+    """EOD 디스커버리 파이프라인: 전종목 → 섹터분류(+LLM 폴백) → 스크리너 → 수급·재무 → 스윙 → fact pack.
 
-    수급(KIS)은 best-effort — 실패해도 P1만 띄우고 fact pack은 계속(수급 결측은
-    factpack notes가 명시). 나머지 단계는 첫 실패에서 중단.
+    수급(KIS)·재무(DART)·섹터 LLM 폴백·스윙은 best-effort — 실패해도 P1만 띄우고 계속
+    (결측은 각 소비자가 명시). 나머지 단계는 첫 실패에서 중단.
+    섹터 LLM 폴백은 §5 휴면 대상 아님 — 분류 메타데이터 태깅이지 매매 판단 라운드가 아니다
+    (신규 게이트 진입 종목만이라 통상 0콜).
     """
-    for step in (_collect_market, _classify_sectors, _screen):
+    for step in (_collect_market, _classify_sectors):
         rc = step()
         if rc != 0:
             return rc
-    flows_rc = _collect_flows()
-    if flows_rc != 0:
-        _alert_round_failure("daily-eod/collect-flows", f"rc={flows_rc}")
+    llm_rc = _sector_llm()
+    if llm_rc != 0:
+        _alert_round_failure("daily-eod/sector-llm", f"rc={llm_rc}")
+    rc = _screen()
+    if rc != 0:
+        return rc
+    for name, step in (("collect-flows", _collect_flows), ("collect-fins", _collect_fins), ("swing", _swing)):
+        step_rc = step()
+        if step_rc != 0:
+            _alert_round_failure(f"daily-eod/{name}", f"rc={step_rc}")
     return _factpack()
 
 
@@ -144,6 +171,9 @@ ROUNDS: dict[str, Callable[[], int]] = {
     "collect-flows": _collect_flows,
     "collect-news": _collect_news,
     "classify-sectors": _classify_sectors,
+    "sector-llm": _sector_llm,
+    "collect-fins": _collect_fins,
+    "swing": _swing,
     "screen": _screen,
     "factpack": _factpack,
     "score-news": _score_news,
