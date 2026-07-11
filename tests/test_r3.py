@@ -153,3 +153,37 @@ def test_swing_promotions_empty_without_snapshot() -> None:
     from trading.reason_news import _swing_promotions
 
     assert _swing_promotions(limit=5) == {}  # 스냅샷 없음 — 승격 없음(발명 금지)
+
+
+def test_build_prompt_supply_gets_flows_slice() -> None:
+    """리허설 적발(2026-07-12): FactPack.flows가 있어도 supply 슬라이스에 미주입되던 갭."""
+    from datetime import datetime
+
+    from trading.contracts.factpack import FactPack, FlowLine, PriceContext
+    from trading.contracts.thesis import Persona as P
+    from trading.rounds.r3 import PERSONAS, build_prompt
+
+    fp = FactPack(
+        srtn_cd="161890", name="한국콜마", sectors=["cosmetics"], screen_score=0.9,
+        price=PriceContext(as_of="20260709", market="KOSPI", close=102800.0, market_cap=1e12,
+                           tr_value_surge=1.6, mom_short_pct=19.0, mom_long_pct=30.0,
+                           high_252_proximity=0.82),
+        flows=[FlowLine(bas_dt="20260710", prsn_ntby_mn=-500.0, frgn_ntby_mn=300.0,
+                        orgn_ntby_mn=250.0, fund_ntby_mn=50.0)],
+        as_of=NOW, fetched_at=NOW,
+    )
+    for spec in PERSONAS:
+        p = build_prompt(spec, ("161890", "한국콜마"), fp, [], [])
+        if spec.persona is P.SUPPLY:
+            assert "수급(KIS 투자자매매동향" in p and "외국인 +300" in p
+        else:
+            assert "투자자매매동향" not in p  # 입력격리 — 타 페르소나엔 미주입
+
+
+def test_build_prompt_supply_flows_missing_is_explicit() -> None:
+    from trading.contracts.thesis import Persona as P
+    from trading.rounds.r3 import PERSONAS, build_prompt
+
+    spec = next(s for s in PERSONAS if s.persona is P.SUPPLY)
+    p = build_prompt(spec, CAND, None, [], [])
+    assert "수급(투자자별 매매동향): (미수집)" in p  # 결측 명시(침묵 생략 금지)

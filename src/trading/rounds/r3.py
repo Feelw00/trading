@@ -115,6 +115,26 @@ def _financial_lines(fp: FactPack | None) -> str:
     return "재무(DART):\n" + "\n".join(rows)
 
 
+def _flow_lines(fp: FactPack | None) -> str:
+    """수급(KIS 투자자매매동향) 슬라이스 — supply 페르소나 전용 주입.
+
+    2026-07-12 리허설 적발: FactPack.flows가 있어도 R3 슬라이스에 미주입 → supply가
+    수집된 수급을 두고도 '미수집' 보류 판정. cycle=재무처럼 supply=수급이 원칙.
+    """
+    if fp is None or not fp.flows:
+        return "수급(투자자별 매매동향): (미수집)"
+
+    def _mn(v: float | None) -> str:
+        return f"{v:+,.0f}" if v is not None else "?"
+
+    rows = [
+        f"  {f.bas_dt}: 개인 {_mn(f.prsn_ntby_mn)} · 외국인 {_mn(f.frgn_ntby_mn)} · "
+        f"기관계 {_mn(f.orgn_ntby_mn)}" + (f" (기금 {_mn(f.fund_ntby_mn)})" if f.fund_ntby_mn is not None else "")
+        for f in fp.flows[:10]
+    ]
+    return "수급(KIS 투자자매매동향, 순매수 백만원, 최신순):\n" + "\n".join(rows)
+
+
 def _event_lines(events: Sequence[EventRecord]) -> str:
     if not events:
         return "  (담당 촉매 없음)"
@@ -142,6 +162,8 @@ def build_prompt(
     slice_parts = [f"종목: {name}({srtn}) · 섹터 {sectors}", _price_line(fp)]
     if spec.persona == Persona.CYCLE:
         slice_parts.append(_financial_lines(fp))
+    if spec.persona == Persona.SUPPLY:
+        slice_parts.append(_flow_lines(fp))
     if spec.persona == Persona.MACRO and macro_lines:
         slice_parts.append("거시 백드롭:\n" + "\n".join(f"  {m}" for m in macro_lines))
     if extra_lines:  # 스윙 승격 근거 등 코드 계산 컨텍스트(P-9 3단계) — 전 페르소나 공통 주입
