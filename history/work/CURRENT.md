@@ -11,6 +11,7 @@
 - 세션 진입 시 점검: `poetry run python ops/openclaw/drill.py --audit` (전일 사이클 PASS/WARN/FAIL) + 라운드 실패 P1 알림 수신 여부.
 
 ## 최근 완료
+- 2026-07-11 — **CAL-3 결정·구현: §5 "장중" = 정규장 ∪ 애프터마켓(16:00~20:00, 9/14 시행). §5 가드가 미배선이던 것 적발 → `trading.run`에 배선(rc=3 스킵). pm 체인 재배치(score 20:05·verify 20:20·reason 20:35·synth 21:30·**저녁 결재 보고 21:00→22:00**) + 게이트웨이 sync. 프리마켓은 2027 말 재연기 → SEL-1 미해소** → [archive](archive/2026-07-11-cal3-after-market.md)
 - 2026-07-11 — **CAL-1 종결: 관측 휴장 9일 공식 공지 대조(9/9 일치) + 미래 휴장 5일 등록(2026-07-17 제헌절·8/17·9/24-25·10/5). `covered_through`+`--check` 만료 경고로 내년 재발 차단. CAL-3(거래시간 연장 9/14) 신규 등록** → [archive](archive/2026-07-11-cal1-holidays.md)
 - 2026-07-11 — **시세 갭 백필(16거래일) + 1년치 히스토리(262일자) + 연속성 가드(자가 치유·`--check`·`no_data_days` 박제) + 스크리너/FactPack 폴백 침묵 제거(`mom_*_ok`·`float|None`·R3 "미산출"). CAL-1 실체 적발(달력 미등록 휴장 9일)** → [archive](archive/2026-07-11-continuity-guard.md)
 - 2026-06-12 — **포지션 관리 레이어(P-8): PositionRecord(계획 스냅샷 박제)+PositionStore+점검(손익·스탑 거리·시간손절→[정리 검토])+positions CLI+/positions 스킬. arm-check·저녁 보고(§8 무효화 잔여 거리 결측 해소)·boot 배선** → [archive](archive/2026-06-12-position-layer.md)
@@ -53,7 +54,7 @@
 - **DiscussPack에 주요 공시 원문 요약 포함** — 공정공시·계약 공시 등은 DART `document.xml`로 원문을 받아 팩에 발췌(공시가 뉴스보다 상위 근거 — 네이버 AI 팩토리 사례). 임원·주요주주 보고는 elestock 계열 정형 API 검토.
 - R6 보고 `_macro_lines`의 `GROUP BY name` 버그 — 같은 지표 다중 수집분 중 임의 행 선택(6/09 KOSPI가 6/11 보고에 나갈 수 있음) → 지표별 최신 as_of 행 선택으로 수정
 - R1 일반 게이트 운영 배선 — landing→FactRecord 변환 계층
-- 🟡 CAL-3(신규): KRX 거래시간 연장 **2026-09-14 시행**(프리 07:00~07:50·애프터) — 세션 가드·장중 휴면 범위 재확인, SEL-1(프리마켓 흐름변수) NXT 의존 해소 가능성. 시행 전 KRX 최종 공지 확인.
+- **애프터마켓 시행(2026-09-14) 후 실측**: 애프터마켓 체결이 data.go.kr 일별시세의 **종가·거래량에 포함되는지** 대조 — 포함되면 스크리너 거래대금·모멘텀 의미가 바뀐다(CAL-3 잔여).
 - 2027년 휴장일 갱신 — `krx_holidays.json`의 `covered_through=2026-12-31` 만료 시 `--check`가 ⚠️ 경고(연 1회 운영 작업)
 
 **외부 의존 해소** (병행 가능)

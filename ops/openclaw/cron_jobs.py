@@ -36,17 +36,23 @@ JOBS: tuple[CronJob, ...] = (
     # 마감 직후로 옮겨 pm 라운드(16:20~)가 최신 스크리너 후보를 쓰게 한다.
     CronJob("daily-eod", "5 16 * * 1-5", "daily-eod", comment="전종목→섹터분류→스크리너→fact pack(T-1 EOD)"),
     # --- 오후(마감) ---
+    # 수집(R0)은 순수 어댑터라 애프터마켓 중에도 허용 — 마감 뉴스를 제때 받는다.
     CronJob("news-pm", "20 16 * * 1-5", "collect-news", comment="R0 수집 — 국내 마감 뉴스(네이버 중심)"),
-    CronJob("score-pm", "32 16 * * 1-5", "score-news", comment="R1 게이트→R2 분류·스코어"),
-    CronJob("verify-pm", "45 16 * * 1-5", "verify-catalysts", comment="R4 적대검증(선별)"),
-    CronJob("reason-pm", "55 16 * * 1-5", "reason-theses", comment="R3 페르소나 분석"),
-    # --- 보고 (설계서 §5·§8: 06:50 모닝 / 21:00 저녁 결재) — 거시 재수집 내장(렌더 직전) ---
+    # ⚠️ pm LLM 체인은 **애프터마켓(16:00–20:00, 2026-09-14~) 마감 후**로 배치(CAL-3 결정: 장중 = 정규장+애프터).
+    # 이전 16:32/16:45/16:55 슬롯은 9/14부터 §5 휴면 창이라 `trading.run` 가드가 스킵시킨다.
+    # 간격은 실측 소요(R2 ~64분 · R4 ~23분 · R3 ~25분 · R5 ~4분) 기준 — R5는 R2/R3 산출을 DB로 받으므로
+    # 체인 종료(~21:10) 뒤에 둔다.
+    CronJob("score-pm", "5 20 * * 1-5", "score-news", comment="R1 게이트→R2 분류·스코어(애프터마켓 후)"),
+    CronJob("verify-pm", "20 20 * * 1-5", "verify-catalysts", comment="R4 적대검증(선별)"),
+    CronJob("reason-pm", "35 20 * * 1-5", "reason-theses", comment="R3 페르소나 분석"),
+    # --- 보고 (설계서 §5·§8: 06:50 모닝 / 저녁 결재) — 거시 재수집 내장(렌더 직전) ---
+    # 저녁 결재는 21:00 → 22:00(CAL-3: pm 체인이 20:05로 밀리며 R5 종료가 21:35경).
     CronJob("report-am", "50 6 * * 1-5", "report-morning", comment="거시 전부 수집(결정론)→R6 모닝 브리핑"),
-    CronJob("report-pm", "0 21 * * 1-5", "report-evening", comment="거시 재수집(결정론)→R6 저녁 결재 보고(승인 요청)"),
+    CronJob("report-pm", "0 22 * * 1-5", "report-evening", comment="거시 재수집(결정론)→R6 저녁 결재 보고(승인 요청)"),
     # --- 아침 선택 (설계서 §5: 08:50 R5.5 — 순수 코드, 휴장·장중은 러너 가드가 거부) ---
     CronJob("select-am", "50 8 * * 1-5", "select-playbooks", comment="R5.5 플레이북 선택·arm(순수 코드)"),
-    # --- 야간 합성 (설계서 §5: 20:30 R5 — 장중 실행은 러너 내부 가드가 거부) ---
-    CronJob("synth-pm", "30 20 * * 1-5", "synth-playbooks", comment="R5 합성·플레이북·주문 초안(내부 claude -p)"),
+    # --- 야간 합성 (R5 — 애프터마켓 마감(20:00) + pm 체인 종료 후. 장중 실행은 러너 내부 가드가 거부) ---
+    CronJob("synth-pm", "30 21 * * 1-5", "synth-playbooks", comment="R5 합성·플레이북·주문 초안(내부 claude -p)"),
     # --- 주간 평가 (설계서 §5: 토 10:00 R7) ---
     CronJob("eval-sat", "0 10 * * 6", "evaluate", comment="R7 평가·캘리브레이션+레짐(채점=코드, 해석=claude -p)"),
     # --- 알림 (설계서 §8: P1 묶음 = 점심·마감) ---

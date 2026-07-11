@@ -2,9 +2,15 @@
 
 스케줄은 openclaw cron/heartbeat가 전담하고, **시장시간·휴장일 판단은 각 잡이 호출하는
 이 가드**가 수행한다(자체 스케줄러 금지). 설계서 §5:
-- 장중(09:00–15:30 KST) LLM 라운드 전면 휴면 → :func:`require_llm_rounds_allowed`.
+- 장중 LLM 라운드 전면 휴면 → :func:`require_llm_rounds_allowed`.
 - 주문 설계(R5)는 장 마감 후에만 → :func:`require_market_closed`.
 - 미국 서머타임은 ``zoneinfo America/New_York`` 변환으로 처리(수동 DST 규칙 없음).
+
+**"장중"의 범위 (CAL-3, 운영자 2026-07-11 결정):** 정규장(09:00–15:30) **+ 애프터마켓(16:00–20:00,
+2026-09-14 시행)**. 애프터마켓은 실거래가 도는 시간이므로 휴면 창에 포함한다 —
+:func:`in_extended_session`. 프리마켓(07:00–07:50)은 **2027년 말로 연기**돼 아직 창이 없다
+(생기면 ``_PREMARKET_*`` 추가). 정규장 자체는 불변이라 :func:`in_krx_session`(정규장 판정 —
+체결·수급·arm-check용)은 그대로 두고, LLM/주문 가드만 확장 창을 본다.
 
 휴장일 데이터(환각 가드):
 - **확실한 고정 공휴일(월-일 고정)만** 코드에 둔다. 음력(설날·추석·석가탄신일)·대체공휴일·
@@ -28,6 +34,12 @@ KRX_OPEN = time(9, 0)
 KRX_CLOSE = time(15, 30)
 US_OPEN_ET = time(9, 30)
 US_CLOSE_ET = time(16, 0)
+
+# 애프터마켓(CAL-3) — KRX 발표: 2026-09-14 시행, 16:00–20:00. 시행일 이전 날짜엔 창이 없다
+# (과거 리플레이·백테스트가 실제로 열려 있던 시장을 휴장으로 오판하지 않게 연도·일자 경계를 둔다).
+AFTER_OPEN = time(16, 0)
+AFTER_CLOSE = time(20, 0)
+AFTER_MARKET_EFFECTIVE = date(2026, 9, 14)
 
 # 월-일 고정 법정 공휴일 + 연말 휴장(12-31). 음력·대체공휴일은 여기 절대 추가 금지(파일 주입).
 _FIXED_CLOSED_MD: frozenset[tuple[int, int]] = frozenset(
@@ -119,7 +131,10 @@ def _as_kst(dt: datetime) -> datetime:
 
 
 def in_krx_session(dt: datetime, calendar: MarketCalendar | None = None) -> bool:
-    """장중(거래일 09:00–15:30 KST, 경계 포함 — 보수적) 여부."""
+    """**정규장**(거래일 09:00–15:30 KST, 경계 포함 — 보수적) 여부.
+
+    체결·수급·arm-check 등 "정규장 기준" 판정용. LLM/주문 가드는 :func:`in_extended_session`을 쓴다.
+    """
     cal = calendar if calendar is not None else MarketCalendar.default()
     local = _as_kst(dt)
     if not cal.is_trading_day(local.date()):
@@ -127,25 +142,54 @@ def in_krx_session(dt: datetime, calendar: MarketCalendar | None = None) -> bool
     return KRX_OPEN <= local.time() <= KRX_CLOSE
 
 
+def in_after_market(dt: datetime, calendar: MarketCalendar | None = None) -> bool:
+    """애프터마켓(거래일 16:00–20:00 KST, 2026-09-14~) 여부. 시행일 전이면 항상 False."""
+    cal = calendar if calendar is not None else MarketCalendar.default()
+    local = _as_kst(dt)
+    if local.date() < AFTER_MARKET_EFFECTIVE:
+        return False
+    if not cal.is_trading_day(local.date()):
+        return False
+    return AFTER_OPEN <= local.time() <= AFTER_CLOSE
+
+
+def in_extended_session(dt: datetime, calendar: MarketCalendar | None = None) -> bool:
+    """실거래가 도는 시간 = 정규장 ∪ 애프터마켓 (CAL-3 결정: 둘 다 LLM 휴면 창)."""
+    return in_krx_session(dt, calendar) or in_after_market(dt, calendar)
+
+
+def _session_label(dt: datetime, calendar: MarketCalendar | None = None) -> str:
+    return "정규장" if in_krx_session(dt, calendar) else "애프터마켓"
+
+
 def require_llm_rounds_allowed(
     now: datetime | None = None, calendar: MarketCalendar | None = None
 ) -> None:
-    """LLM 라운드(R2~R5, R7) 진입 가드 — 장중이면 거부(설계서 §5: 장중 전면 휴면)."""
+    """LLM 라운드(R2~R5, R7) 진입 가드 — 장중이면 거부(설계서 §5: 장중 전면 휴면).
+
+    장중 = 정규장 + 애프터마켓(CAL-3). cron 디스패치(`trading.run`)가 호출한다 — 수동 CLI는
+    CAL-2대로 우회 가능.
+    """
     resolved = now if now is not None else now_kst()
-    if in_krx_session(resolved, calendar):
+    if in_extended_session(resolved, calendar):
         raise MarketGuardError(
-            f"LLM round blocked: KRX 장중({_as_kst(resolved).isoformat()}) — §5 휴면"
+            f"LLM round blocked: KRX {_session_label(resolved, calendar)}"
+            f"({_as_kst(resolved).isoformat()}) — §5 휴면"
         )
 
 
 def require_market_closed(
     now: datetime | None = None, calendar: MarketCalendar | None = None
 ) -> None:
-    """주문 설계 경로(R5) 가드 — 장중 주문 초안 생성 금지(설계서 §1 운영 전제)."""
+    """주문 설계 경로(R5) 가드 — 장중 주문 초안 생성 금지(설계서 §1 운영 전제).
+
+    애프터마켓(16:00–20:00)도 실거래 시간이므로 초안 생성 금지(CAL-3).
+    """
     resolved = now if now is not None else now_kst()
-    if in_krx_session(resolved, calendar):
+    if in_extended_session(resolved, calendar):
         raise MarketGuardError(
-            f"order drafting blocked: KRX 장중({_as_kst(resolved).isoformat()})"
+            f"order drafting blocked: KRX {_session_label(resolved, calendar)}"
+            f"({_as_kst(resolved).isoformat()})"
         )
 
 
@@ -167,10 +211,15 @@ def us_session_kst(d: date) -> tuple[datetime, datetime]:
 
 
 __all__ = [
+    "AFTER_CLOSE",
+    "AFTER_MARKET_EFFECTIVE",
+    "AFTER_OPEN",
     "KRX_CLOSE",
     "KRX_OPEN",
     "MarketCalendar",
     "MarketGuardError",
+    "in_after_market",
+    "in_extended_session",
     "in_krx_session",
     "require_llm_rounds_allowed",
     "require_market_closed",
