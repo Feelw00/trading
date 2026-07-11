@@ -22,7 +22,7 @@
 `--retag` 소급 적용. 상위 30 미분류 22→16. 상세: `history/work/archive/2026-07-11-p1-sector-taxonomy.md`.
 잔여 미분류 151종(혼재 코드)은 P-2로.
 
-## 💡 P-2 — 미분류 잔존분 LLM 폴백 분류기 (claude -p 스텝)
+## 👍 P-2 — 미분류 잔존분 LLM 폴백 분류기 (claude -p 스텝) — 채택·구현 2026-07-11
 **제안:** grounded(`dart-ksic-v1`)·큐레이션(`manual-curated-v1`)이 못 채운 잔존 미분류를
 `claude -p` 서브프로세스(또는 멀티에이전트)로 분류하는 **재사용 스텝**. 현재는 유명주만 수기 큐레이션.
 
@@ -32,6 +32,12 @@
 
 **영향범위:** `sectors.py`에 LLM 폴백 함수, `/collect` 배선. 모델명 .env 주입. 비용↑(거래일마다 잔존분).
 **미결:** 멀티에이전트 Workflow vs 단일 `claude -p`. 검증(cross-check) 깊이.
+
+**상태:** 👍채택(운영자, P-9 선행 조건으로 2026-07-11) — **구현 완료**: `sector_llm.py`(단일 `claude -p`
+배치 25종, `llm-fallback-v1` 최후순위 소스, 환각가드: 모르면 미분류·taxonomy 밖 폐기·confidence<0.7
+미채택·basis 필수). 실행 결과 미분류 151→28(채택 123, 폐기 0), **상위 30 미분류 22→2**.
+미결이던 검증 깊이는 "단일 패스 + 코드 재검증 + 임계"로 시작 — cross-check는 오분류 실증 시 추가.
+상세: `history/work/archive/2026-07-11-p2-llm-fallback.md`.
 
 ## 👍 P-3 — 뉴스 단일 영속 DB + 인덱싱 (시계열 통합)
 **제안:** 뉴스 landing을 날짜별 분산(`.runtime/collect/<날짜>/news.sqlite`)에서

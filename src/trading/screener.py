@@ -222,8 +222,9 @@ def screen(store: MarketStore, config: ScreenConfig | None = None) -> ScreenResu
 
 
 SECTOR_SOURCE = "llm-cls-v1"
-# 병합 우선순위: 수기 큐레이션 > 멀티에이전트 LLM > grounded(갭 채움). 앞 소스가 종목별 우선.
-SECTOR_SOURCES = ("manual-curated-v1", "llm-cls-v1", "dart-ksic-v1")
+# 병합 우선순위: 수기 큐레이션 > 멀티에이전트 LLM > grounded > LLM 폴백(P-2, 잔존 갭만).
+# 앞 소스가 종목별 우선 — 폴백은 상위 소스를 절대 덮지 않는다.
+SECTOR_SOURCES = ("manual-curated-v1", "llm-cls-v1", "dart-ksic-v1", "llm-fallback-v1")
 
 
 def main() -> int:
