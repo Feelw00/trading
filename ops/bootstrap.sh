@@ -62,14 +62,19 @@ if [ ! -x "$HOME/.openclaw/bin/openclaw" ]; then
 fi
 log "OpenClaw: $($HOME/.openclaw/bin/openclaw --version 2>&1 | head -1)"
 
-# --- 6.5. 트리거 모델(로컬 핀) — cron 트리거 턴 전용. 클라우드 쿼터를 크리티컬 패스에서 제거
-#     (2026-06-11: minimax 무료 티어 rate limit으로 트리거 전멸 → 로컬 소형 모델 전환).
-command -v ollama >/dev/null || die "ollama 미설치 — https://ollama.com/download"
-TRIGGER_MODEL="qwen2.5:3b"  # openclaw.template.json agents.defaults.model과 일치 유지
-ollama list 2>/dev/null | grep -q "^${TRIGGER_MODEL}" || {
-  log "트리거 모델 pull: $TRIGGER_MODEL"
-  ollama pull "$TRIGGER_MODEL"
-}
+# --- 6.5. 트리거 모델 — cron 트리거 턴 전용(데이터·판단 미개입, 절대금지 #2).
+#     2026-06-11: minimax 무료 티어 rate limit → 로컬 ollama(qwen2.5:3b) 전환.
+#     2026-07-11: ollama 폐기 → ChatGPT 구독 인증(openai/oauth). API 키 불필요.
+#     모델명은 .env 의 OPENCLAW_TRIGGER_MODEL 로 주입(하드코딩 금지 — 절대금지 #4).
+# .env 는 8단계에서 source 되므로 여기서는 파일을 직접 확인한다.
+grep -qE "^OPENCLAW_TRIGGER_MODEL=." .env || die ".env 에 OPENCLAW_TRIGGER_MODEL 없음 (예: openai/gpt-5.5)"
+if ! OPENCLAW_STATE_DIR="$REPO/.runtime/openclaw" \
+     "$HOME/.openclaw/bin/openclaw" models auth list 2>/dev/null | grep -q "openai"; then
+  warn "openclaw openai 인증 프로파일 없음 — 트리거 턴이 실패한다."
+  warn "  TTY 에서 1회 실행:"
+  warn "  OPENCLAW_STATE_DIR=$REPO/.runtime/openclaw \\"
+  warn "    $HOME/.openclaw/bin/openclaw models auth login --provider openai --method oauth"
+fi
 
 # --- 7. .runtime/openclaw 상태 디렉토리 ---
 mkdir -p .runtime/openclaw/workspace

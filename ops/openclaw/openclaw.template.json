@@ -1,10 +1,10 @@
 {
   "meta": {
-    "lastTouchedVersion": "2026.6.1"
+    "lastTouchedVersion": "2026.6.11"
   },
   "agents": {
     "defaults": {
-      "model": "ollama/qwen2.5:3b",
+      "model": "${OPENCLAW_TRIGGER_MODEL}",
       "workspace": "${TRADING_OPENCLAW_WORKSPACE}",
       "compaction": {
         "mode": "safeguard"
@@ -12,27 +12,6 @@
       "maxConcurrent": 2,
       "subagents": {
         "maxConcurrent": 4
-      }
-    }
-  },
-  "models": {
-    "providers": {
-      "ollama": {
-        "baseUrl": "http://127.0.0.1:11434",
-        "apiKey": "ollama-local",
-        "api": "ollama",
-        "models": [
-          {
-            "id": "qwen2.5:3b",
-            "name": "Qwen2.5 3B (local)",
-            "input": ["text"],
-            "contextWindow": 32768,
-            "maxTokens": 8192,
-            "params": {
-              "num_ctx": 205000
-            }
-          }
-        ]
       }
     }
   },
@@ -50,15 +29,13 @@
     }
   },
   "plugins": {
+    "allow": ["codex"],
     "entries": {
-      "ollama": {
+      "openai": {
         "enabled": true
       },
-      "openai": {
-        "enabled": false
-      },
       "codex": {
-        "enabled": false
+        "enabled": true
       },
       "telegram": {
         "enabled": false
