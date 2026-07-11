@@ -147,11 +147,11 @@ def test_after_market_boundaries_and_gap_after_close() -> None:
 
 
 def test_pm_llm_slots_land_outside_dormant_window() -> None:
-    """재배치된 pm 슬롯(20:05/20:20/20:35 · R5 21:30 · 보고 22:00)이 휴면 창 밖인가."""
+    """재배치된 pm 슬롯(20:02/20:15/20:32 · R5 21:05 · 보고 21:30)이 휴면 창 밖인가."""
     cal = MarketCalendar()
-    for hh, mm in [(20, 5), (20, 20), (20, 35), (21, 30), (22, 0)]:
+    for hh, mm in [(20, 2), (20, 15), (20, 32), (21, 5), (21, 30)]:
         require_llm_rounds_allowed(_kst(2026, 9, 14, hh, mm), cal)
-    require_market_closed(_kst(2026, 9, 14, 21, 30), cal)  # R5 주문 설계
+    require_market_closed(_kst(2026, 9, 14, 21, 5), cal)  # R5 주문 설계
 
 
 def test_order_drafting_blocked_during_after_market() -> None:
