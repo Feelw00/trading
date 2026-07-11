@@ -107,7 +107,13 @@ def render_morning(
                 "draft_id": pb.order_draft_ref,
                 "label": _label(draft.symbol, names) if draft else "",
                 "status": draft.status.value if draft else "초안 없음",
-                "arm": ", ".join(f"{k} {v}" for k, v in pb.arm_conditions.items()),
+                # 저녁과 동일 원칙(가독성 3차): 파일=키 병기 해설, 다이제스트=압축
+                "arm": " + ".join(
+                    explain_condition(k, v) for k, v in pb.arm_conditions.items()
+                ),
+                "arm_compact": " + ".join(
+                    explain_condition_compact(k, v) for k, v in pb.arm_conditions.items()
+                ),
             }
         )
     run_meta = ps.latest_run()
@@ -120,12 +126,45 @@ def render_morning(
         notes.append("거시 미수집 — 간밤 백드롭 부재(collect-macro 확인)")
     checklist = run_meta[2] if run_meta else []
 
+    day_iso = resolved.date().isoformat()
     text = _env().get_template("morning.md.j2").render(
-        day=resolved.date().isoformat(),
+        day=day_iso,
         macro=macro, playbooks=rows, checklist=checklist, notes=notes,
     )
-    return Rendered("morning", resolved.date().isoformat(),
-                    _guard_length("morning", text, max_chars=max_chars))
+    digest = _morning_digest(day_iso, rows, macro, checklist)
+    return Rendered("morning", day_iso,
+                    _guard_length("morning", text, max_chars=max_chars), digest=digest)
+
+
+_STATUS_KO = {"draft": "승인 대기", "approved": "승인됨", "armed": "발동", "expired": "만료"}
+
+
+def _morning_digest(
+    day: str, rows: list[dict[str, Any]], macro: list[str], checklist: list[str]
+) -> str:
+    """모닝 텔레그램 다이제스트 — 플레이북 카드(압축 진입 조건) + 간밤 거시 + 체크리스트."""
+    lines = [f"# 모닝 브리핑 — {day} (읽기 전용)", ""]
+    if rows:
+        lines.append(f"## 오늘 플레이북 {len(rows)}건")
+        for i, p in enumerate(rows, 1):
+            status = _STATUS_KO.get(p["status"], p["status"])
+            head = f"{i}. **{p['label']}**" if p["label"] else f"{i}."
+            lines.append(f"{head} — {status} · `{p['draft_id']}`")
+            if p["arm_compact"]:
+                lines.append(f"   진입: {p['arm_compact']}")
+    else:
+        lines.append("**오늘 할 일 없음 — 비거래.** (대부분의 날의 정상 결론)")
+    if macro:
+        lines.append("")
+        lines.append("## 간밤 거시")
+        lines.extend(f"- {m}" for m in macro)
+    if checklist:
+        lines.append("")
+        lines.append("## 체크리스트")
+        lines.extend(f"- [ ] {c}" for c in checklist)
+    lines.append("")
+    lines.append(f"- 전문: `.runtime/reports/{day}-morning.md`")
+    return "\n".join(lines)
 
 
 def _clip(text: str, width: int) -> str:

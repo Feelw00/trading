@@ -292,3 +292,24 @@ def test_risk_lines_extracts_warnings_only() -> None:
         "동일 금리 축 3중 노출 — 동시 진입 금지.",
         "USD/KRW 1450 하회 시 논거 일괄 소멸.",
     ]
+
+
+def test_morning_digest_compact(tmp_path: Path) -> None:
+    ps = _seeded_store(tmp_path)
+    r = render_morning(now=NOW, playbook_store=ps)
+    ps.close()
+    assert r.digest is not None
+    d = r.digest
+    assert "오늘 플레이북 1건" in d and "승인 대기" in d   # status 한국어
+    assert "진입: 시초 갭 크기 -3.0↓" in d               # 압축 진입 조건
+    assert "gap_pct" not in d                            # 기계 문자열 미노출
+    assert "`order.20260610.001740.buy`" in d
+    assert "- [ ] 갭 확인" in d                          # 체크리스트 유지(아침 관측용)
+    assert ".runtime/reports/2026-06-10-morning.md" in d
+
+
+def test_morning_digest_no_playbooks(tmp_path: Path) -> None:
+    ps = PlaybookStore(tmp_path / "empty.sqlite")
+    r = render_morning(now=NOW, playbook_store=ps)
+    ps.close()
+    assert r.digest is not None and "오늘 할 일 없음" in r.digest
