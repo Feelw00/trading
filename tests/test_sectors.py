@@ -30,6 +30,18 @@ def test_classify_ksic_uses_three_digit_prefix() -> None:
     assert classify_ksic("21210") == [Sector.PHARMA_BIO]
 
 
+def test_classify_ksic_p1_expansion_buckets() -> None:
+    # P-1(2026-07-11) 실측 채택: 해운·물류 / 운송 / 레저·카지노
+    assert classify_ksic("50112") == [Sector.SHIPPING_LOGISTICS]  # HMM·팬오션·흥아해운
+    assert classify_ksic("5299") == [Sector.SHIPPING_LOGISTICS]   # 현대글로비스(물류)
+    assert classify_ksic("511") == [Sector.TRANSPORT]             # 대한항공(항공여객)
+    assert classify_ksic("49220") == [Sector.TRANSPORT]           # 동양고속(시외버스)
+    assert classify_ksic("91249") == [Sector.LEISURE_CASINO]      # 강원랜드·파라다이스·GKL
+    assert classify_ksic("75210") == [Sector.LEISURE_CASINO]      # 롯데관광개발(여행)
+    # 91249는 5자리 정밀 매칭 — 912 일반(기타 오락)은 미채택 유지
+    assert classify_ksic("91221") == []
+
+
 def test_classify_ksic_ambiguous_and_empty_unmapped() -> None:
     # 264(삼성전자=통신·반도체 혼재) 등 저순도 코드는 의도적 미수록 → 미분류
     assert classify_ksic("264") == []

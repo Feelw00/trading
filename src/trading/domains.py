@@ -3,7 +3,9 @@
 OPEN_QUESTIONS(도메인 분리). FactRecord 등 계약이 이 축으로 분류된다.
 - Region: 국내/국외
 - AssetClass: index / fx / macro / news / sector
-- Sector: 26개(아래 4그룹). 종목은 다중 소속 가능 → FactRecord.sector 는 리스트.
+- Sector: 29개(아래 4그룹). 종목은 다중 소속 가능 → FactRecord.sector 는 리스트.
+  (26 → 29: PROPOSALS P-1 채택 2026-07-11 — 해운·물류/운송/레저·카지노 버킷 부재로
+  HMM·대한항공·강원랜드 등 실거래 대형주가 영구 미분류되던 것 해소.)
 
 수집 대상은 SectorMeta.active 로 제어(Phase-1: 반도체만 on). taxonomy 정의 != 수집 구현.
 대표 종목(kr_examples)은 placeholder — 실제 구성종목 리스트는 별도 확정.
@@ -47,12 +49,15 @@ class Sector(str, Enum):
     CHEMICALS = "chemicals"
     MACHINERY = "machinery"
     CONSTRUCTION = "construction"
+    SHIPPING_LOGISTICS = "shipping_logistics"
+    TRANSPORT = "transport"
     # 바이오/소비
     PHARMA_BIO = "pharma_bio"
     COSMETICS = "cosmetics"
     ENTERTAINMENT = "entertainment"
     FOOD_BEVERAGE = "food_beverage"
     RETAIL_CONSUMER = "retail_consumer"
+    LEISURE_CASINO = "leisure_casino"
     # 금융/방어
     FINANCIALS = "financials"
     TELECOM = "telecom"
@@ -101,12 +106,15 @@ SECTORS: dict[Sector, SectorMeta] = {
     Sector.CHEMICALS: _meta(Sector.CHEMICALS, "화학", GROUP_INDUSTRIAL, ("LG화학", "롯데케미칼")),
     Sector.MACHINERY: _meta(Sector.MACHINERY, "기계·산업재", GROUP_INDUSTRIAL, ("두산밥캣",)),
     Sector.CONSTRUCTION: _meta(Sector.CONSTRUCTION, "건설", GROUP_INDUSTRIAL, ("현대건설",)),
+    Sector.SHIPPING_LOGISTICS: _meta(Sector.SHIPPING_LOGISTICS, "해운·물류", GROUP_INDUSTRIAL, ("HMM", "팬오션")),
+    Sector.TRANSPORT: _meta(Sector.TRANSPORT, "운송(항공·육상)", GROUP_INDUSTRIAL, ("대한항공", "동양고속")),
     # 바이오/소비
     Sector.PHARMA_BIO: _meta(Sector.PHARMA_BIO, "제약·바이오", GROUP_BIO_CONSUMER, ("삼성바이오로직스", "셀트리온")),
     Sector.COSMETICS: _meta(Sector.COSMETICS, "화장품", GROUP_BIO_CONSUMER, ("아모레퍼시픽", "LG생활건강")),
     Sector.ENTERTAINMENT: _meta(Sector.ENTERTAINMENT, "엔터·미디어", GROUP_BIO_CONSUMER, ("하이브", "JYP Ent.")),
     Sector.FOOD_BEVERAGE: _meta(Sector.FOOD_BEVERAGE, "음식료", GROUP_BIO_CONSUMER, ("CJ제일제당",)),
     Sector.RETAIL_CONSUMER: _meta(Sector.RETAIL_CONSUMER, "유통·소비재", GROUP_BIO_CONSUMER, ("이마트",)),
+    Sector.LEISURE_CASINO: _meta(Sector.LEISURE_CASINO, "레저·카지노", GROUP_BIO_CONSUMER, ("강원랜드", "파라다이스")),
     # 금융/방어
     Sector.FINANCIALS: _meta(Sector.FINANCIALS, "금융(은행·증권·보험)", GROUP_FIN_DEFENSIVE, ("KB금융", "삼성화재")),
     Sector.TELECOM: _meta(Sector.TELECOM, "통신", GROUP_FIN_DEFENSIVE, ("SKT", "KT")),

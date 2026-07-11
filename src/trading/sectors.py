@@ -16,6 +16,7 @@ grounded는 미분류 갭만 채운다(스크리너 ``sector_map_multi`` 병합)
 """
 
 import os
+import sys
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -57,6 +58,15 @@ KSIC_RULES: dict[str, KsicRule] = {
     "311": KsicRule((_S.SHIPBUILDING,), 0.75),     # 3/4 · 선박·보트
     "412": KsicRule((_S.CONSTRUCTION,), 0.75),     # 3/4 · 건물 건설
     "205": KsicRule((_S.CHEMICALS,), 0.85),        # 2/2 · 기타 화학제품
+    # P-1 확장 버킷(2026-07-11 실측 — 게이트 통과 미분류 169종 DART induty 전수 + 개별 조회):
+    "501": KsicRule((_S.SHIPPING_LOGISTICS,), 1.00),  # 3/3 · 해상 운송(HMM·팬오션·흥아해운)
+    "529": KsicRule((_S.SHIPPING_LOGISTICS,), 0.75),  # 1/1 · 기타 운송관련 서비스(현대글로비스 물류, 저n 보수화)
+    "511": KsicRule((_S.TRANSPORT,), 0.75),           # 1/1 · 항공 여객 운송(대한항공, 저n 보수화)
+    "492": KsicRule((_S.TRANSPORT,), 0.75),           # 1/1 · 육상 여객 운송(동양고속, 저n 보수화)
+    "91249": KsicRule((_S.LEISURE_CASINO,), 1.00),    # 3/3 · 사행시설(강원랜드·파라다이스·GKL)
+    "752": KsicRule((_S.LEISURE_CASINO,), 0.75),      # 1/1 · 여행사(롯데관광개발, 저n 보수화)
+    # P-1 실측의 부산물(기존 버킷 크로스워크 보강 — 같은 방법론):
+    "20423": KsicRule((_S.COSMETICS,), 1.00),         # 5/5 · 화장품 제조(한국콜마·아모레퍼시픽·코스맥스·에이피알·달바글로벌)
 }
 
 
@@ -75,9 +85,18 @@ MANUAL_SECTORS: dict[str, tuple[str, tuple[Sector, ...]]] = {
     "002020": ("코오롱", (_S.HOLDING,)),               # 64992 지주(financials 혼재)
     "003380": ("하림지주", (_S.HOLDING,)),              # 64992 지주
     "139130": ("iM금융지주", (_S.FINANCIALS, _S.HOLDING)),  # 64992 금융지주
+    # 금융지주 일괄(64992 — iM금융지주와 동형, P-1 실측 2026-07-11에서 코드 확인):
+    "105560": ("KB금융", (_S.FINANCIALS, _S.HOLDING)),
+    "055550": ("신한지주", (_S.FINANCIALS, _S.HOLDING)),
+    "086790": ("하나금융지주", (_S.FINANCIALS, _S.HOLDING)),
+    "138040": ("메리츠금융지주", (_S.FINANCIALS, _S.HOLDING)),
+    "316140": ("우리금융지주", (_S.FINANCIALS, _S.HOLDING)),
+    "138930": ("BNK금융지주", (_S.FINANCIALS, _S.HOLDING)),
+    "175330": ("JB금융지주", (_S.FINANCIALS, _S.HOLDING)),
     "088980": ("맥쿼리인프라", (_S.FINANCIALS,)),        # 64201 인프라투자펀드
     "103140": ("풍산", (_S.STEEL_MATERIALS, _S.DEFENSE)),  # 242 비철금속+방산(탄약)
     "323280": ("태성", (_S.SEMICONDUCTOR,)),           # 292 반도체·PCB 장비
+    "051900": ("LG생활건강", (_S.COSMETICS,)),          # 20422 세제·비누(코드≠실체: 화장품 대형주, domains 대표종목)
 }
 
 
@@ -147,7 +166,11 @@ def classify_untagged(
     return ClassifySummary(len(codes), classified, unclassified, dict(by_sector))
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
+    """기본: 미시도 종목만 grounded 분류. ``--retag``: KSIC 규칙이 늘어난 뒤
+    과거에 '미분류'로 기록된 종목을 재평가(신규 규칙 소급 — 매칭 행만 append, 중복 무해)."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    retag = "--retag" in args
     store = MarketStore()
     res = screen(store, ScreenConfig(top_n=1_000_000))  # 게이트 통과 전체 열거
     if not res.candidates:
@@ -165,7 +188,12 @@ def main() -> int:
         return 0
     tagged = set(store.sector_map_multi(("llm-cls-v1", MANUAL_SOURCE)))
     attempted = store.codes_with_any_row(GROUNDED_SOURCE)
-    todo = [(c.srtn_cd, c.name) for c in res.candidates if c.srtn_cd not in tagged and c.srtn_cd not in attempted]
+    if retag:
+        grounded_ok = set(store.sector_map(GROUNDED_SOURCE))  # 이미 실분류된 종목은 제외
+        skip = tagged | grounded_ok
+    else:
+        skip = tagged | attempted
+    todo = [(c.srtn_cd, c.name) for c in res.candidates if c.srtn_cd not in skip]
     if not todo:
         print(f"grounded 보강 불필요 — 게이트 {res.universe}종목 모두 태깅/시도됨")
         store.close()
