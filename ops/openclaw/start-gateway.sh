@@ -23,7 +23,9 @@ fi
 
 rm -f "$LOG"
 tmux new-session -d -s "$SESSION" -c "$REPO"
-tmux send-keys -t "$SESSION" "set -a && . .env && set +a && OPENCLAW_STATE_DIR=$REPO/.runtime/openclaw OPENCLAW_CONFIG_PATH=$REPO/.runtime/openclaw/openclaw.json $OC gateway 2>&1 | tee $LOG" Enter
+# `. ./.env` — 슬래시 필수. zsh 는 `. .env` 를 $PATH 에서만 찾고 cwd 를 보지 않는다
+# (bash 는 cwd 폴백 → 우분투에선 통과, macOS 기본 zsh 에선 실패했음).
+tmux send-keys -t "$SESSION" "set -a && . $REPO/.env && set +a && OPENCLAW_STATE_DIR=$REPO/.runtime/openclaw OPENCLAW_CONFIG_PATH=$REPO/.runtime/openclaw/openclaw.json $OC gateway 2>&1 | tee $LOG" Enter
 
 # 부팅 대기(최대 30초)
 for i in $(seq 1 30); do
