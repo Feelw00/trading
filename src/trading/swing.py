@@ -459,9 +459,11 @@ CREATE TABLE IF NOT EXISTS swing_triggers (
 class SwingStore:
     """유니버스 스냅샷·트리거 이력(append-only) — R6 보고·R7 적중률 채점 소비."""
 
-    def __init__(self, db_path: Path = DEFAULT_DB) -> None:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(db_path))
+    def __init__(self, db_path: Path | None = None) -> None:
+        # 기본 경로는 호출 시점 해석 — 테스트가 DEFAULT_DB를 격리 경로로 패치 가능(P-8 원칙)
+        resolved = db_path if db_path is not None else DEFAULT_DB
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(resolved))
         self._conn.executescript(_SWING_DDL)
 
     def record(self, result: SwingResult) -> tuple[int, int]:
@@ -493,10 +495,32 @@ class SwingStore:
 
     def triggers_on(self, bas_dt: str) -> list[tuple[str, str, str, float]]:
         cur = self._conn.execute(
-            "SELECT srtn_cd, name, trigger, score FROM swing_triggers WHERE bas_dt=? ORDER BY score DESC",
+            "SELECT srtn_cd, name, trigger, score FROM swing_triggers WHERE bas_dt=? "
+            "ORDER BY score DESC, srtn_cd, trigger",  # 결정론 순서(동점 안정 정렬)
             (bas_dt,),
         )
         return [(str(r[0]), str(r[1]), str(r[2]), float(r[3])) for r in cur]
+
+    def latest_bas_dt(self) -> str | None:
+        row = self._conn.execute("SELECT MAX(bas_dt) FROM swing_universe").fetchone()
+        return str(row[0]) if row and row[0] else None
+
+    def latest_universe(self) -> list[tuple[str, str]]:
+        """최신 스냅샷 유니버스 [(srtn_cd, name)] 점수순 — flows 수집 범위 확장(P-9 ③) 소비."""
+        day = self.latest_bas_dt()
+        if day is None:
+            return []
+        cur = self._conn.execute(
+            "SELECT srtn_cd, name FROM swing_universe WHERE bas_dt=? ORDER BY score DESC", (day,)
+        )
+        return [(str(r[0]), str(r[1])) for r in cur]
+
+    def all_triggers(self) -> list[tuple[str, str, str]]:
+        """전체 트리거 이력 [(bas_dt, srtn_cd, trigger)] — R7 적중률 채점 입력."""
+        cur = self._conn.execute(
+            "SELECT bas_dt, srtn_cd, trigger FROM swing_triggers ORDER BY bas_dt"
+        )
+        return [(str(r[0]), str(r[1]), str(r[2])) for r in cur]
 
     def close(self) -> None:
         self._conn.close()

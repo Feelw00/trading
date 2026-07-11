@@ -37,6 +37,24 @@ class PersonaScore(BaseModel):
     calibration: list[CalibrationBucket] = Field(default_factory=list)
 
 
+class SwingTriggerScore(BaseModel):
+    """스윙 기회 트리거 1종의 기간 성적(P-9 ②) — 발화 다음 거래일 진입 → window 거래일 후 종가.
+
+    적중률·평균수익이 임계(SwingConfig) 튜닝의 실측 근거. 미성숙·결측은 채점하지 않는다.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    trigger: NonEmptyStr              # pullback | domain_ignition | catalyst | flow_turn
+    window_days: int = Field(ge=1)    # 채점 창(거래일)
+    n_scored: int = Field(ge=0)
+    n_immature: int = Field(ge=0)
+    n_no_data: int = Field(ge=0)
+    n_hit: int = Field(ge=0)          # 수익 > 0
+    hit_rate: float | None = None     # n_scored=0 이면 None(0%로 왜곡 금지)
+    avg_return_pct: float | None = None
+
+
 class ScoreRecord(BaseRecord):
     """평가 1회(주간) 산출 — append-only(ScoreStore)."""
 
@@ -50,7 +68,9 @@ class ScoreRecord(BaseRecord):
     r4_confirmed_correct: int = Field(ge=0)
     # 레짐 모니터(가용 프록시): 전종목 |등락률| 중앙값의 최근/기준 비율 — 입력 갭은 notes
     regime_volatility_ratio: float | None = None
+    # 스윙 트리거 적중률(P-9 ②) — 스윙 DB 없던 기간은 빈 리스트(하위호환)
+    swing_triggers: list[SwingTriggerScore] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
-__all__ = ["CalibrationBucket", "PersonaScore", "ScoreRecord"]
+__all__ = ["CalibrationBucket", "PersonaScore", "ScoreRecord", "SwingTriggerScore"]

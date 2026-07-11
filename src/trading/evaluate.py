@@ -52,9 +52,17 @@ def run(
     if event_store is None:
         es.close()
 
+    # 스윙 트리거 이력(P-9 ②) — DB 없으면 빈 로그(채점 없음이 notes에 명시됨)
+    from trading.swing import SwingStore
+
+    sw = SwingStore()
+    swing_log = sw.all_triggers()
+    sw.close()
+
     ms = market_store if market_store is not None else MarketStore()
     record, outcomes = evaluate(
-        theses, events, ms, now=resolved_now, config=config or R7Config()
+        theses, events, ms, now=resolved_now, config=config or R7Config(),
+        swing_trigger_log=swing_log,
     )
 
     ss = score_store if score_store is not None else ScoreStore()
@@ -76,6 +84,12 @@ def run(
     regime_line = f"- 레짐 변동성 비율: {record.regime_volatility_ratio or '미산출'}"
     print(r4_line)
     print(regime_line)
+    for s in record.swing_triggers:
+        hr = f"{s.hit_rate:.0%}" if s.hit_rate is not None else "N/A"
+        avg = f" 평균 {s.avg_return_pct:+.1f}%" if s.avg_return_pct is not None else ""
+        line = f"- 스윙 {s.trigger}: 적중률 {hr}{avg} (채점 {s.n_scored}, 미성숙 {s.n_immature})"
+        persona_lines.append(line)  # 주간 요약(Telegram)에 동승
+        print(line)
 
     # 해석·개정안 (LLM — 실패해도 채점은 이미 적재됨)
     proposal_rel: str | None = None

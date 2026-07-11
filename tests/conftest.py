@@ -107,6 +107,15 @@ def _isolate_positions_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.fixture(autouse=True)
+def _isolate_swing_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """스윙 DB 전역 격리 — render_evening·evaluate·flows가 기본 SwingStore()를 열므로(P-9),
+    운영 data/swing.sqlite에 테스트가 닿지 않게 한다(positions DB와 동일 원칙)."""
+    import trading.swing as _sw
+
+    monkeypatch.setattr(_sw, "DEFAULT_DB", tmp_path / "swing-isolated.sqlite")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_round_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
     """trading.run 실패 경로가 실제 AlertStore/Telegram에 닿지 않게 전역 차단.
 

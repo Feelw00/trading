@@ -277,8 +277,18 @@ def run(top_n: int = 15) -> int:
     if not res.candidates:
         print("수급 수집 스킵 — 스크리너 후보 없음(시세 DB 확인)")
         return 0
-    store = FlowStore()
     pairs = [(c.srtn_cd, c.name) for c in res.candidates]
+    # P-9 ③: 스윙 유니버스도 수집 — 스윙 수급 축 커버리지 확보. daily-eod에서 flows가
+    # swing보다 먼저 돌므로 "직전 스냅샷"을 쓴다(순환 참조 없음, 하루 시차 허용).
+    from trading.swing import SwingStore
+
+    sstore = SwingStore()
+    swing_pairs = sstore.latest_universe()
+    sstore.close()
+    seen = {cd for cd, _ in pairs}
+    n_screener = len(pairs)
+    pairs += [(cd, name) for cd, name in swing_pairs if cd not in seen]
+    store = FlowStore()
     bas_dt = latest_settled_bas_dt()  # 시세 DB가 아니라 캘린더 기준(공개 시차 비동조)
     result = collect(client, store, pairs, bas_dt)
     total, latest = store.count(), store.latest_date()
@@ -287,7 +297,7 @@ def run(top_n: int = 15) -> int:
     new_rows = sum(v for v in result.values() if v > 0)
     print(
         f"수급 적재 bas_dt={bas_dt}(후보 스크리너 as_of={res.as_of}): "
-        f"대상 {len(result)}(시장 2+후보 {len(pairs)}) · "
+        f"대상 {len(result)}(시장 2+후보 {n_screener}+스윙 {len(pairs) - n_screener}) · "
         f"신규 {new_rows}행 · DB 총 {total}행(최신 {latest})"
         + (f" · 실패 {len(failed)}: {', '.join(failed)}" if failed else "")
     )

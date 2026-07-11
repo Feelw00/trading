@@ -187,3 +187,54 @@ def test_telegram_channel_parse_mode_in_payload() -> None:
     assert _json.loads(sink[0][1])["parse_mode"] == "HTML"
     TelegramChannel(token="t", chat_id="c", opener=opener).send("plain")
     assert "parse_mode" not in _json.loads(sink[1][1])
+
+
+# ── P-9 ① 저녁 보고 스윙 기회 섹션 ─────────────────────────────────────
+
+
+def _seed_swing(triggers: bool) -> None:
+    """격리된 기본 경로(conftest)의 SwingStore에 스냅샷 적재."""
+    from trading.swing import AxisValue, SwingResult, SwingRow, SwingStore
+
+    row = SwingRow(
+        "111110", "가상반도체", "KOSPI", 100.0, ("semiconductor",),
+        trend=AxisValue(1.0, True), domain=AxisValue(0.9, True),
+        fund=AxisValue(), flow=AxisValue(), mdd=-0.1,
+        score=0.87, pct={"trend": 0.9, "domain": 0.95},
+        triggers=("pullback", "domain_ignition") if triggers else (),
+    )
+    res = SwingResult(
+        as_of="20260610", universe=[row], gate_total=10, scored=5,
+        excluded={}, coverage={}, triggered=[row] if triggers else [],
+    )
+    store = SwingStore()
+    store.record(res)
+    store.close()
+
+
+def test_evening_swing_section_lists_triggers(tmp_path: Path) -> None:
+    _seed_swing(triggers=True)
+    ps = _seeded_store(tmp_path)
+    als = AlertStore(tmp_path / "al.sqlite")
+    r = render_evening(now=NOW, playbook_store=ps, alert_store=als)
+    ps.close(); als.close()
+    assert "스윙 기회" in r.text
+    assert "가상반도체 — domain_ignition, pullback (스윙 점수 0.87, `111110`)" in r.text
+    assert "관심 후보이지 주문 아님" in r.text
+
+
+def test_evening_swing_section_explicit_when_no_triggers(tmp_path: Path) -> None:
+    _seed_swing(triggers=False)
+    ps = _seeded_store(tmp_path)
+    als = AlertStore(tmp_path / "al.sqlite")
+    r = render_evening(now=NOW, playbook_store=ps, alert_store=als)
+    ps.close(); als.close()
+    assert "스윙 기회" in r.text and "오늘 기회 트리거 없음" in r.text
+
+
+def test_evening_no_swing_db_omits_section(tmp_path: Path) -> None:
+    ps = _seeded_store(tmp_path)
+    als = AlertStore(tmp_path / "al.sqlite")
+    r = render_evening(now=NOW, playbook_store=ps, alert_store=als)
+    ps.close(); als.close()
+    assert "스윙 기회" not in r.text  # 스냅샷 자체가 없으면 섹션 생략(가짜 '없음' 단정 금지)

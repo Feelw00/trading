@@ -277,6 +277,8 @@ def render_evening(
 
     position_lines = render_lines(check_positions(now=resolved, kis_client=None))
 
+    swing_lines, swing_as_of = _swing_lines()
+
     # 미수집은 빈 섹션 나열 대신 한 군데 모아 명시(읽기 부담 제거, 추측 대체 없음은 유지)
     notes = [
         "집행 편차: KIS 잔고·체결 어댑터 미구현 — 포지션은 수동 등록 기반(실계좌 대사 후속)",
@@ -288,9 +290,39 @@ def render_evening(
         r4=r4, r4_as_of=r4_as_of,
         scenario_lines=_scenario_lines(run_meta[1] if run_meta else []),
         synth_as_of=synth_as_of,
+        swing_lines=swing_lines, swing_as_of=swing_as_of,
         approvals=approvals, p2_alerts=p2, notes=notes,
     )
     return Rendered("evening", today_iso, _guard_length("evening", text, max_chars=max_chars))
+
+
+def _swing_lines(limit: int = 8) -> tuple[list[str], str]:
+    """P-9 스윙 기회 — 최신 스냅샷의 트리거 발화 종목(종목별 트리거 병합, 점수순 상한 limit).
+
+    스윙 DB 비어 있으면 빈 리스트(섹션은 '트리거 없음' 문구로 렌더 — 침묵 생략 금지).
+    """
+    from trading.swing import SwingStore
+
+    store = SwingStore()
+    day = store.latest_bas_dt()
+    if day is None:
+        store.close()
+        return [], ""
+    merged: dict[str, tuple[str, float, list[str]]] = {}
+    for cd, name, trigger, score in store.triggers_on(day):
+        if cd in merged:
+            merged[cd][2].append(trigger)
+        else:
+            merged[cd] = (name, score, [trigger])
+    store.close()
+    rows = sorted(merged.items(), key=lambda kv: kv[1][1], reverse=True)
+    lines = [
+        f"{name} — {', '.join(trigs)} (스윙 점수 {score:.2f}, `{cd}`)"
+        for cd, (name, score, trigs) in rows[:limit]
+    ]
+    if len(rows) > limit:
+        lines.append(f"…외 {len(rows) - limit}종목")
+    return lines, day
 
 
 __all__ = [

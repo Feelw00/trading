@@ -119,3 +119,19 @@ def test_trigger_flow_turn() -> None:
     flows2 = [5.0] * 20
     trigs2 = _detect_triggers(_row(0.7), closes, list(closes), flows2, None, {}, CFG)
     assert "flow_turn" not in trigs2
+
+
+def test_swing_store_roundtrip(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from trading.swing import SwingResult, SwingStore
+
+    r1 = _row(0.9)
+    res = SwingResult("20260610", [r1], 10, 5, {}, {}, (), [])
+    store = SwingStore(tmp_path / "s.sqlite")
+    n_uni, n_trig = store.record(res)
+    assert (n_uni, n_trig) == (1, 0)
+    assert store.latest_bas_dt() == "20260610"
+    assert store.latest_universe() == [("111110", "테스트")]  # flows 확장(P-9 ③) 소비 형태
+    assert store.all_triggers() == []
+    # 같은 날 재적재는 멱등(append-only IGNORE)
+    assert store.record(res) == (0, 0)
+    store.close()
