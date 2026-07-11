@@ -1,7 +1,7 @@
 # 현재 작업 (CURRENT)
 
 > 슬림 유지. 완료된 작업은 `archive/YYYY-MM-DD-<slug>.md`로 떨구고 여기엔 한 줄 + 링크만.
-> 최종 갱신: 2026-06-12 (KST)
+> 최종 갱신: 2026-07-11 (KST)
 
 ## 진행 중
 - _(없음 — 다음 세션 진입 시 채움)_
@@ -11,6 +11,7 @@
 - 세션 진입 시 점검: `poetry run python ops/openclaw/drill.py --audit` (전일 사이클 PASS/WARN/FAIL) + 라운드 실패 P1 알림 수신 여부.
 
 ## 최근 완료
+- 2026-07-11 — **시세 갭 백필(16거래일) + 1년치 히스토리(262일자) + 연속성 가드(자가 치유·`--check`·`no_data_days` 박제) + 스크리너/FactPack 폴백 침묵 제거(`mom_*_ok`·`float|None`·R3 "미산출"). CAL-1 실체 적발(달력 미등록 휴장 9일)** → [archive](archive/2026-07-11-continuity-guard.md)
 - 2026-06-12 — **포지션 관리 레이어(P-8): PositionRecord(계획 스냅샷 박제)+PositionStore+점검(손익·스탑 거리·시간손절→[정리 검토])+positions CLI+/positions 스킬. arm-check·저녁 보고(§8 무효화 잔여 거리 결측 해소)·boot 배선** → [archive](archive/2026-06-12-position-layer.md)
 - 2026-06-12 — **R5 수동 `--force` 장중 실행(CAL-2 🟢): cron 자동은 장중 가드 유지, 수동 CLI만 `--force`로 우회(입력 EOD·산출 draft·아침 승인이라 충동 집행 차단 유지). `python -m trading.synth_playbooks --force`**
 - 2026-06-12 — **R5 조건을 관측 가능 흐름변수로 제약(SEL-1 우회): `flowsnap.OBSERVABLE_FLOW_VARS`(KIS 자동 3종)를 R5 프롬프트에 주입 — premkt 등 미수집 변수로 영영 미발동 플레이북 나오는 것 차단. 다음 R5(장 마감 후/밤)부터 적용**
@@ -34,8 +35,11 @@
 마일스톤 큰 줄기는 `docs/PROGRESS.md` "미해결 / 다음" 참조. 작업 단위 후보:
 
 **다음 세션 첫 작업**
-1. `drill.py --audit` — 새 아키텍처(fire-and-forget) 첫 무인 사이클(6/11 pm~6/12 am) 사후 점검
-2. 첫 R7 유효 채점 조건 확인 — 시세 일자 누적(6/12이면 6일치) + 논제 horizon 도래분
+1. `drill.py --audit` — 게이트웨이 재기동(7/11 18:18)·codex 플러그인 비활성화 이후 **첫 무인 사이클** 점검.
+   (7/11 감사분은 FAIL 14/no-run이었으나 원인은 그 시각까지 게이트웨이 다운 — 아키텍처 결함 아님)
+2. CAL-1 종결 — 관측된 달력 미등록 휴장 9일(추석·설·대체공휴일·지방선거)을 KRX 공지로 확인 →
+   `krx_holidays.json` 반영 (현재는 `no_data_days` 관측 박제로 우회 중)
+3. 6/12~7/3 결측기 **뉴스·공시·flows 백필 여부 판단** — 시세만 복구됨. R7 채점이 그 구간 촉매를 참조하면 결측.
 
 **M4 / Phase 1 잔여** (순서대로)
 3. 이벤트 감시기(`watch/`) → P0 발화 (서킷브레이커·환율 임계·바이너리 전이·보유 공시) — heartbeat 배선 포함

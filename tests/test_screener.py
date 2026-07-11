@@ -91,3 +91,38 @@ def test_screener_bear_market_absolute_floor(tmp_path: Path) -> None:
     assert "000020" in base                    # 필터 없으면 하락주도 통과(횡단면 랭크)
     assert "000020" not in floored             # 절대필터 켜면 장기수익률<0 제외
     assert "000010" in floored                 # 상승주는 유지
+
+
+def test_screener_history_sufficient_is_silent(tmp_path: Path) -> None:
+    """히스토리가 lookback을 채우면 경고 없음 + 신호는 산출됨(ok=True)."""
+    store = MarketStore(tmp_path / "m.sqlite")
+    _seed(store)  # 5거래일, _TUNE: mom_long=3 · lookback_high=5
+    res = screen(store, _TUNE)
+    store.close()
+    assert res.warnings == ()
+    assert res.history_days == 5
+    top = res.candidates[0].signals
+    assert top.mom_short_ok and top.mom_long_ok
+    assert top.high_window_days == 5
+
+
+def test_screener_short_history_flags_fallback_not_silent(tmp_path: Path) -> None:
+    """히스토리 부족 → 폴백을 **경고 + ok=False**로 드러낸다(조용한 0.0 금지).
+
+    회귀 대상: 5/04~7/09(46거래일)만 있던 DB에서 mom_long(60)이 전 종목 0.0으로,
+    high_proximity가 52주 아닌 46일 고가 대비로 조용히 계산되던 버그.
+    """
+    store = MarketStore(tmp_path / "m.sqlite")
+    _seed(store)  # 5거래일뿐
+    cfg = replace(_TUNE, mom_short=2, mom_long=10, lookback_high=252)  # 창 > 히스토리
+    res = screen(store, cfg)
+    store.close()
+
+    assert len(res.warnings) == 2  # 장기 모멘텀 폴백 + 신고가 창 부족
+    assert any("mom_long" in w for w in res.warnings)
+    assert any("52주" in w for w in res.warnings)
+    top = res.candidates[0].signals
+    assert top.mom_short_ok           # 단기(2일)는 확보
+    assert not top.mom_long_ok        # 장기(10일)는 부족 → 폴백임을 선언
+    assert top.mom_long == 0.0        # 값 자체는 종전과 동일(폴백) — 다만 이제 침묵하지 않는다
+    assert top.high_window_days == 5  # 252가 아니라 실제 5일 창

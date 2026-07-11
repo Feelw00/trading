@@ -93,9 +93,15 @@ def _price_line(fp: FactPack | None) -> str:
     if fp is None:
         return "가격: (미수집)"
     p = fp.price
+    # 미산출(None)은 "0%"가 아니라 미산출로 — 히스토리 부족을 수치인 척 넘기지 않는다.
+    short = f"{p.mom_short_pct:.0f}%" if p.mom_short_pct is not None else "미산출"
+    long_ = f"{p.mom_long_pct:.0f}%" if p.mom_long_pct is not None else "미산출"
+    # 창이 252거래일에 못 미치면 "52주"라고 부르지 않는다(근접도 과대 → LLM 오판).
+    win = p.high_window_days
+    high_label = "52주근접" if win is None or win >= 252 else f"{win}일고가근접"
     return (
         f"가격(as_of {p.as_of}): 종가 {p.close} · 거래대금배 {p.tr_value_surge:.1f} · "
-        f"단기 {p.mom_short_pct:.0f}% · 장기 {p.mom_long_pct:.0f}% · 52주근접 {p.high_252_proximity:.2f}"
+        f"단기 {short} · 장기 {long_} · {high_label} {p.high_252_proximity:.2f}"
     )
 
 

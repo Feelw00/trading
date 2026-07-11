@@ -1,9 +1,9 @@
 """수집기 어댑터(base/FRED/ECOS/macro) 단위 테스트 — 네트워크 없이 주입 fetch로 검증."""
 
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -14,7 +14,13 @@ from trading.collectors.data_go_kr import DataGoKrIndexClient, DataGoKrStockClie
 from trading.collectors.ecos import EcosClient
 from trading.collectors.fred import FredClient
 from trading.collectors.macro import MacroItem, collect_macro
-from trading.collectors.market import MarketStore
+from trading.collectors.market import (
+    MarketStore,
+    heal_gaps,
+    missing_trading_days,
+    split_pending,
+)
+from trading.market_calendar.calendar import MarketCalendar
 
 KST = ZoneInfo("Asia/Seoul")
 FETCHED = datetime(2026, 6, 8, 15, 0, tzinfo=KST)
@@ -262,3 +268,94 @@ def test_collect_macro_ecos_code_unset_is_blocked() -> None:
     assert summary.collected == 0
     assert len(summary.blocked) == 1
     assert "통계코드 미설정" in summary.blocked[0]
+
+
+# --- 연속성 가드 -----------------------------------------------------------
+
+def _seed_days(store: MarketStore, days: list[str]) -> None:
+    store.upsert([{"basDt": d, "srtnCd": "005930", "itmsNm": "삼성전자"} for d in days])
+
+
+def test_missing_trading_days_detects_interior_gap(tmp_path: Path) -> None:
+    """최신일만 신선하고 중간이 빈 상태를 잡는다 — latest_date()로는 안 보이던 결함.
+
+    회귀 대상: 6/12~7/3 한 달 미가동 중 main()이 '최근 7일'만 수집해
+    중간 16거래일이 영구 결측으로 남고 아무도 알리지 않던 버그.
+    """
+    store = MarketStore(tmp_path / "m.sqlite")
+    _seed_days(store, ["20260611", "20260706", "20260707", "20260708", "20260709"])
+    cal = MarketCalendar.default()
+    latest = store.latest_date()
+    missing = missing_trading_days(store, date(2026, 6, 11), date(2026, 7, 9), cal)
+    store.close()
+
+    assert latest == "20260709"                  # 최신일은 신선 — 그래도 중간이 비어 있다
+    assert date(2026, 6, 12) in missing          # 금요일 = 거래일인데 결측
+    assert date(2026, 6, 15) in missing
+    assert date(2026, 7, 3) in missing
+    assert date(2026, 6, 13) not in missing      # 토요일 = 비거래일이라 결측 아님
+    assert date(2026, 7, 6) not in missing       # 보유분
+    assert len(missing) == 16                    # 실측 백필분과 일치
+
+
+def test_missing_trading_days_empty_when_continuous(tmp_path: Path) -> None:
+    store = MarketStore(tmp_path / "m.sqlite")
+    _seed_days(store, ["20260706", "20260707", "20260708", "20260709"])  # 월~목 연속
+    missing = missing_trading_days(store, date(2026, 7, 6), date(2026, 7, 9))
+    store.close()
+    assert missing == []
+
+
+def test_split_pending_treats_unpublished_eod_as_waiting_not_gap() -> None:
+    """EOD는 +1영업일 공개 → 아직 나올 때가 아닌 날은 갭(⚠️)이 아니라 대기."""
+    cal = MarketCalendar.default()
+    today = date(2026, 7, 11)  # 토요일
+    gaps, pending = split_pending([date(2026, 6, 12), date(2026, 7, 10)], today, cal)
+    assert gaps == [date(2026, 6, 12)]      # 한참 전 → 진짜 갭
+    assert pending == [date(2026, 7, 10)]   # 금요일 EOD는 월요일 공개 → 대기(경고 금지)
+
+
+class _EmptyClient:
+    """승인 소스가 '정상 응답 + 무자료'로 답하는 상황(휴장). 장애면 CollectError를 raise한다."""
+
+    def all_by_date(self, bas_dt: str) -> list[dict[str, Any]]:
+        return []
+
+
+def test_heal_gaps_marks_no_data_day_and_stops_rewarning(tmp_path: Path) -> None:
+    """달력 미등록 휴장일(추석·설·대체공휴일)은 관측을 박제해 매번 재경고하지 않는다(CAL-1).
+
+    달력을 추측으로 고치지 않는다 — 승인 소스가 '무자료'라고 답한 사실만 기록한다.
+    """
+    store = MarketStore(tmp_path / "m.sqlite")
+    _seed_days(store, ["20260302"])  # 3/2만 보유(실제로는 대체공휴일이지만 시드로 존재 가정)
+    client = cast(Any, _EmptyClient())
+    gap = date(2026, 3, 3)
+
+    filled, newly_closed = heal_gaps(client, store, [gap])
+    assert filled == {} and newly_closed == [gap]          # 1회차: 무자료 관측 → 신규 박제
+    assert "20260303" in store.no_data_days()
+
+    filled2, newly_closed2 = heal_gaps(client, store, [gap])
+    assert newly_closed2 == []                             # 2회차: 이미 아는 휴장 → 재보고 없음
+
+    # 연속성 점검에서도 더 이상 갭으로 세지 않는다
+    missing = missing_trading_days(store, date(2026, 3, 2), date(2026, 3, 3))
+    store.close()
+    assert missing == []
+
+
+def test_pending_day_is_never_marked_as_holiday(tmp_path: Path) -> None:
+    """공개대기(EOD 미공개)를 휴장으로 박제하면 그 날은 영영 수집되지 않는다 — 분리 확인."""
+    store = MarketStore(tmp_path / "m.sqlite")
+    _seed_days(store, ["20260709"])
+    cal = MarketCalendar.default()
+    missing = missing_trading_days(store, date(2026, 7, 9), date(2026, 7, 11), cal)
+    gaps, pending = split_pending(missing, date(2026, 7, 11), cal)
+    assert gaps == [] and pending == [date(2026, 7, 10)]
+
+    # heal_gaps에는 gaps만 넘어간다(main 계약) → 대기일은 박제되지 않는다
+    heal_gaps(cast(Any, _EmptyClient()), store, gaps)
+    no_data = store.no_data_days()
+    store.close()
+    assert "20260710" not in no_data

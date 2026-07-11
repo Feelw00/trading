@@ -60,10 +60,15 @@
 - 승인 전이(draft→approved) 운영자 도구 (§6 수동 결재 UX)
 - KIS 잔고·체결 어댑터 (`KIS_ENABLE_TRADING=false`) — 저녁 보고 집행·포지션 섹션 채움
 
+**데이터 무결성 (2026-07-11)**
+- 한 달 미가동(6/12~7/10) 중 시세 16거래일이 조용히 결측 → 백필 + **연속성 가드**(자가 치유·`--check`) 도입,
+  스크리너/FactPack의 **침묵 폴백 제거**(히스토리 부족을 0.0/"52주"로 위장하던 경로 → `n/a`·`None`·"미산출").
+  1년치 히스토리(262일자) 확보로 `mom_long`·52주 신고가 정상화 → [archive](../history/work/archive/2026-07-11-continuity-guard.md)
+
 **M2~3 잔여(소)**
 - ~~R3 grounding 보강(수급 페르소나)~~ → 06-11 해소(KIS flows → FactPack) / R1 일반 게이트 운영 배선(landing→FactRecord 변환 계층)
 - R4 실측 생존률·threshold 재캘리브레이션 — 운영 슬롯 데이터 누적 후
-- CAL-1: 2026년 음력·대체공휴일 KRX 공지 확인 → `krx_holidays.json`
+- CAL-1: 2026년 음력·대체공휴일 KRX 공지 확인 → `krx_holidays.json` (07-11 연속성 가드가 미등록 휴장 **9일 실측 적발** — 확인만 하면 종결)
 
 **OPEN_QUESTIONS 🔴**
 - NXT 프리·애프터마켓 데이터 (SEL-1·R7-1 흐름 관측치 공유)

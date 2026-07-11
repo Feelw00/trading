@@ -40,6 +40,11 @@ class SignalSet:
     mom_short: float  # 단기 수익률
     mom_long: float  # 장기 수익률
     high_proximity: float  # 종가 / 252일 최고가
+    # 커버리지 — 히스토리가 lookback에 못 미치면 위 값은 폴백(0.0 / 짧은 창)이다.
+    # 폴백을 그럴듯한 숫자로 흘려보내지 않기 위해 "실제로 확보했는가"를 함께 싣는다.
+    mom_short_ok: bool = True   # False = 히스토리 부족 → mom_short는 0.0 폴백
+    mom_long_ok: bool = True    # False = 히스토리 부족 → mom_long은 0.0 폴백
+    high_window_days: int = 0   # high_proximity 계산에 실제 쓰인 거래일 수(0=미상)
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,8 @@ class ScreenResult:
     as_of: str
     universe: int  # 게이트 통과 종목수
     candidates: list[Candidate]
+    history_days: int = 0            # DB 보유 거래일 수
+    warnings: tuple[str, ...] = ()   # 히스토리 부족 등 — 신호가 폴백이면 침묵하지 않는다
 
 
 def _f(v: object) -> float | None:
@@ -84,8 +91,8 @@ def _percentiles(values: list[float]) -> list[float]:
     return pct
 
 
-# 게이트 통과 종목의 원시 신호: (srtn_cd, name, market, clpr, surge, mom_s, mom_l, high_prox)
-_Survivor = tuple[str, str, str | None, float, float, float, float, float]
+# 게이트 통과 종목: (srtn_cd, name, market, clpr, signals)
+_Survivor = tuple[str, str, str | None, float, SignalSet]
 
 
 def signals_from_series(recs: list[tuple[object, ...]], cfg: ScreenConfig) -> SignalSet:
@@ -100,10 +107,20 @@ def signals_from_series(recs: list[tuple[object, ...]], cfg: ScreenConfig) -> Si
     tr_prc = trs[-1] if trs else 0.0
     recent_trs = trs[-cfg.lookback_surge :]
     surge = tr_prc / (sum(recent_trs) / len(recent_trs)) if recent_trs else 0.0
-    mom_s = clpr / closes[-(cfg.mom_short + 1)] - 1 if len(closes) > cfg.mom_short else 0.0
-    mom_l = clpr / closes[-(cfg.mom_long + 1)] - 1 if len(closes) > cfg.mom_long else 0.0
+    short_ok = len(closes) > cfg.mom_short
+    long_ok = len(closes) > cfg.mom_long
+    mom_s = clpr / closes[-(cfg.mom_short + 1)] - 1 if short_ok else 0.0
+    mom_l = clpr / closes[-(cfg.mom_long + 1)] - 1 if long_ok else 0.0
     high_prox = clpr / max(highs) if highs else 0.0
-    return SignalSet(tr_value_surge=surge, mom_short=mom_s, mom_long=mom_l, high_proximity=high_prox)
+    return SignalSet(
+        tr_value_surge=surge,
+        mom_short=mom_s,
+        mom_long=mom_l,
+        high_proximity=high_prox,
+        mom_short_ok=short_ok,
+        mom_long_ok=long_ok,
+        high_window_days=len(highs),
+    )
 
 
 def _survivor(srtn_cd: str, recs: list[tuple[object, ...]], as_of: str, cfg: ScreenConfig) -> _Survivor | None:
@@ -132,7 +149,7 @@ def _survivor(srtn_cd: str, recs: list[tuple[object, ...]], as_of: str, cfg: Scr
     if cfg.min_high_proximity is not None and s.high_proximity < cfg.min_high_proximity:
         return None
     market = last[2] if isinstance(last[2], str) else None
-    return (srtn_cd, name, market, clpr, s.tr_value_surge, s.mom_short, s.mom_long, s.high_proximity)
+    return (srtn_cd, name, market, clpr, s)
 
 
 def _has_share_discontinuity(recs: list[tuple[object, ...]], max_ratio: float) -> bool:
@@ -145,11 +162,33 @@ def _has_share_discontinuity(recs: list[tuple[object, ...]], max_ratio: float) -
     return any(a / b > max_ratio or b / a > max_ratio for a, b in zip(shares, shares[1:]))
 
 
+def _history_warnings(history_days: int, cfg: ScreenConfig) -> tuple[str, ...]:
+    """DB 히스토리가 lookback에 못 미치면 경고 — 폴백을 조용히 내보내지 않는다.
+
+    부족분은 에러가 아니라 *그럴듯한 숫자*로 나가기 때문에 위험하다:
+    mom_long은 전 종목 0.0(모멘텀=단기 전용), high_proximity는 52주가 아닌 짧은 창의 고가 대비가 된다.
+    후자는 점수에 그대로 반영되어 후보 순위를 바꾼다.
+    """
+    w: list[str] = []
+    if history_days <= cfg.mom_long:
+        w.append(
+            f"히스토리 {history_days}거래일 ≤ mom_long {cfg.mom_long} → 장기 모멘텀 전 종목 0.0 폴백"
+        )
+    if history_days < cfg.lookback_high:
+        w.append(
+            f"히스토리 {history_days}거래일 < 신고가 창 {cfg.lookback_high} → "
+            f"52주 아닌 {history_days}일 고가 대비로 계산(순위 영향)"
+        )
+    return tuple(w)
+
+
 def screen(store: MarketStore, config: ScreenConfig | None = None) -> ScreenResult:
     cfg = config or ScreenConfig()
     as_of = store.latest_date()
     if as_of is None:
         return ScreenResult("", 0, [])
+    history_days = len(store.dates())
+    warnings = _history_warnings(history_days, cfg)
     cutoff = store.nth_recent_date(cfg.lookback_high) or as_of
 
     series: dict[str, list[tuple[object, ...]]] = {}
@@ -163,11 +202,11 @@ def screen(store: MarketStore, config: ScreenConfig | None = None) -> ScreenResu
         if s is not None:
             survivors.append(s)
     if not survivors:
-        return ScreenResult(as_of, 0, [])
+        return ScreenResult(as_of, 0, [], history_days, warnings)
 
-    surge_pct = _percentiles([s[4] for s in survivors])
-    mom_pct = _percentiles([(s[5] + s[6]) / 2 for s in survivors])
-    high_pct = _percentiles([s[7] for s in survivors])
+    surge_pct = _percentiles([s[4].tr_value_surge for s in survivors])
+    mom_pct = _percentiles([(s[4].mom_short + s[4].mom_long) / 2 for s in survivors])
+    high_pct = _percentiles([s[4].high_proximity for s in survivors])
     wsum = cfg.w_surge + cfg.w_momentum + cfg.w_high
 
     cands: list[Candidate] = []
@@ -176,17 +215,10 @@ def screen(store: MarketStore, config: ScreenConfig | None = None) -> ScreenResu
             cfg.w_surge * surge_pct[i] + cfg.w_momentum * mom_pct[i] + cfg.w_high * high_pct[i]
         ) / wsum
         cands.append(
-            Candidate(
-                srtn_cd=s[0],
-                name=s[1],
-                market=s[2],
-                clpr=s[3],
-                score=score,
-                signals=SignalSet(tr_value_surge=s[4], mom_short=s[5], mom_long=s[6], high_proximity=s[7]),
-            )
+            Candidate(srtn_cd=s[0], name=s[1], market=s[2], clpr=s[3], score=score, signals=s[4])
         )
     cands.sort(key=lambda c: c.score, reverse=True)
-    return ScreenResult(as_of, len(survivors), cands[: cfg.top_n])
+    return ScreenResult(as_of, len(survivors), cands[: cfg.top_n], history_days, warnings)
 
 
 SECTOR_SOURCE = "llm-cls-v1"
@@ -199,17 +231,24 @@ def main() -> int:
     res = screen(store)
     secmap = store.sector_map_multi(SECTOR_SOURCES)
     store.close()
+    for w in res.warnings:
+        print(f"⚠️ {w}")
     if not res.candidates:
         print("후보 없음 (DB 비었거나 게이트 통과 종목 없음)")
         return 0
-    print(f"스크리너 as_of={res.as_of} · 게이트 통과 {res.universe}종목 · 상위 {len(res.candidates)}")
+    print(
+        f"스크리너 as_of={res.as_of} · 게이트 통과 {res.universe}종목 · "
+        f"상위 {len(res.candidates)} · 히스토리 {res.history_days}거래일"
+    )
     print(f"{'#':>3} {'종목':<12}{'점수':>5}{'거래대금배':>8}{'단기%':>7}{'장기%':>7}{'신고가':>7}  섹터")
     for i, c in enumerate(res.candidates, 1):
         g = c.signals
         secs = ",".join(secmap.get(c.srtn_cd, [])) or "미분류"
+        short = f"{g.mom_short * 100:>6.1f}%" if g.mom_short_ok else f"{'n/a':>7}"
+        long_ = f"{g.mom_long * 100:>6.1f}%" if g.mom_long_ok else f"{'n/a':>7}"
         print(
             f"{i:>3} {c.name:<12}{c.score:>5.2f}{g.tr_value_surge:>8.1f}"
-            f"{g.mom_short * 100:>6.1f}%{g.mom_long * 100:>6.1f}%{g.high_proximity:>7.3f}  {secs}"
+            f"{short}{long_}{g.high_proximity:>7.3f}  {secs}"
         )
     return 0
 

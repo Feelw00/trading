@@ -9,11 +9,14 @@ description: 부팅 컨텍스트 — DB에서 데이터 신선도·스크리너 
 
 ## 1. 데이터 신선도 (콘솔 날짜 기준)
 
-### 1a. 전종목 EOD (시세 DB)
+### 1a. 전종목 EOD (시세 DB — 최신일 + **연속성**)
 - boot가 확인한 **콘솔 날짜**를 기준으로 **최근 거래일**을 판단(주말·휴장 + 국내 EOD는 +1영업일 공개 고려).
-- DB 최신 수집일 확인:
-  `poetry run python -c "from trading.collectors.market import MarketStore as M; s=M(); print(s.latest_date()); s.close()"`
-- DB 최신일이 최근 거래일보다 뒤처지면 → **`collect` 스킬을 즉시 실행**해 갭을 메운다(제안만 하고 멈추지 말 것). 수집 후 최신일 재확인, 보고에 '〈날짜〉 수집함' 명시. 정상이면 'DB 최신: 〈날짜〉'.
+- 최신일·연속성 한 번에 확인(API 호출 없음):
+  `poetry run python -c "from trading.collectors.market import MarketStore as M; s=M(); print('latest', s.latest_date()); s.close()" && poetry run python -m trading.collectors.market --check`
+- **최신일만 보면 안 된다** — "최신은 신선한데 중간이 빈" 상태가 실제로 발생했다(6/12~7/3 한 달 미가동 중 16거래일 결측).
+  `--check`의 **갭 N거래일**이 이걸 잡는다. 갭>0 또는 최신일이 최근 거래일보다 뒤처지면 → **`collect` 스킬 즉시 실행**(제안만 하고 멈추지 말 것).
+  `collect`(=`python -m trading.collectors.market`)는 갭을 자가 치유한다. 수집 후 재확인, 보고에 '〈날짜〉 수집함 / 갭 N일 메움' 명시.
+- '공개대기'는 정상(최근 거래일 EOD 미공개) — 경고하지 않는다. '휴장 관측 N일'은 달력 미등록 휴장일(CAL-1) 참고치.
 - 수집 실패(소스 장애·키 문제) 시 추측·우회 금지 — ⚠️ 실패 사유 그대로 보고(COLLECT-3).
 
 ### 1b. 뉴스 (오늘자 확인 — 없으면 자동 수집)
