@@ -14,6 +14,7 @@
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cron_jobs import JOBS, TZ, CronJob  # noqa: E402
 
 _OC = os.path.expanduser("~/.openclaw/bin/openclaw")
+
+# setsid 절대경로 — cron 잡은 openclaw exec 의 최소 PATH 에서 돌기 때문에 이름만으론 못 찾는다.
+# Linux: /usr/bin/setsid (util-linux 기본). macOS: 미제공 → Homebrew util-linux(keg-only).
+_SETSID_CANDIDATES = (
+    "/usr/bin/setsid",
+    "/opt/homebrew/opt/util-linux/bin/setsid",  # Apple Silicon
+    "/usr/local/opt/util-linux/bin/setsid",  # Intel mac
+)
+
+
+def _resolve_setsid() -> str:
+    """setsid 실행 파일의 절대경로. 없으면 즉시 실패(조용한 cron 전멸 방지)."""
+    found = shutil.which("setsid") or next(
+        (p for p in _SETSID_CANDIDATES if os.access(p, os.X_OK)), None
+    )
+    if not found:
+        raise SystemExit(
+            "setsid 없음 — cron 잡이 전부 실패한다. macOS: brew install util-linux"
+        )
+    return found
+
+
+_SETSID = _resolve_setsid()
 _ENV: dict[str, str] = {
     **os.environ,
     "OPENCLAW_STATE_DIR": str(_ROOT / ".runtime/openclaw"),
@@ -69,11 +93,13 @@ def exec_command(job: CronJob) -> str:
       **에이전트 턴 종료 시 프로세스 그룹을 정리**해 장시간 라운드가 중도 사망한다
       (2026-06-11 관측: digest 2초 생존, verify 10분+ 사망). setsid로 세션 분리.
       라운드 성패 가시성은 openclaw가 아니라 Python이 담당(trading.run 실패 P1 + 잡별 로그).
+    - setsid는 **절대경로**(_SETSID). exec 의 PATH 에 없고, macOS 는 기본 미제공이라
+      이름만 쓰면 잡이 조용히 전멸한다 (2026-07-11 Mac mini 이관에서 발견).
     """
     log = job_log_path(job)
     return (
         f"cd {shlex.quote(str(_ROOT))} && mkdir -p {shlex.quote(str(log.parent))} && "
-        f"setsid -f sh -c '.venv/bin/python -m trading.run {job.round} "
+        f"{shlex.quote(_SETSID)} -f sh -c '.venv/bin/python -m trading.run {job.round} "
         f">> {shlex.quote(str(log))} 2>&1' && echo launched:{job.name}"
     )
 
