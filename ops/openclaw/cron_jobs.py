@@ -28,7 +28,10 @@ JOBS: tuple[CronJob, ...] = (
     # --- 오전(장전) ---
     # 거시 수집은 독립 슬롯이 아니라 report-am/report-pm 라운드에 내장(trading.run) —
     # 트리거 에이전트 턴 최소화(자체 판단 수집 여지 제거). R3/R5는 최신 landing(기존 데이터)만 읽는다.
-    CronJob("news-am", "20 6 * * 1-5", "collect-news", comment="R0 수집 — 해외·밤사이 뉴스(3계층)"),
+    # 뉴스 수집은 **매일**(주말 포함, 운영자 결정 2026-07-12) — 순수 어댑터라 비용 미미하고,
+    # 주말 미수집 시 월요일 아침 쿼리 상한에 토요일분이 잘릴 수 있다(신선도 게이트 3일이라
+    # 주말 수집분은 월요일 R2가 정상 처리). 어제(7/11 토) 캐치업 실행 403건이 주말 동작 실증.
+    CronJob("news-am", "20 6 * * *", "collect-news", comment="R0 수집 — 해외·밤사이 뉴스(3계층, 매일)"),
     CronJob("score-am", "30 6 * * 1-5", "score-news", comment="R1 게이트→R2 분류·스코어(내부 claude -p, R2_MODEL)"),
     CronJob("verify-am", "45 6 * * 1-5", "verify-catalysts", comment="R4 적대검증(고강도·single_stock 선별, 내부 claude -p)"),
     CronJob("reason-am", "55 6 * * 1-5", "reason-theses", comment="R3 페르소나 분석(촉매 보유 종목, 내부 claude -p ×3)"),
@@ -42,7 +45,7 @@ JOBS: tuple[CronJob, ...] = (
     CronJob("daily-eod", "5 16 * * 1-5", "daily-eod", comment="전종목→섹터분류→스크리너→fact pack(T-1 EOD)"),
     # --- 오후(마감) ---
     # 수집(R0)은 순수 어댑터라 애프터마켓 중에도 허용 — 마감 뉴스를 제때 받는다.
-    CronJob("news-pm", "20 16 * * 1-5", "collect-news", comment="R0 수집 — 국내 마감 뉴스(네이버 중심)"),
+    CronJob("news-pm", "20 16 * * *", "collect-news", comment="R0 수집 — 국내 마감·오후 뉴스(네이버 중심, 매일)"),
     # ⚠️ pm LLM 체인은 **애프터마켓(16:00–20:00, 2026-09-14~) 마감 후**로 배치(CAL-3 결정: 장중 = 정규장+애프터).
     # 이전 16:32/16:45/16:55 슬롯은 9/14부터 §5 휴면 창이라 `trading.run` 가드가 스킵시킨다.
     # 저녁 결재 보고를 21:30에 유지하려면 체인을 20:00 벽에 최대한 붙여야 한다(운영자 요청).
