@@ -84,7 +84,11 @@ def test_llm_round_skipped_during_after_market(monkeypatch: pytest.MonkeyPatch) 
     alerts: list[tuple[str, str]] = []
     monkeypatch.setattr(mc, "now_kst", lambda: datetime(2026, 9, 14, 17, 0, tzinfo=KST))
     monkeypatch.setattr(run, "_alert_round_failure", lambda n, d: alerts.append((n, d)))
-    monkeypatch.setitem(ROUNDS, "score-news", lambda: ran.append("score") or 0)
+    def _score_round() -> int:
+        ran.append("score")
+        return 0
+
+    monkeypatch.setitem(ROUNDS, "score-news", _score_round)
 
     assert main(["score-news"]) == run.GUARD_SKIP_RC
     assert ran == []      # 핸들러 진입 자체를 막았다

@@ -10,10 +10,12 @@ from trading.collectors.dart import DartClient
 from trading.collectors.market import MarketStore
 from trading.domains import Sector
 from trading.sectors import (
+    KRX_SOURCE,
     MANUAL_SECTORS,
     MANUAL_SOURCE,
     GROUNDED_SOURCE,
     apply_manual_overrides,
+    classify_krx,
     classify_ksic,
     classify_untagged,
 )
@@ -131,6 +133,60 @@ def test_manual_takes_precedence_over_grounded(tmp_path: Path) -> None:
     )
     merged = store.sector_map_multi((MANUAL_SOURCE, "llm-cls-v1", GROUNDED_SOURCE))
     assert merged["011170"] == ["chemicals"]
+    store.close()
+
+
+class _FakeKis:
+    """quote_price만 흉내 — 업종명 매핑 + 지정 종목 호출 실패."""
+
+    def __init__(self, bstp_by_code: dict[str, str], fail: set[str] | None = None) -> None:
+        self._bstp = bstp_by_code
+        self._fail = fail or set()
+
+    def quote_price(self, srtn_cd: str) -> dict[str, Any]:
+        if srtn_cd in self._fail:
+            raise OSError("kis down")
+        return {"bstp_kor_isnm": self._bstp.get(srtn_cd, "")}
+
+
+def test_classify_krx_tags_official_sector_and_skips_failures(tmp_path: Path) -> None:
+    store = MarketStore(tmp_path / "m.sqlite")
+    kis = _FakeKis({"005930": "전기·전자", "105560": "은행"}, fail={"999999"})
+    codes = [
+        ("005930", "삼성전자"),
+        ("105560", "KB금융"),
+        ("999999", "장애종목"),   # 호출 실패 → 스킵
+        ("888888", "업종없음"),   # 응답에 업종명 결측 → 스킵
+    ]
+    s = classify_krx(store, kis, codes, as_of="20260713")  # type: ignore[arg-type]
+
+    assert s.attempted == 4
+    assert s.classified == 2
+    assert s.unclassified == 2  # 스킵분
+    sm = store.sector_map(KRX_SOURCE)
+    assert sm["005930"] == ["전기·전자"]  # 거래소 원문 그대로(정규화 없음)
+    assert sm["105560"] == ["은행"]
+    # 스킵분은 행을 남기지 않아 다음 실행에 재시도된다(일시 장애의 영구화 방지)
+    assert "999999" not in store.codes_with_any_row(KRX_SOURCE)
+    assert "888888" not in store.codes_with_any_row(KRX_SOURCE)
+    store.close()
+
+
+def test_krx_source_takes_precedence_over_all(tmp_path: Path) -> None:
+    # 운영자 결정(2026-07-13): 거래소 공식 업종이 큐레이션·taxonomy 태그를 덮는다
+    store = MarketStore(tmp_path / "m.sqlite")
+    store.upsert_sectors(
+        [{"srtn_cd": "005930", "name": "삼성전자", "sectors": ["semiconductor"], "confidence": 0.95}],
+        source="llm-cls-v1",
+        as_of="20260608",
+    )
+    store.upsert_sectors(
+        [{"srtn_cd": "005930", "name": "삼성전자", "sectors": ["전기·전자"], "confidence": 1.0}],
+        source=KRX_SOURCE,
+        as_of="20260713",
+    )
+    merged = store.sector_map_multi((KRX_SOURCE, "manual-curated-v1", "llm-cls-v1"))
+    assert merged["005930"] == ["전기·전자"]
     store.close()
 
 
