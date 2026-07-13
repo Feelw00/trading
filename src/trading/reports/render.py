@@ -120,7 +120,9 @@ def render_morning(
     if playbook_store is None:
         ps.close()
 
-    macro = _macro_lines()
+    from trading.regime import live_backdrop_lines
+
+    macro = _macro_lines() + live_backdrop_lines(now=resolved)
     notes: list[str] = []
     if not macro:
         notes.append("거시 미수집 — 간밤 백드롭 부재(collect-macro 확인)")
@@ -265,8 +267,8 @@ def _approval_rows(ps: PlaybookStore, day_compact: str) -> list[dict[str, Any]]:
     names = _symbol_names(d.symbol for _, d in pbs if d is not None)
     rows: list[dict[str, Any]] = []
     for pb, draft in pbs:
-        if draft is None or draft.status is not OrderStatus.DRAFT:
-            continue  # 승인 요청은 미결재(draft)만
+        if draft is None or draft.status not in (OrderStatus.DRAFT, OrderStatus.APPROVED):
+            continue  # EXEC-1: 자동 승인 체제 — approved(내일 감시 풀)+잔여 draft 병기
         rows.append(
             {
                 "id": draft.id,
@@ -382,7 +384,11 @@ def _evening_digest(
     """텔레그램 결재 다이제스트 — 승인 카드 + 결재 유의 + 참고 1줄씩. 전문은 파일 참조."""
     lines = [f"# 저녁 결재 — {day}", ""]
     if approvals:
-        lines.append(f"## 승인 대기 {len(approvals)}건 → 내일 아침 `/arm-check`")
+        approved_n = sum(1 for a in approvals if a.get("status") == "approved")
+        if approved_n == len(approvals):
+            lines.append(f"## 자동 승인 {approved_n}건 — 내일 감시 풀 (거부: `--veto <id>`, 09:00 전)")
+        else:
+            lines.append(f"## 내일 풀 {len(approvals)}건 (승인됨 {approved_n} · 대기 {len(approvals) - approved_n})")
         for i, a in enumerate(approvals, 1):
             stop = f"{a['stop']:g}" if a["stop"] is not None else "없음"
             ts = f"{a['time_stop']}일" if a["time_stop"] is not None else "없음"
@@ -390,7 +396,7 @@ def _evening_digest(
             lines.append(f"   진입: {a['arm_compact']}")
             lines.append(f"   손절 {stop} · 시간손절 {ts} · {a['cap']} · `{a['id']}`")
     else:
-        lines.append("**검토 후보 없음 — 내일 비거래.** (대부분의 날의 정상 결론)")
+        lines.append("**내일 풀 없음 — 비거래.** (대부분의 날의 정상 결론)")
     cautions = _risk_lines(axes)
     if cautions:
         lines.append("")

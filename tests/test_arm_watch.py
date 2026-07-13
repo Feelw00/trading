@@ -107,3 +107,34 @@ def test_run_loop_skips_when_heartbeat_fresh(tmp_path: Path) -> None:
     hb = tmp_path / "hb"
     hb.touch()  # 방금 갱신 = 다른 인스턴스 가동 중
     assert run_loop(heartbeat_path=hb) == 0  # 즉시 종료(중복 기동 차단), run_pass 미실행
+
+
+def test_exit_window_runs_executor_only(tmp_path: Path) -> None:
+    """15:00~20:00 — 발동·리마인더 없이 청산 패스만(EXEC-3). 운영 루프 한정(executor_pass 제공 시)."""
+    calls: list[list[str]] = []
+
+    def fake_exec(fired: list[str], dispatcher: Any, now: Any) -> None:
+        calls.append(fired)
+
+    rec = _Recorder()
+    at_1620 = datetime(2026, 7, 13, 16, 20, tzinfo=KST)  # 정규장 밖·애프터 안
+    r = run_pass(now=at_1620, store=WatchStore(tmp_path / "w.sqlite"), dispatcher=rec,  # type: ignore[arg-type]
+                 calendar=CAL, assess_fn=_assess([_item(active=True)]),
+                 executor_pass=fake_exec)
+    assert r.rc == 0
+    assert calls == [[]]           # 발동 없음 — 청산 전용
+    assert rec.alerts == []        # 발동 P0·리마인더 미발화
+    # executor_pass 없으면(단위 테스트·수동) 기존 rc=3 유지
+    r2 = run_pass(now=at_1620, store=WatchStore(tmp_path / "w2.sqlite"), dispatcher=rec,  # type: ignore[arg-type]
+                  calendar=CAL, assess_fn=_assess([_item(active=True)]))
+    assert r2.rc == GUARD_SKIP_RC
+
+
+def test_exit_window_closes_at_20(tmp_path: Path) -> None:
+    def fake_exec(fired: list[str], dispatcher: Any, now: Any) -> None:
+        raise AssertionError("20:00 이후 호출 금지")
+
+    at_2001 = datetime(2026, 7, 13, 20, 1, tzinfo=KST)
+    r = run_pass(now=at_2001, store=WatchStore(tmp_path / "w.sqlite"), dispatcher=_Recorder(),  # type: ignore[arg-type]
+                 calendar=CAL, assess_fn=_assess([]), executor_pass=fake_exec)
+    assert r.rc == GUARD_SKIP_RC

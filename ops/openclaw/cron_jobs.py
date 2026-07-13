@@ -38,8 +38,11 @@ JOBS: tuple[CronJob, ...] = (
     # --- 장중 감시(순수 코드, fire-and-forget 루프 — 15:00 자기 종료) ---
     # arm 조건(전일고가·체결강도·호가)은 장중 아무 때나 충족 가능 → 감시기가 충족 순간 P0.
     # 12:00 슬롯은 재기동 안전망 — 이미 가동 중이면 하트비트 파일로 자기 종료(중복 알림은 WatchStore dedup).
-    CronJob("arm-watch", "0 9 * * 1-5", "arm-watch", comment="장중 발동 감시 루프 기동(approved 풀, P0 발화)"),
+    CronJob("arm-watch", "0 9 * * 1-5", "arm-watch", comment="장중 발동 감시 루프 기동(approved 풀, P0 발화 — 15:00까지 진입, 20:00까지 청산 전용)"),
     CronJob("arm-watch-relaunch", "0 12 * * 1-5", "arm-watch", comment="감시 루프 재기동 안전망(사망 대비, 중복은 자기 종료)"),
+    # EXEC-3(2026-07-13): 15:00 이후~20:00은 청산 전용 감시(진입 금지 — 정규 잔여 30분+NXT 애프터).
+    # 이 슬롯은 오후 사망 대비 재기동 안전망 — already-alive면 하트비트로 자기 종료.
+    CronJob("arm-watch-exit", "35 15 * * 1-5", "arm-watch", comment="청산 전용 감시 재기동 안전망(부분 레그·브래킷 관리, 애프터 커버)"),
     # 16:05 — data.go.kr T-1 EOD가 08:00엔 미공개(2026-06-11 관측: 09시에도 없음, 전일 14:49엔 있음).
     # 마감 직후로 옮겨 pm 라운드(16:20~)가 최신 스크리너 후보를 쓰게 한다.
     CronJob("daily-eod", "5 16 * * 1-5", "daily-eod", comment="전종목→섹터분류→스크리너→fact pack(T-1 EOD)"),

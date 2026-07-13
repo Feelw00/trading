@@ -98,7 +98,67 @@ def _reason_theses() -> int:
 def _synth_playbooks() -> int:
     from trading import synth_playbooks
 
-    return synth_playbooks.run()
+    rc = synth_playbooks.run()
+    if rc == 0:
+        _auto_approve_after_synth()
+    return rc
+
+
+def _auto_approve_after_synth() -> None:
+    """R5 산출 직후 자동 승인 + P0 통지(EXEC-1 — 거부권 안내 동봉). 실패해도 synth는 성공."""
+    from trading.approve import auto_approve_pending
+    from trading.executor import exec_mode
+
+    if exec_mode() == "off":
+        print("자동 승인 스킵 — EXEC off(킬 스위치)")
+        return
+    try:
+        ids = auto_approve_pending()
+    except Exception as exc:  # noqa: BLE001 — 승인 실패는 보고만(다음날 수동 승인 가능)
+        print(f"자동 승인 실패(수동 승인 가능): {exc}")
+        return
+    if not ids:
+        print("자동 승인: 대상 없음")
+        return
+    print(f"자동 승인 {len(ids)}건: {', '.join(ids)}")
+    from trading.alerts import Alert, AlertDispatcher, Severity
+    from trading.collectors.base import now_kst
+
+    AlertDispatcher().notify(
+        Alert(
+            severity=Severity.P0,
+            what=f"자동 승인 {len(ids)}건 — 내일 감시 풀\n{_approved_digest(ids)}",
+            rule="EXEC-1: R5 하드게이트 통과분 자동 승인(당일 생성분 한정)",
+            action="거부: <code>python -m trading.approve --veto &lt;id&gt;</code> (id는 /positions·저녁 보고 참조)",
+            deadline="다음 거래일 09:00(감시 기동) 전",
+            created_at=now_kst(),
+        )
+    )
+
+
+def _approved_digest(ids: list[str]) -> str:
+    """승인분 다이제스트 — 종목명·손절/경고/익절·시계(운영자 피드백: 기계 ID 나열 금지)."""
+    from trading.journal.playbooks import PlaybookStore
+    from trading.position_check import _symbol_names_safe
+
+    ps = PlaybookStore()
+    lines: list[str] = []
+    try:
+        drafts = [d for d in (ps.draft(i) for i in ids) if d is not None]
+        names = _symbol_names_safe([d.symbol for d in drafts])
+        for d in drafts:
+            nm = names.get(d.symbol) or d.symbol
+            stop = f"{d.stop.level:,.0f}" if d.stop and d.stop.level else "시간손절"
+            soft = f" 경고 {d.soft_stop.level:,.0f} ·" if d.soft_stop else ""
+            tgt = "→".join(f"{t.level:,.0f}" for t in d.targets) if d.targets else "R:R 자동"
+            lines.append(
+                f"• {nm}({d.symbol}) — 손절 {stop} ·{soft} 익절 {tgt} · {d.time_stop_days or '-'}일"
+            )
+    except Exception:  # noqa: BLE001 — 다이제스트 실패는 통지 자체를 막지 않는다
+        return "\n".join(f"• <code>{i}</code>" for i in ids)
+    finally:
+        ps.close()
+    return "\n".join(lines)
 
 
 def _select_playbooks() -> int:

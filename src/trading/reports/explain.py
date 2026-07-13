@@ -25,6 +25,7 @@ FLOW_VAR_KO: dict[str, str] = {
     "new_low_after": "신저가 갱신 시각 조건",
     "new_low_renewal_fail": "신저가 갱신 실패",
     "prev_day_high_reclaim": "전일 고가 회복(상승 확인)",
+    "sector_ignition": "섹터 점화(실시간 거래대금 상위에 소속 업종 집중)",
 }
 
 _MISSING = sorted(FLOW_VARIABLES - set(FLOW_VAR_KO))

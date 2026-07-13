@@ -63,13 +63,15 @@ def test_evening_contains_approvals_and_missing_sections(tmp_path: Path) -> None
     assert "기본단위의 50%" in r.text                  # "0.5 * normal_unit" 내부 표현식 노출 금지
     assert "매수" in r.text                           # side 한국어 표기
     assert "아침 `/arm-check`에서" in r.text          # 승인은 아침으로 이관
-    assert r.text.index("검토 후보") < r.text.index("시나리오")
+    assert r.text.index("내일 감시 풀") < r.text.index("시나리오")  # 풀 섹션이 최상단
     # 미수집은 결측 명시(추측 대체 없음)
     assert "KIS" in r.text and "미수집" in r.text
     assert "시나리오" in r.text and "분기 A/B" in r.text
 
 
-def test_evening_excludes_already_approved_from_requests(tmp_path: Path) -> None:
+def test_evening_shows_approved_pool(tmp_path: Path) -> None:
+    # EXEC-1(자동 승인 체제, 2026-07-13): approved는 제외가 아니라 "내일 감시 풀"로 표시 —
+    # 구세계에선 승인 요청에서 제외했으나, 이제 보고의 주인공이 승인 풀이다.
     ps = _seeded_store(tmp_path)
     draft = ps.draft("order.20260610.001740.buy")
     assert draft is not None
@@ -78,7 +80,8 @@ def test_evening_excludes_already_approved_from_requests(tmp_path: Path) -> None
     r = render_evening(now=NOW, playbook_store=ps, alert_store=als)
     ps.close()
     als.close()
-    assert "검토 후보 없음" in r.text
+    assert "`order.20260610.001740.buy`" in r.text
+    assert r.digest is not None and "자동 승인 1건" in r.digest
 
 
 def test_evening_scenario_axes_render_as_title_and_bullets(tmp_path: Path) -> None:
@@ -252,7 +255,7 @@ def test_evening_digest_is_compact_and_humanized(tmp_path: Path) -> None:
     ps.close(); als.close()
     assert r.digest is not None
     d = r.digest
-    assert "승인 대기 1건" in d and "`/arm-check`" in d
+    assert "내일 풀 1건" in d and "대기 1" in d  # EXEC-1: 자동 승인 체제 헤더
     assert "진입: 시초 갭 크기 -3.0↓" in d           # 발동 조건 압축 한국어(키 미노출)
     assert "gap_pct" not in d                       # 기계 문자열 미노출(전문 파일에만 키 병기)
     assert "기본단위의 50%" in d
@@ -270,7 +273,7 @@ def test_evening_digest_no_approvals_says_no_trade(tmp_path: Path) -> None:
     als = AlertStore(tmp_path / "al.sqlite")
     r = render_evening(now=NOW, playbook_store=ps, alert_store=als)
     ps.close(); als.close()
-    assert r.digest is not None and "검토 후보 없음" in r.digest
+    assert r.digest is not None and "내일 풀 없음" in r.digest
 
 
 def test_risk_lines_extracts_warnings_only() -> None:

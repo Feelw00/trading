@@ -17,6 +17,14 @@
 `.gitignore`가 `.env`, `.env.*`(단 `.env.example` 예외), `secrets/`, `*.key`, `*.pem`,
 토큰 캐시(`.tokens/`, `*.token`, `.kis_token*`)를 차단한다.
 
+## 2b. 토스증권 Open API (EXEC-1 자동 집행 — 2026-07-13)
+- 발급: 토스증권 WTS 로그인 → 설정 > Open API → `client_id`/`client_secret`.
+- **허용 IP 등록 필수**(같은 화면의 IP 관리 — 미등록 IP는 403). 기기 변경 시 재등록.
+- `.env` 키: `TOSS_CLIENT_ID` / `TOSS_CLIENT_SECRET` / `TOSS_ACCOUNT_SEQ`
+  (계좌 식별 키 — 키 주입 후 `GET /api/v1/accounts` 응답의 `accountSeq`).
+- 토큰 캐시는 `.runtime/toss/token.json`(gitignore 하위). **주문 권한 키** — 유출 시
+  즉시 회전 + 토스 앱에서 키 폐기, 1Password "stock / .env" 항목도 갱신.
+
 ## 3. 1Password 공유 워크플로 (수동 파일 방식)
 **새 기기 / 재설치 시:**
 1. 1Password에서 **"stock / .env"** 항목(보안 노트 또는 문서)을 연다.

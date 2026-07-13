@@ -117,9 +117,14 @@ def run(
             packs.append(fp)
 
     llm = client if client is not None else client_from_env()
+    # EXEC-7(7/13 폭락 사후): EOD 지연 보정 — 당일 실시간 지수·레짐을 백드롭에 병기.
+    # R5가 T-1 지수만 보고 계획하다 급변을 놓치는 것 방지(결정론 수집, 실패 시 결측 표기).
+    from trading.regime import live_backdrop_lines
+
     result: R5Result = run_r5(
         llm, theses, events, packs,
-        macro_lines=_macro_lines(), now=now, config=config or R5Config(),
+        macro_lines=_macro_lines() + live_backdrop_lines(now=now),
+        now=now, config=config or R5Config(),
     )
 
     if result.error is not None:
