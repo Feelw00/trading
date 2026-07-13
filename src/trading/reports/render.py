@@ -284,6 +284,8 @@ def _approval_rows(ps: PlaybookStore, day_compact: str) -> list[dict[str, Any]]:
                     explain_condition_compact(k, v) for k, v in pb.arm_conditions.items()
                 ),
                 "stop": draft.stop.level if draft.stop else None,
+                "soft_stop": draft.soft_stop.level if draft.soft_stop else None,
+                "targets": "→".join(f"{t.level:,.0f}" for t in draft.targets) or None,
                 "time_stop": draft.time_stop_days,
                 "cap": _humanize_cap(draft.total_size_cap),
                 "status": draft.status.value,
@@ -394,7 +396,9 @@ def _evening_digest(
             ts = f"{a['time_stop']}일" if a["time_stop"] is not None else "없음"
             lines.append(f"{i}. **{a['label']} {a['side']}** — {a['summary']}")
             lines.append(f"   진입: {a['arm_compact']}")
-            lines.append(f"   손절 {stop} · 시간손절 {ts} · {a['cap']} · `{a['id']}`")
+            soft = f" · 경고 {a['soft_stop']:,.0f}" if a.get("soft_stop") else ""
+            tgt = f" · 익절 {a['targets']}" if a.get("targets") else ""
+            lines.append(f"   손절 {stop}{soft}{tgt} · 시간손절 {ts} · {a['cap']} · `{a['id']}`")
     else:
         lines.append("**내일 풀 없음 — 비거래.** (대부분의 날의 정상 결론)")
     cautions = _risk_lines(axes)
