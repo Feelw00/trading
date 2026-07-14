@@ -93,3 +93,97 @@ def test_run_r3_clamps_horizon_and_confidence() -> None:
     assert t.horizon_days == 7              # 범위밖 → 기본
     assert t.confidence == 0.3              # 범위밖 → 기본
     assert t.direction.value == "flat"     # 미지 direction → flat
+
+
+# ── P-9 3단계 스윙 승격 ────────────────────────────────────────────────
+
+
+def test_build_prompt_injects_swing_extra_lines() -> None:
+    from trading.rounds.r3 import PERSONAS, build_prompt
+
+    note = "스윙 승격 근거(P-9, as_of 20260610): 기회 트리거 pullback 발화 · 스윙 품질 점수 0.85"
+    for spec in PERSONAS:  # 전 페르소나 공통 주입
+        p = build_prompt(spec, CAND, None, [], [], extra_lines=(note,))
+        assert note in p
+        p_without = build_prompt(spec, CAND, None, [], [])
+        assert "스윙 승격" not in p_without  # 비승격 종목은 기존 프롬프트 불변
+
+
+def test_run_r3_passes_extra_lines_to_all_personas() -> None:
+    class _Capture:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        def complete(self, prompt: str) -> str:
+            self.prompts.append(prompt)
+            return _VALID
+
+    cap = _Capture()
+    run_r3(cap, CAND, None, [], extra_lines=("스윙 승격 근거: 테스트",), now=NOW)
+    assert len(cap.prompts) == 3 and all("스윙 승격 근거: 테스트" in p for p in cap.prompts)
+
+
+def test_swing_promotions_merges_and_caps(tmp_path: Any) -> None:
+    from trading.reason_news import _swing_promotions
+    from trading.swing import AxisValue, SwingResult, SwingRow, SwingStore
+
+    def _row(cd: str, name: str, score: float, trigs: tuple[str, ...]) -> SwingRow:
+        return SwingRow(
+            cd, name, "KOSPI", 100.0, (), trend=AxisValue(1.0, True), domain=AxisValue(),
+            fund=AxisValue(), flow=AxisValue(), mdd=-0.1, score=score, pct={}, triggers=trigs,
+        )
+
+    rows = [
+        _row("111110", "고점수", 0.9, ("pullback", "catalyst")),
+        _row("222220", "중간", 0.7, ("domain_ignition",)),
+        _row("333330", "저점수", 0.6, ("flow_turn",)),
+    ]
+    res = SwingResult("20260610", rows, 10, 3, {}, {}, (), rows)
+    store = SwingStore()  # conftest가 기본 경로 격리
+    store.record(res)
+    store.close()
+
+    promos = _swing_promotions(limit=2)  # 점수순 상한 → 저점수 탈락
+    assert set(promos) == {"111110", "222220"}
+    assert "pullback" in promos["111110"] and "catalyst" in promos["111110"]  # 트리거 병합
+    assert "0.90" in promos["111110"] and "as_of 20260610" in promos["111110"]
+
+
+def test_swing_promotions_empty_without_snapshot() -> None:
+    from trading.reason_news import _swing_promotions
+
+    assert _swing_promotions(limit=5) == {}  # 스냅샷 없음 — 승격 없음(발명 금지)
+
+
+def test_build_prompt_supply_gets_flows_slice() -> None:
+    """리허설 적발(2026-07-12): FactPack.flows가 있어도 supply 슬라이스에 미주입되던 갭."""
+    from datetime import datetime
+
+    from trading.contracts.factpack import FactPack, FlowLine, PriceContext
+    from trading.contracts.thesis import Persona as P
+    from trading.rounds.r3 import PERSONAS, build_prompt
+
+    fp = FactPack(
+        srtn_cd="161890", name="한국콜마", sectors=["cosmetics"], screen_score=0.9,
+        price=PriceContext(as_of="20260709", market="KOSPI", close=102800.0, market_cap=1e12,
+                           tr_value_surge=1.6, mom_short_pct=19.0, mom_long_pct=30.0,
+                           high_252_proximity=0.82),
+        flows=[FlowLine(bas_dt="20260710", prsn_ntby_mn=-500.0, frgn_ntby_mn=300.0,
+                        orgn_ntby_mn=250.0, fund_ntby_mn=50.0)],
+        as_of=NOW, fetched_at=NOW,
+    )
+    for spec in PERSONAS:
+        p = build_prompt(spec, ("161890", "한국콜마"), fp, [], [])
+        if spec.persona is P.SUPPLY:
+            assert "수급(KIS 투자자매매동향" in p and "외국인 +300" in p
+        else:
+            assert "투자자매매동향" not in p  # 입력격리 — 타 페르소나엔 미주입
+
+
+def test_build_prompt_supply_flows_missing_is_explicit() -> None:
+    from trading.contracts.thesis import Persona as P
+    from trading.rounds.r3 import PERSONAS, build_prompt
+
+    spec = next(s for s in PERSONAS if s.persona is P.SUPPLY)
+    p = build_prompt(spec, CAND, None, [], [])
+    assert "수급(투자자별 매매동향): (미수집)" in p  # 결측 명시(침묵 생략 금지)

@@ -46,6 +46,15 @@ class StopType(str, Enum):
     CONDITIONAL_ORDER_AT_BROKER = "conditional_order_at_broker"
 
 
+class ExitLevel(BaseModel):
+    """계단식 청산 한 단(EXEC-2, 운영자 결정 2026-07-13) — 레벨 + 원 포지션 대비 비중."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    level: float = Field(gt=0)
+    pct: int = Field(gt=0, le=100)
+
+
 class Stop(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -65,6 +74,7 @@ class OrderStatus(str, Enum):
     ARMED = "armed"
     EXECUTED = "executed"
     EXPIRED = "expired"
+    VETOED = "vetoed"  # 운영자 거부(EXEC-1 자동 승인 체제의 거부권) — 활성 풀 제외
 
 
 class OrderDraft(BaseRecord):
@@ -76,6 +86,9 @@ class OrderDraft(BaseRecord):
     time_stop_days: int | None = Field(default=None, gt=0)
     created_when_market: MarketState
     status: OrderStatus = OrderStatus.DRAFT
+    # --- 계단식 청산 (EXEC-2, 선택 — R5 분석 지정. 구필드 레코드 호환 위해 기본값) ---
+    targets: list[ExitLevel] = Field(default_factory=list)  # 상방 익절 사다리(레벨 오름차순)
+    soft_stop: ExitLevel | None = None                      # 경고 축소(하드 스탑 위) — 하드는 stop
 
     @model_validator(mode="after")
     def _require_stop_or_time_stop(self) -> "OrderDraft":
@@ -84,8 +97,25 @@ class OrderDraft(BaseRecord):
             raise ValueError("OrderDraft requires stop or time_stop_days (둘 다 없음 금지)")
         return self
 
+    @model_validator(mode="after")
+    def _exit_ladder_sanity(self) -> "OrderDraft":
+        # 익절 사다리: 레벨 순증가 + 비중 합 ≤100 (초과 청산 방지)
+        levels = [t.level for t in self.targets]
+        if levels != sorted(levels) or len(set(levels)) != len(levels):
+            raise ValueError("targets 레벨은 순증가여야 한다")
+        if sum(t.pct for t in self.targets) > 100:
+            raise ValueError("targets 비중 합이 100%를 초과")
+        # 경고 축소: 하드 스탑 위에 있어야 하고(무효화 규율), 전량(100%)은 하드의 몫
+        if self.soft_stop is not None:
+            if self.soft_stop.pct >= 100:
+                raise ValueError("soft_stop은 부분 축소만(<100%) — 전량은 하드 스탑")
+            if self.stop is not None and self.stop.level is not None and self.soft_stop.level <= self.stop.level:
+                raise ValueError("soft_stop 레벨은 하드 스탑보다 위여야 한다")
+        return self
+
 
 __all__ = [
+    "ExitLevel",
     "MarketState",
     "OrderDraft",
     "OrderStatus",

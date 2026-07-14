@@ -25,6 +25,7 @@ FLOW_VAR_KO: dict[str, str] = {
     "new_low_after": "신저가 갱신 시각 조건",
     "new_low_renewal_fail": "신저가 갱신 실패",
     "prev_day_high_reclaim": "전일 고가 회복(상승 확인)",
+    "sector_ignition": "섹터 점화(실시간 거래대금 상위에 소속 업종 집중)",
 }
 
 _MISSING = sorted(FLOW_VARIABLES - set(FLOW_VAR_KO))
@@ -57,6 +58,27 @@ def explain_condition(var: str, expr: str) -> str:
         return f"{var_label(var)} {expr} (평가 불가 — 숫자/boolean 조건식 아님)"
     op, num = m.group(1), m.group(2)
     return f"{var_label(var)} {num} {_OP_KO[op]}"
+
+
+_SHORT_OP = {">": "↑", ">=": "↑", "<": "↓", "<=": "↓"}
+
+
+def explain_condition_compact(var: str, expr: str) -> str:
+    """다이제스트용 압축 해설 — '체결강도 105↑', boolean true는 라벨만(가독성 3차, 2026-07-12).
+
+    상세 추적이 필요한 전문 보고는 :func:`explain_condition`(키 병기)을 그대로 쓴다.
+    """
+    label = (FLOW_VAR_KO.get(var) or var).split("(")[0]
+    mb = _BOOL.match(expr)
+    if mb is not None:
+        yes = (mb.group(1) == "==") == (mb.group(2).lower() == "true")
+        return label if yes else f"{label} 아님"
+    m = _COND.match(expr)
+    if m is None:
+        return f"{label} {expr}"
+    op, num = m.group(1), m.group(2)
+    short = _SHORT_OP.get(op)
+    return f"{label} {num}{short}" if short else f"{label} {num} {_OP_KO[op]}"
 
 
 def humanize_cap(cap: str | None) -> str:
@@ -109,6 +131,7 @@ __all__ = [
     "FLOW_VAR_KO",
     "draft_headline",
     "explain_condition",
+    "explain_condition_compact",
     "explain_stop",
     "explain_tranches",
     "humanize_cap",

@@ -13,8 +13,9 @@ description: 신규 데이터 수집 — 전 상장종목 EOD 시세를 1콜로 
 1. **콘솔 날짜 확인** — `TZ=Asia/Seoul date '+%Y-%m-%d (%a)'`.
 2. `.env` 로드 후 `poetry run python -m trading.collectors.market` — 최근 거래일 전 상장종목(≈2,877) EOD를 **1콜**로 적재(idempotent, append-only). EOD는 +1영업일 공개라 최신 basDt가 당일이 아닐 수 있음(정상).
 3. `poetry run python -m trading.sectors` — **섹터 태깅 보강(grounded·결정론)**: 게이트 통과 종목 중 미태깅분만 DART 회사개황 업종(KSIC)으로 분류해 `dart-ksic-v1` 적재. 신규 상장·신규 진입 종목만 처리(시도분은 스킵). 혼재 업종코드는 추측 안 하고 미분류 유지(환각가드). DART 키 없으면 스킵(blocked).
-4. `poetry run python -m trading.screener` — 갱신된 DB로 후보 + 섹터 태그 산출(`llm-cls-v1`+`dart-ksic-v1` 병합).
-5. 보고: 수집 일자·신규 행수 / 섹터 보강(신규분류·미분류유지) / 스크리너 후보 Top-N(섹터 태그) / blocked.
+4. `poetry run python -m trading.sector_llm` — **잔존 미분류 LLM 폴백 분류(P-2)**: grounded·큐레이션이 못 채운 미분류만 `claude -p` 배치로 분류해 `llm-fallback-v1`(최후순위) 적재. 환각가드: 모르면 미분류 유지·taxonomy 밖 값 폐기·confidence<0.7 미채택. 신규 진입 종목만 처리(시도분 스킵). 모델은 `SECTOR_LLM_MODEL` .env 주입.
+5. `poetry run python -m trading.screener` — 갱신된 DB로 후보 + 섹터 태그 산출(4소스 병합: manual > llm-cls > dart-ksic > llm-fallback).
+6. 보고: 수집 일자·신규 행수 / 섹터 보강(신규분류·미분류유지) / 스크리너 후보 Top-N(섹터 태그) / blocked.
 
 > **하네스(COLLECT-3):** 승인 소스(data.go.kr·DART) 어댑터만 호출. **독자 웹서치 금지.** 키 미설정·소스 실패는 `blocked` 보고 — 다른 소스·웹서치로 대체하지 않는다.
-> **섹터 분류는 LLM 미개입**(CLAUDE.md): DART 등록업종을 커밋된 KSIC 크로스워크로 매핑하는 순수 코드. 크로스워크는 기존 라벨 대비 실측 순도≥0.75 코드만 채택.
+> **섹터 분류:** grounded 단계는 LLM 미개입(커밋된 KSIC 크로스워크, 실측 순도≥0.75 코드만). 잔존분만 LLM 폴백(P-2 — 분류는 CLAUDE.md상 LLM 허용 영역, R1/R5.5 판단 아님)이 채우며 상위 소스를 절대 덮지 않는다.

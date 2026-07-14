@@ -23,9 +23,12 @@ class PriceContext(_Frozen):
     close: float
     market_cap: float | None    # mrkt_tot_amt
     tr_value_surge: float       # 당일 거래대금 / 20일 평균
-    mom_short_pct: float        # 20일 수익률(%)
-    mom_long_pct: float         # 60일 수익률(%)
-    high_252_proximity: float   # 종가 / 252일 최고가
+    # 수익률은 히스토리 부족 시 **None**(미산출) — 0.0 폴백을 LLM에 "0%"로 흘리면 환각이다.
+    mom_short_pct: float | None  # 20일 수익률(%). None = 20거래일 미만
+    mom_long_pct: float | None   # 60일 수익률(%). None = 60거래일 미만
+    high_252_proximity: float    # 종가 / 최고가
+    # 신고가 창의 실제 길이 — 252 미만이면 "52주"가 아니다(짧은 창일수록 근접도 과대).
+    high_window_days: int | None = None
 
 
 class FlowLine(_Frozen):

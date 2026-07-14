@@ -149,3 +149,59 @@ def test_score_store_roundtrip(tmp_path: Path) -> None:
     assert back is not None and back.id == record.id
     assert ss.append(record) == 2  # 재평가=새 version
     ss.close()
+
+
+# ── P-9 ② 스윙 트리거 채점 ──────────────────────────────────────────────
+
+
+def test_swing_trigger_scoring_hit_and_miss(tmp_path: Path) -> None:
+    from trading.rounds.r7 import score_swing_triggers
+
+    ms = _store(tmp_path, {
+        "111110": [100, 100, 102, 104, 110, 111],  # 6/10 발화 → entry 6/11(100) → +5거래일 미도래
+        "222220": [100, 100, 102, 104, 90, 80],
+    })
+    cfg = R7Config(swing_window_days=3)
+    # 발화일 6/10 → entry 6/11 → exit 6/16(=6/11+3): 111110 +10%(hit) / 222220 -10%(miss)
+    log = [("20260610", "111110", "pullback"), ("20260610", "222220", "pullback")]
+    scores = score_swing_triggers(log, ms, DATES, cfg)
+    ms.close()
+    assert len(scores) == 1
+    s = scores[0]
+    assert (s.trigger, s.n_scored, s.n_hit) == ("pullback", 2, 1)
+    assert s.hit_rate == 0.5
+    assert s.avg_return_pct is not None and abs(s.avg_return_pct - 0.0) < 1e-9  # +10%와 -10% 평균
+
+
+def test_swing_trigger_immature_and_no_data_not_scored(tmp_path: Path) -> None:
+    from trading.rounds.r7 import score_swing_triggers
+
+    ms = _store(tmp_path, {"111110": [100, 100, 102, 104, 110, 111]})
+    cfg = R7Config(swing_window_days=3)
+    log = [
+        ("20260616", "111110", "catalyst"),   # entry 6/17 → exit 미도래(미성숙)
+        ("20260610", "999990", "catalyst"),   # 가격 없음(결측)
+    ]
+    scores = score_swing_triggers(log, ms, DATES, cfg)
+    ms.close()
+    s = scores[0]
+    assert (s.n_scored, s.n_immature, s.n_no_data) == (0, 1, 1)
+    assert s.hit_rate is None and s.avg_return_pct is None  # 0%로 왜곡 금지
+
+
+def test_swing_trigger_empty_log_yields_empty(tmp_path: Path) -> None:
+    from trading.rounds.r7 import score_swing_triggers
+
+    ms = _store(tmp_path, {"111110": [100, 100, 102, 104, 110, 111]})
+    assert score_swing_triggers([], ms, DATES, R7Config()) == []
+    ms.close()
+
+
+def test_evaluate_includes_swing_scores_and_note_when_empty(tmp_path: Path) -> None:
+    ms = _store(tmp_path, {"001740": [100, 100, 102, 104, 110, 111]})
+    rec, _ = evaluate([], [], ms, now=NOW, swing_trigger_log=[("20260610", "001740", "flow_turn")])
+    assert rec.swing_triggers and rec.swing_triggers[0].trigger == "flow_turn"
+    rec2, _ = evaluate([], [], ms, now=NOW)
+    ms.close()
+    assert rec2.swing_triggers == []
+    assert any("스윙 트리거" in n for n in rec2.notes)  # 채점 없음 명시

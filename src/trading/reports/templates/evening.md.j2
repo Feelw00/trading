@@ -1,10 +1,10 @@
 # 저녁 결재 보고 — {{ day }}
 
-## 내일 검토 후보 (아침 arm-check에서 승인)
+## 내일 감시 풀 (EXEC-1 자동 승인 — 거부는 --veto, 09:00 전)
 {% if approvals %}{% for a in approvals %}- **{{ a.label }} {{ a.side }}** — {{ a.summary }}
-  발동 조건: {{ a.arm }} | 스탑 {{ a.stop }} | 시간손절 {{ a.time_stop }}일 | 상한 {{ a.cap }} | `{{ a.id }}`
+  발동 조건: {{ a.arm }} | 스탑 {{ a.stop }}{% if a.soft_stop %} | 경고 {{ a.soft_stop }}{% endif %}{% if a.targets %} | 익절 {{ a.targets }}{% endif %} | 시간손절 {{ a.time_stop }}일 | 상한 {{ a.cap }} | `{{ a.id }}`
 {% endfor %}> 내일 아침 `/arm-check`에서 흐름과 함께 검토·승인 → 예약 주문 직접 입력 (수동 — 의도된 마찰).
-{% else %}**검토 후보 없음 — 내일 비거래.** (대부분의 날의 정상 결론)
+{% else %}**내일 풀 없음 — 비거래.** (대부분의 날의 정상 결론)
 {% endif %}
 
 ## 시나리오 (R5{% if synth_as_of %}, {{ synth_as_of }}{% endif %})
@@ -12,10 +12,15 @@
 {% endfor %}{% else %}(합성 없음)
 {% endif %}
 
-## R4 적대검증 ({{ r4_as_of }}) — 생존 {{ r4.confirmed }} / 기각 {{ r4.refuted }}
+{% if swing_as_of %}## 스윙 기회 (P-9, {{ swing_as_of }})
+{% if swing_lines %}{% for s in swing_lines %}- {{ s }}
+{% endfor %}> 유니버스(품질 필터) 내 기회 트리거 발화분 — 관심 후보이지 주문 아님. 분석은 `/discuss <종목>`.
+{% else %}오늘 기회 트리거 없음. (대부분의 날의 정상 결론)
+{% endif %}
+{% endif %}## R4 적대검증 ({{ r4_as_of }}) — 생존 {{ r4.confirmed }} / 기각 {{ r4.refuted }}
 {% if r4.confirmed_lines %}생존:
 {% for line in r4.confirmed_lines %}- {{ line }}
-{% endfor %}{% endif %}{% if r4.refuted_lines %}기각 상위:
+{% endfor %}{% endif %}{% if r4.refuted_lines %}기각 상위(⚠️ 촉매 부적격 포함 — 사실 판정 아님, 사후 보도·연결 오류도 기각됨):
 {% for line in r4.refuted_lines %}- {{ line }}
 {% endfor %}{% endif %}
 

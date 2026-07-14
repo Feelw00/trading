@@ -1,7 +1,14 @@
-"""섹터 분류(grounded·결정론) — DART 회사개황 업종코드(KSIC) → 26 taxonomy.
+"""섹터 분류(grounded·결정론) — KRX 공식 업종(KIS) 최우선 + DART KSIC 갭 필.
 
-스크리너 후보의 섹터 태그를 채운다. **LLM 미개입**: DART가 준 등록업종(induty_code)을
-커밋된 크로스워크로 매핑하는 순수 코드(CLAUDE.md "판단엔 LLM 미개입" 부합).
+**운영자 결정(2026-07-13): 섹터 기준을 KRX 공식 업종분류로 전면 전환.**
+KIS 주식현재가 시세의 ``bstp_kor_isnm``(거래소 공식 업종명)을 ``kis-bstp-v1`` 소스로
+적재하고 SECTOR_SOURCES 최우선에 둔다 — 자체 크로스워크·LLM 분류보다 거래소 분류 신뢰.
+기존 계층(KSIC 크로스워크·큐레이션·LLM 폴백)은 KIS 결측 종목의 갭 필로만 잔존.
+잔여(미전환): FactRecord.sector 계약(Sector enum)·R2 뉴스 이벤트 ``sector:`` 라벨은
+29버킷 taxonomy 유지 — OPEN_QUESTIONS SECT-1 참조(계약 §4 변경이라 별도 결정).
+
+스크리너 후보의 섹터 태그를 채운다. **LLM 미개입**: 거래소/DART가 준 분류를
+그대로 적재·매핑하는 순수 코드(CLAUDE.md "판단엔 LLM 미개입" 부합).
 
 설계 근거(왜 전(全)코드 매핑이 아니라 보수적 채택인가):
 - DART induty_code는 *법적 등록업종*이라 다각화 대형주·테마와 어긋난다.
@@ -16,16 +23,21 @@ grounded는 미분류 갭만 채운다(스크리너 ``sector_map_multi`` 병합)
 """
 
 import os
+import sys
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from trading.collectors.dart import DartClient
+from trading.collectors.kis import KisClient
+from trading.collectors.kis import client_from_env as kis_client_from_env
 from trading.collectors.market import MarketStore
 from trading.domains import Sector
 from trading.screener import ScreenConfig, screen
 
 GROUNDED_SOURCE = "dart-ksic-v1"
+KRX_SOURCE = "kis-bstp-v1"   # KRX 공식 업종명(KIS bstp_kor_isnm) — 최우선(운영자 결정 2026-07-13)
+_F_BSTP = "bstp_kor_isnm"
 
 
 @dataclass(frozen=True)
@@ -57,6 +69,15 @@ KSIC_RULES: dict[str, KsicRule] = {
     "311": KsicRule((_S.SHIPBUILDING,), 0.75),     # 3/4 · 선박·보트
     "412": KsicRule((_S.CONSTRUCTION,), 0.75),     # 3/4 · 건물 건설
     "205": KsicRule((_S.CHEMICALS,), 0.85),        # 2/2 · 기타 화학제품
+    # P-1 확장 버킷(2026-07-11 실측 — 게이트 통과 미분류 169종 DART induty 전수 + 개별 조회):
+    "501": KsicRule((_S.SHIPPING_LOGISTICS,), 1.00),  # 3/3 · 해상 운송(HMM·팬오션·흥아해운)
+    "529": KsicRule((_S.SHIPPING_LOGISTICS,), 0.75),  # 1/1 · 기타 운송관련 서비스(현대글로비스 물류, 저n 보수화)
+    "511": KsicRule((_S.TRANSPORT,), 0.75),           # 1/1 · 항공 여객 운송(대한항공, 저n 보수화)
+    "492": KsicRule((_S.TRANSPORT,), 0.75),           # 1/1 · 육상 여객 운송(동양고속, 저n 보수화)
+    "91249": KsicRule((_S.LEISURE_CASINO,), 1.00),    # 3/3 · 사행시설(강원랜드·파라다이스·GKL)
+    "752": KsicRule((_S.LEISURE_CASINO,), 0.75),      # 1/1 · 여행사(롯데관광개발, 저n 보수화)
+    # P-1 실측의 부산물(기존 버킷 크로스워크 보강 — 같은 방법론):
+    "20423": KsicRule((_S.COSMETICS,), 1.00),         # 5/5 · 화장품 제조(한국콜마·아모레퍼시픽·코스맥스·에이피알·달바글로벌)
 }
 
 
@@ -75,9 +96,18 @@ MANUAL_SECTORS: dict[str, tuple[str, tuple[Sector, ...]]] = {
     "002020": ("코오롱", (_S.HOLDING,)),               # 64992 지주(financials 혼재)
     "003380": ("하림지주", (_S.HOLDING,)),              # 64992 지주
     "139130": ("iM금융지주", (_S.FINANCIALS, _S.HOLDING)),  # 64992 금융지주
+    # 금융지주 일괄(64992 — iM금융지주와 동형, P-1 실측 2026-07-11에서 코드 확인):
+    "105560": ("KB금융", (_S.FINANCIALS, _S.HOLDING)),
+    "055550": ("신한지주", (_S.FINANCIALS, _S.HOLDING)),
+    "086790": ("하나금융지주", (_S.FINANCIALS, _S.HOLDING)),
+    "138040": ("메리츠금융지주", (_S.FINANCIALS, _S.HOLDING)),
+    "316140": ("우리금융지주", (_S.FINANCIALS, _S.HOLDING)),
+    "138930": ("BNK금융지주", (_S.FINANCIALS, _S.HOLDING)),
+    "175330": ("JB금융지주", (_S.FINANCIALS, _S.HOLDING)),
     "088980": ("맥쿼리인프라", (_S.FINANCIALS,)),        # 64201 인프라투자펀드
     "103140": ("풍산", (_S.STEEL_MATERIALS, _S.DEFENSE)),  # 242 비철금속+방산(탄약)
     "323280": ("태성", (_S.SEMICONDUCTOR,)),           # 292 반도체·PCB 장비
+    "051900": ("LG생활건강", (_S.COSMETICS,)),          # 20422 세제·비누(코드≠실체: 화장품 대형주, domains 대표종목)
 }
 
 
@@ -147,7 +177,44 @@ def classify_untagged(
     return ClassifySummary(len(codes), classified, unclassified, dict(by_sector))
 
 
-def main() -> int:
+def classify_krx(
+    store: MarketStore,
+    kis: KisClient,
+    codes: Sequence[tuple[str, str]],
+    *,
+    as_of: str,
+    source: str = KRX_SOURCE,
+) -> ClassifySummary:
+    """``codes`` 각각 KIS 현재가 시세 → KRX 공식 업종명(``bstp_kor_isnm``) 적재.
+
+    호출 실패·업종명 결측은 **행을 남기지 않고 스킵**(다음 실행 재시도 — 일시 장애가
+    영구 미분류로 굳는 것 방지). 업종명은 거래소 원문 그대로(추측·정규화 없음).
+    """
+    items: list[dict[str, object]] = []
+    by_sector: Counter[str] = Counter()
+    classified = skipped = 0
+    for srtn_cd, name in codes:
+        try:
+            out = kis.quote_price(srtn_cd)
+        except Exception:  # noqa: BLE001 — 어댑터 오류는 스킵(부분 태깅 정상, 재시도 가능)
+            out = {}
+        bstp = str(out.get(_F_BSTP) or "").strip()
+        if not bstp:
+            skipped += 1
+            continue
+        items.append({"srtn_cd": srtn_cd, "name": name, "sectors": [bstp], "confidence": 1.0})
+        classified += 1
+        by_sector[bstp] += 1
+    if items:
+        store.upsert_sectors(items, source=source, as_of=as_of)
+    return ClassifySummary(len(codes), classified, skipped, dict(by_sector))
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """기본: 미시도 종목만 grounded 분류. ``--retag``: KSIC 규칙이 늘어난 뒤
+    과거에 '미분류'로 기록된 종목을 재평가(신규 규칙 소급 — 매칭 행만 append, 중복 무해)."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    retag = "--retag" in args
     store = MarketStore()
     res = screen(store, ScreenConfig(top_n=1_000_000))  # 게이트 통과 전체 열거
     if not res.candidates:
@@ -158,6 +225,24 @@ def main() -> int:
     if n_manual:
         print(f"큐레이션 오버라이드(manual-curated-v1): 신규 {n_manual}행")
 
+    # --- KRX 공식 업종(최우선 소스, 운영자 결정 2026-07-13) ---
+    kis = kis_client_from_env()
+    if kis is None:
+        print("KIS 키 미설정 — KRX 업종 태깅 스킵(blocked)")
+    else:
+        krx_done = store.codes_with_any_row(KRX_SOURCE)
+        krx_todo = [(c.srtn_cd, c.name) for c in res.candidates if c.srtn_cd not in krx_done]
+        if krx_todo:
+            ks = classify_krx(store, kis, krx_todo, as_of=res.as_of)
+            print(
+                f"KRX 업종 태깅(kis-bstp-v1) as_of={res.as_of}: 대상 {ks.attempted} · "
+                f"태깅 {ks.classified} · 스킵(재시도 예정) {ks.unclassified}"
+            )
+            for sec, n in sorted(ks.by_sector.items(), key=lambda x: -x[1]):
+                print(f"  {sec}: {n}")
+        else:
+            print("KRX 업종 태깅 최신 — 신규 없음")
+
     key = os.environ.get("DART_API_KEY", "")
     if not key:
         print("DART_API_KEY 미설정 — grounded 분류 스킵(blocked)")
@@ -165,7 +250,12 @@ def main() -> int:
         return 0
     tagged = set(store.sector_map_multi(("llm-cls-v1", MANUAL_SOURCE)))
     attempted = store.codes_with_any_row(GROUNDED_SOURCE)
-    todo = [(c.srtn_cd, c.name) for c in res.candidates if c.srtn_cd not in tagged and c.srtn_cd not in attempted]
+    if retag:
+        grounded_ok = set(store.sector_map(GROUNDED_SOURCE))  # 이미 실분류된 종목은 제외
+        skip = tagged | grounded_ok
+    else:
+        skip = tagged | attempted
+    todo = [(c.srtn_cd, c.name) for c in res.candidates if c.srtn_cd not in skip]
     if not todo:
         print(f"grounded 보강 불필요 — 게이트 {res.universe}종목 모두 태깅/시도됨")
         store.close()
@@ -185,12 +275,14 @@ def main() -> int:
 
 __all__ = [
     "GROUNDED_SOURCE",
+    "KRX_SOURCE",
     "MANUAL_SOURCE",
     "MANUAL_SECTORS",
     "KSIC_RULES",
     "KsicRule",
     "ClassifySummary",
     "apply_manual_overrides",
+    "classify_krx",
     "classify_ksic",
     "classify_untagged",
 ]

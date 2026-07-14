@@ -93,9 +93,15 @@ def _price_line(fp: FactPack | None) -> str:
     if fp is None:
         return "가격: (미수집)"
     p = fp.price
+    # 미산출(None)은 "0%"가 아니라 미산출로 — 히스토리 부족을 수치인 척 넘기지 않는다.
+    short = f"{p.mom_short_pct:.0f}%" if p.mom_short_pct is not None else "미산출"
+    long_ = f"{p.mom_long_pct:.0f}%" if p.mom_long_pct is not None else "미산출"
+    # 창이 252거래일에 못 미치면 "52주"라고 부르지 않는다(근접도 과대 → LLM 오판).
+    win = p.high_window_days
+    high_label = "52주근접" if win is None or win >= 252 else f"{win}일고가근접"
     return (
         f"가격(as_of {p.as_of}): 종가 {p.close} · 거래대금배 {p.tr_value_surge:.1f} · "
-        f"단기 {p.mom_short_pct:.0f}% · 장기 {p.mom_long_pct:.0f}% · 52주근접 {p.high_252_proximity:.2f}"
+        f"단기 {short} · 장기 {long_} · {high_label} {p.high_252_proximity:.2f}"
     )
 
 
@@ -107,6 +113,26 @@ def _financial_lines(fp: FactPack | None) -> str:
         for f in fp.financials[:6]
     ]
     return "재무(DART):\n" + "\n".join(rows)
+
+
+def _flow_lines(fp: FactPack | None) -> str:
+    """수급(KIS 투자자매매동향) 슬라이스 — supply 페르소나 전용 주입.
+
+    2026-07-12 리허설 적발: FactPack.flows가 있어도 R3 슬라이스에 미주입 → supply가
+    수집된 수급을 두고도 '미수집' 보류 판정. cycle=재무처럼 supply=수급이 원칙.
+    """
+    if fp is None or not fp.flows:
+        return "수급(투자자별 매매동향): (미수집)"
+
+    def _mn(v: float | None) -> str:
+        return f"{v:+,.0f}" if v is not None else "?"
+
+    rows = [
+        f"  {f.bas_dt}: 개인 {_mn(f.prsn_ntby_mn)} · 외국인 {_mn(f.frgn_ntby_mn)} · "
+        f"기관계 {_mn(f.orgn_ntby_mn)}" + (f" (기금 {_mn(f.fund_ntby_mn)})" if f.fund_ntby_mn is not None else "")
+        for f in fp.flows[:10]
+    ]
+    return "수급(KIS 투자자매매동향, 순매수 백만원, 최신순):\n" + "\n".join(rows)
 
 
 def _event_lines(events: Sequence[EventRecord]) -> str:
@@ -129,14 +155,19 @@ def build_prompt(
     macro_lines: Sequence[str],
     *,
     strict_invalidation: bool = False,
+    extra_lines: Sequence[str] = (),
 ) -> str:
     srtn, name = candidate
     sectors = ", ".join(fp.sectors) if fp and fp.sectors else "미분류"
     slice_parts = [f"종목: {name}({srtn}) · 섹터 {sectors}", _price_line(fp)]
     if spec.persona == Persona.CYCLE:
         slice_parts.append(_financial_lines(fp))
+    if spec.persona == Persona.SUPPLY:
+        slice_parts.append(_flow_lines(fp))
     if spec.persona == Persona.MACRO and macro_lines:
         slice_parts.append("거시 백드롭:\n" + "\n".join(f"  {m}" for m in macro_lines))
+    if extra_lines:  # 스윙 승격 근거 등 코드 계산 컨텍스트(P-9 3단계) — 전 페르소나 공통 주입
+        slice_parts.append("\n".join(extra_lines))
     slice_parts.append("담당 촉매(EventStore):\n" + _event_lines(events))
     grounding = "\n".join(slice_parts)
     strict = (
@@ -211,6 +242,7 @@ def run_r3(
     events: Sequence[EventRecord],
     *,
     macro_lines: Sequence[str] = (),
+    extra_lines: Sequence[str] = (),
     now: datetime | None = None,
     config: R3Config | None = None,
     source: str = "r3:claude",
@@ -225,7 +257,10 @@ def run_r3(
         p_events = events_for_persona(spec.persona, events)
         thesis: ThesisRecord | None = None
         for strict in (False, True):  # 1회 재생성(strict invalidation)
-            prompt = build_prompt(spec, candidate, factpack, p_events, macro_lines, strict_invalidation=strict)
+            prompt = build_prompt(
+                spec, candidate, factpack, p_events, macro_lines,
+                strict_invalidation=strict, extra_lines=extra_lines,
+            )
             try:
                 data = complete_json(client, prompt)
             except LLMError as e:

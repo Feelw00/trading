@@ -10,10 +10,12 @@ from trading.collectors.dart import DartClient
 from trading.collectors.market import MarketStore
 from trading.domains import Sector
 from trading.sectors import (
+    KRX_SOURCE,
     MANUAL_SECTORS,
     MANUAL_SOURCE,
     GROUNDED_SOURCE,
     apply_manual_overrides,
+    classify_krx,
     classify_ksic,
     classify_untagged,
 )
@@ -28,6 +30,18 @@ def test_classify_ksic_high_purity_codes() -> None:
 def test_classify_ksic_uses_three_digit_prefix() -> None:
     # 5자리 입력도 3자리 규칙으로 매칭(예: 의약품 세세분류)
     assert classify_ksic("21210") == [Sector.PHARMA_BIO]
+
+
+def test_classify_ksic_p1_expansion_buckets() -> None:
+    # P-1(2026-07-11) 실측 채택: 해운·물류 / 운송 / 레저·카지노
+    assert classify_ksic("50112") == [Sector.SHIPPING_LOGISTICS]  # HMM·팬오션·흥아해운
+    assert classify_ksic("5299") == [Sector.SHIPPING_LOGISTICS]   # 현대글로비스(물류)
+    assert classify_ksic("511") == [Sector.TRANSPORT]             # 대한항공(항공여객)
+    assert classify_ksic("49220") == [Sector.TRANSPORT]           # 동양고속(시외버스)
+    assert classify_ksic("91249") == [Sector.LEISURE_CASINO]      # 강원랜드·파라다이스·GKL
+    assert classify_ksic("75210") == [Sector.LEISURE_CASINO]      # 롯데관광개발(여행)
+    # 91249는 5자리 정밀 매칭 — 912 일반(기타 오락)은 미채택 유지
+    assert classify_ksic("91221") == []
 
 
 def test_classify_ksic_ambiguous_and_empty_unmapped() -> None:
@@ -119,6 +133,60 @@ def test_manual_takes_precedence_over_grounded(tmp_path: Path) -> None:
     )
     merged = store.sector_map_multi((MANUAL_SOURCE, "llm-cls-v1", GROUNDED_SOURCE))
     assert merged["011170"] == ["chemicals"]
+    store.close()
+
+
+class _FakeKis:
+    """quote_price만 흉내 — 업종명 매핑 + 지정 종목 호출 실패."""
+
+    def __init__(self, bstp_by_code: dict[str, str], fail: set[str] | None = None) -> None:
+        self._bstp = bstp_by_code
+        self._fail = fail or set()
+
+    def quote_price(self, srtn_cd: str) -> dict[str, Any]:
+        if srtn_cd in self._fail:
+            raise OSError("kis down")
+        return {"bstp_kor_isnm": self._bstp.get(srtn_cd, "")}
+
+
+def test_classify_krx_tags_official_sector_and_skips_failures(tmp_path: Path) -> None:
+    store = MarketStore(tmp_path / "m.sqlite")
+    kis = _FakeKis({"005930": "전기·전자", "105560": "은행"}, fail={"999999"})
+    codes = [
+        ("005930", "삼성전자"),
+        ("105560", "KB금융"),
+        ("999999", "장애종목"),   # 호출 실패 → 스킵
+        ("888888", "업종없음"),   # 응답에 업종명 결측 → 스킵
+    ]
+    s = classify_krx(store, kis, codes, as_of="20260713")  # type: ignore[arg-type]
+
+    assert s.attempted == 4
+    assert s.classified == 2
+    assert s.unclassified == 2  # 스킵분
+    sm = store.sector_map(KRX_SOURCE)
+    assert sm["005930"] == ["전기·전자"]  # 거래소 원문 그대로(정규화 없음)
+    assert sm["105560"] == ["은행"]
+    # 스킵분은 행을 남기지 않아 다음 실행에 재시도된다(일시 장애의 영구화 방지)
+    assert "999999" not in store.codes_with_any_row(KRX_SOURCE)
+    assert "888888" not in store.codes_with_any_row(KRX_SOURCE)
+    store.close()
+
+
+def test_krx_source_takes_precedence_over_all(tmp_path: Path) -> None:
+    # 운영자 결정(2026-07-13): 거래소 공식 업종이 큐레이션·taxonomy 태그를 덮는다
+    store = MarketStore(tmp_path / "m.sqlite")
+    store.upsert_sectors(
+        [{"srtn_cd": "005930", "name": "삼성전자", "sectors": ["semiconductor"], "confidence": 0.95}],
+        source="llm-cls-v1",
+        as_of="20260608",
+    )
+    store.upsert_sectors(
+        [{"srtn_cd": "005930", "name": "삼성전자", "sectors": ["전기·전자"], "confidence": 1.0}],
+        source=KRX_SOURCE,
+        as_of="20260713",
+    )
+    merged = store.sector_map_multi((KRX_SOURCE, "manual-curated-v1", "llm-cls-v1"))
+    assert merged["005930"] == ["전기·전자"]
     store.close()
 
 

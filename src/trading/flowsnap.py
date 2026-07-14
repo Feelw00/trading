@@ -21,6 +21,7 @@ from typing import Any
 from trading.collectors.base import KST, now_kst
 from trading.collectors.kis import KisClient
 from trading.collectors.market import MarketStore
+from trading.collectors.toss import client_from_env as _toss_from_env
 
 INJECT_DIR = Path(".runtime") / "flow"
 
@@ -33,7 +34,14 @@ OBSERVABLE_FLOW_DESC: dict[str, str] = {
     "prev_day_high_reclaim": "전일 고가 회복 여부(boolean) — 조건식 ==true/==false만",
     "orderbook_imbalance": "호가 (매수-매도)/(매수+매도) 잔량비, 범위 -1.0~+1.0, >0 매수우위(통상 ±0.3)",
     "execution_strength": "당일 체결강도, 100 기준(>100 매수체결 우세), 통상 80~150",
+    "sector_ignition": (
+        "종목 소속 섹터(KRX 업종)가 실시간 거래대금 상위 100에 5종목 이상 집중된 점화 상태"
+        "(boolean) — 조건식 ==true/==false만 (P-11 Stage B, 토스 랭킹 기반)"
+    ),
 }
+
+# 섹터 점화 판정: 실시간 거래대금 상위 100 중 같은 KRX 업종 소속이 이 수 이상이면 '점화'.
+SECTOR_IGNITION_MIN_MEMBERS = 5
 OBSERVABLE_FLOW_VARS: frozenset[str] = frozenset(OBSERVABLE_FLOW_DESC)
 
 # KIS 원시 응답 필드(2026-06-12 장중 실호출 관측 확정 — KIS-RT-1). 부재/비수치는 관측치 없음으로.
@@ -98,6 +106,25 @@ def _kis_observations(client: KisClient, srtn_cd: str, prev_high: float | None) 
     return obs
 
 
+def _hot_sectors(toss: Any, secmap: dict[str, list[str]]) -> set[str] | None:
+    """실시간 거래대금 상위 100 → KRX 업종 조인 → 점화 섹터 집합.
+
+    토스 미설정·호출 실패는 None(관측치 없음 — 값을 지어내지 않는다)."""
+    if toss is None:
+        return None
+    try:
+        rows = toss.rankings_trading_amount()
+    except Exception:  # noqa: BLE001 — 랭킹 실패는 변수 결측으로 흡수
+        return None
+    if not rows:
+        return None
+    counts: dict[str, int] = {}
+    for r in rows:
+        for sec in secmap.get(str(r.get("symbol") or ""), []):
+            counts[sec] = counts.get(sec, 0) + 1
+    return {s for s, n in counts.items() if n >= SECTOR_IGNITION_MIN_MEMBERS}
+
+
 def build_snapshot(
     srtns: Sequence[str],
     *,
@@ -105,8 +132,12 @@ def build_snapshot(
     market_store: MarketStore | None = None,
     now: datetime | None = None,
     inject_dir: Path | None = None,
+    toss_client: Any | None = None,
 ) -> tuple[dict[str, dict[str, float]], list[str]]:
-    """흐름 스냅샷 + 결측 notes. KIS 없으면 주입 파일만(전부 없으면 빈 스냅샷=비거래)."""
+    """흐름 스냅샷 + 결측 notes. KIS 없으면 주입 파일만(전부 없으면 빈 스냅샷=비거래).
+
+    ``toss_client`` 미지정이면 env에서 생성 시도 — 섹터 점화(sector_ignition) 전용.
+    """
     resolved = (now if now is not None else now_kst()).astimezone(KST)
     base_dir = inject_dir if inject_dir is not None else INJECT_DIR
     injected = _load_injected(resolved, base_dir)
@@ -120,11 +151,25 @@ def build_snapshot(
         notes.append("KIS 실시간 미설정 — 체결강도·호가·전고회복 미수집")
     notes.append("프리마켓 거래량(premkt_volume_ratio): NXT 소스 부재(SEL-1) — 미수집")
 
+    toss = toss_client if toss_client is not None else _toss_from_env()
+
     store = market_store
     own_store = False
-    if kis_client is not None and store is None:
+    if store is None and (kis_client is not None or toss is not None):
         store = MarketStore()
         own_store = True
+
+    # 섹터 점화(P-11 Stage B) — 랭킹 1콜 + 업종 조인, 스냅샷당 1회.
+    # 토스 미설정이거나 store가 업종 맵을 못 주면(테스트 페이크 등) 변수 결측(보수).
+    hot: set[str] | None = None
+    secmap: dict[str, list[str]] = {}
+    if toss is not None and store is not None and hasattr(store, "sector_map_multi"):
+        from trading.screener import SECTOR_SOURCES
+
+        secmap = store.sector_map_multi(SECTOR_SOURCES)
+        hot = _hot_sectors(toss, secmap)
+    if hot is None:
+        notes.append("섹터 점화(sector_ignition): 토스 랭킹 미가용 — 미수집")
 
     snapshot: dict[str, dict[str, float]] = {}
     for srtn in srtns:
@@ -132,6 +177,10 @@ def build_snapshot(
         if kis_client is not None and store is not None:
             prev_high = _prev_day_high(store, srtn)
             obs.update(_kis_observations(kis_client, srtn, prev_high))  # 실시간이 덮어씀
+        if hot is not None:
+            secs = secmap.get(srtn)
+            if secs:  # 업종 미태깅 종목은 관측치 없음(보수 — 지어내지 않음)
+                obs["sector_ignition"] = 1.0 if any(s in hot for s in secs) else 0.0
         snapshot[srtn] = obs
 
     if own_store and store is not None:
@@ -139,4 +188,10 @@ def build_snapshot(
     return snapshot, notes
 
 
-__all__ = ["INJECT_DIR", "OBSERVABLE_FLOW_DESC", "OBSERVABLE_FLOW_VARS", "build_snapshot"]
+__all__ = [
+    "INJECT_DIR",
+    "OBSERVABLE_FLOW_DESC",
+    "OBSERVABLE_FLOW_VARS",
+    "SECTOR_IGNITION_MIN_MEMBERS",
+    "build_snapshot",
+]

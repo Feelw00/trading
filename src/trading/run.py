@@ -39,6 +39,31 @@ def _classify_sectors() -> int:
     return sectors.main()
 
 
+def _sector_llm() -> int:
+    from trading import sector_llm
+
+    return sector_llm.main()
+
+
+def _collect_fins() -> int:
+    from trading.collectors import fins
+
+    return fins.main()
+
+
+def _swing() -> int:
+    from trading import swing
+
+    return swing.main()
+
+
+def _arm_watch() -> int:
+    """장중 발동 감시 루프(순수 코드, 15:00 자기 종료) — cron 09:00 기동·12:00 재기동."""
+    from trading.watch.arm_watch import run_loop
+
+    return run_loop()
+
+
 def _screen() -> int:
     from trading import screener
 
@@ -73,7 +98,67 @@ def _reason_theses() -> int:
 def _synth_playbooks() -> int:
     from trading import synth_playbooks
 
-    return synth_playbooks.run()
+    rc = synth_playbooks.run()
+    if rc == 0:
+        _auto_approve_after_synth()
+    return rc
+
+
+def _auto_approve_after_synth() -> None:
+    """R5 산출 직후 자동 승인 + P0 통지(EXEC-1 — 거부권 안내 동봉). 실패해도 synth는 성공."""
+    from trading.approve import auto_approve_pending
+    from trading.executor import exec_mode
+
+    if exec_mode() == "off":
+        print("자동 승인 스킵 — EXEC off(킬 스위치)")
+        return
+    try:
+        ids = auto_approve_pending()
+    except Exception as exc:  # noqa: BLE001 — 승인 실패는 보고만(다음날 수동 승인 가능)
+        print(f"자동 승인 실패(수동 승인 가능): {exc}")
+        return
+    if not ids:
+        print("자동 승인: 대상 없음")
+        return
+    print(f"자동 승인 {len(ids)}건: {', '.join(ids)}")
+    from trading.alerts import Alert, AlertDispatcher, Severity
+    from trading.collectors.base import now_kst
+
+    AlertDispatcher().notify(
+        Alert(
+            severity=Severity.P0,
+            what=f"자동 승인 {len(ids)}건 — 내일 감시 풀\n{_approved_digest(ids)}",
+            rule="EXEC-1: R5 하드게이트 통과분 자동 승인(당일 생성분 한정)",
+            action="거부: <code>python -m trading.approve --veto &lt;id&gt;</code> (id는 /positions·저녁 보고 참조)",
+            deadline="다음 거래일 09:00(감시 기동) 전",
+            created_at=now_kst(),
+        )
+    )
+
+
+def _approved_digest(ids: list[str]) -> str:
+    """승인분 다이제스트 — 종목명·손절/경고/익절·시계(운영자 피드백: 기계 ID 나열 금지)."""
+    from trading.journal.playbooks import PlaybookStore
+    from trading.position_check import _symbol_names_safe
+
+    ps = PlaybookStore()
+    lines: list[str] = []
+    try:
+        drafts = [d for d in (ps.draft(i) for i in ids) if d is not None]
+        names = _symbol_names_safe([d.symbol for d in drafts])
+        for d in drafts:
+            nm = names.get(d.symbol) or d.symbol
+            stop = f"{d.stop.level:,.0f}" if d.stop and d.stop.level else "시간손절"
+            soft = f" 경고 {d.soft_stop.level:,.0f} ·" if d.soft_stop else ""
+            tgt = "→".join(f"{t.level:,.0f}" for t in d.targets) if d.targets else "R:R 자동"
+            lines.append(
+                f"• {nm}({d.symbol}) — 손절 {stop} ·{soft} 익절 {tgt} · {d.time_stop_days or '-'}일"
+            )
+    except Exception:  # noqa: BLE001 — 다이제스트 실패는 통지 자체를 막지 않는다
+        return "\n".join(f"• <code>{i}</code>" for i in ids)
+    finally:
+        ps.close()
+    return "\n".join(lines)
 
 
 def _select_playbooks() -> int:
@@ -123,18 +208,27 @@ def _report_evening() -> int:
 
 
 def _daily_eod() -> int:
-    """EOD 디스커버리 파이프라인: 전종목 → 섹터분류 → 스크리너 → 수급 → fact pack.
+    """EOD 디스커버리 파이프라인: 전종목 → 섹터분류(+LLM 폴백) → 스크리너 → 수급·재무 → 스윙 → fact pack.
 
-    수급(KIS)은 best-effort — 실패해도 P1만 띄우고 fact pack은 계속(수급 결측은
-    factpack notes가 명시). 나머지 단계는 첫 실패에서 중단.
+    수급(KIS)·재무(DART)·섹터 LLM 폴백·스윙은 best-effort — 실패해도 P1만 띄우고 계속
+    (결측은 각 소비자가 명시). 나머지 단계는 첫 실패에서 중단.
+    섹터 LLM 폴백은 §5 휴면 대상 아님 — 분류 메타데이터 태깅이지 매매 판단 라운드가 아니다
+    (신규 게이트 진입 종목만이라 통상 0콜).
     """
-    for step in (_collect_market, _classify_sectors, _screen):
+    for step in (_collect_market, _classify_sectors):
         rc = step()
         if rc != 0:
             return rc
-    flows_rc = _collect_flows()
-    if flows_rc != 0:
-        _alert_round_failure("daily-eod/collect-flows", f"rc={flows_rc}")
+    llm_rc = _sector_llm()
+    if llm_rc != 0:
+        _alert_round_failure("daily-eod/sector-llm", f"rc={llm_rc}")
+    rc = _screen()
+    if rc != 0:
+        return rc
+    for name, step in (("collect-flows", _collect_flows), ("collect-fins", _collect_fins), ("swing", _swing)):
+        step_rc = step()
+        if step_rc != 0:
+            _alert_round_failure(f"daily-eod/{name}", f"rc={step_rc}")
     return _factpack()
 
 
@@ -144,6 +238,10 @@ ROUNDS: dict[str, Callable[[], int]] = {
     "collect-flows": _collect_flows,
     "collect-news": _collect_news,
     "classify-sectors": _classify_sectors,
+    "sector-llm": _sector_llm,
+    "collect-fins": _collect_fins,
+    "swing": _swing,
+    "arm-watch": _arm_watch,
     "screen": _screen,
     "factpack": _factpack,
     "score-news": _score_news,
@@ -160,6 +258,32 @@ ROUNDS: dict[str, Callable[[], int]] = {
 
 
 GUARD_SKIP_RC = 3  # 시장 가드 정상 스킵(장중·휴장) — 실패 아님, 알림 없음
+
+# 장중 휴면(§5) 대상 = LLM이 판단에 개입하는 라운드. 수집·스크리너·선택기(R5.5)·다이제스트는
+# 순수 코드라 장중에도 돈다(선택기는 자체 in_krx_session 처리). R5(synth)는 핸들러 안에서
+# require_market_closed를 부르므로 여기선 중복 호출하지 않는다(--force 우회 경로 보존, CAL-2).
+_LLM_ROUNDS: frozenset[str] = frozenset(
+    {"score-news", "verify-catalysts", "reason-theses", "report-morning", "report-evening", "evaluate"}
+)
+
+
+def _guard_llm_round(name: str) -> int | None:
+    """cron 경로의 §5 휴면 강제 — 장중(정규장+애프터마켓, CAL-3)이면 스킵 코드.
+
+    지금껏 §5는 **슬롯 배치로만** 지켜졌다(가드는 정의만 되고 미배선). 애프터마켓(9/14~)이
+    저녁 슬롯과 겹치면서 배치만으로는 못 막으므로 디스패치에서 강제한다.
+    수동 CLI(`python -m trading.score_news`)는 이 경로를 타지 않는다 — CAL-2대로 우회 허용.
+    """
+    if name not in _LLM_ROUNDS:
+        return None
+    from trading.market_calendar.calendar import MarketGuardError, require_llm_rounds_allowed
+
+    try:
+        require_llm_rounds_allowed()
+    except MarketGuardError as exc:
+        print(f"[guard] {name} 스킵 — {exc}")
+        return GUARD_SKIP_RC
+    return None
 
 
 def _alert_round_failure(name: str, detail: str) -> None:
@@ -196,6 +320,9 @@ def main(argv: list[str] | None = None) -> int:
     if handler is None:
         print(f"unknown or not-yet-implemented round: {name} (try --list)", file=sys.stderr)
         return 2
+    skipped = _guard_llm_round(name)
+    if skipped is not None:
+        return skipped
     try:
         rc = handler()
     except Exception as exc:  # noqa: BLE001 — 라운드 전체의 마지막 방어선(§9)

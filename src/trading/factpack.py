@@ -144,9 +144,10 @@ def _price_context(c: Candidate, store: MarketStore) -> PriceContext:
         close=c.clpr,
         market_cap=_parse_amount(q[3]) if q else None,
         tr_value_surge=round(g.tr_value_surge, 2),
-        mom_short_pct=round(g.mom_short * 100, 1),
-        mom_long_pct=round(g.mom_long * 100, 1),
+        mom_short_pct=round(g.mom_short * 100, 1) if g.mom_short_ok else None,
+        mom_long_pct=round(g.mom_long * 100, 1) if g.mom_long_ok else None,
         high_252_proximity=round(g.high_proximity, 3),
+        high_window_days=g.high_window_days or None,
     )
 
 

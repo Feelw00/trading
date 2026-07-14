@@ -23,7 +23,7 @@ from datetime import datetime
 from trading.collectors.base import KST
 from trading.collectors.market import MarketStore
 from trading.contracts.event import EventRecord, Scope
-from trading.contracts.score import CalibrationBucket, PersonaScore, ScoreRecord
+from trading.contracts.score import CalibrationBucket, PersonaScore, ScoreRecord, SwingTriggerScore
 from trading.contracts.thesis import Direction, Persona, ThesisRecord
 
 _CALIB_EDGES = (0.0, 0.4, 0.55, 0.7, 1.0)
@@ -35,6 +35,7 @@ class R7Config:
     r4_move_threshold_pct: float = 3.0  # 유의미 이동 임계(%)
     regime_recent_days: int = 5       # 레짐 최근 창
     regime_baseline_days: int = 20    # 레짐 기준선 창
+    swing_window_days: int = 5        # 스윙 트리거 채점 창(거래일, P-9 ②)
 
 
 @dataclass(frozen=True)
@@ -140,6 +141,51 @@ def score_r4(
     return ref_checked, ref_correct, conf_checked, conf_correct
 
 
+def score_swing_triggers(
+    triggers: Sequence[tuple[str, str, str]],   # (bas_dt YYYYMMDD, srtn_cd, trigger)
+    store: MarketStore,
+    trading_dates: Sequence[str],
+    config: R7Config,
+) -> list[SwingTriggerScore]:
+    """스윙 트리거 적중률(P-9 ②) — 발화 다음 거래일 종가 진입 → window 거래일 후 종가.
+
+    논제 채점과 동일 규약: 미성숙·가격 결측은 채점하지 않는다(부분 채점·추측 금지).
+    트리거 발화 이력이 없으면 빈 리스트(빈 성적 발명 금지).
+    """
+    by_trigger: dict[str, list[tuple[str, str]]] = {}
+    for bas_dt, srtn, trig in triggers:
+        by_trigger.setdefault(trig, []).append((bas_dt, srtn))
+    out: list[SwingTriggerScore] = []
+    for trig in sorted(by_trigger):
+        scored = immature = no_data = hits = 0
+        returns: list[float] = []
+        for bas_dt, srtn in by_trigger[trig]:
+            idx = bisect.bisect_right(trading_dates, bas_dt)   # 발화 다음 거래일
+            exit_idx = idx + config.swing_window_days
+            if exit_idx >= len(trading_dates):
+                immature += 1
+                continue
+            closes = dict(store.closes_for(srtn, trading_dates[idx]))
+            entry = closes.get(trading_dates[idx])
+            exit_ = closes.get(trading_dates[exit_idx])
+            if entry is None or exit_ is None or entry == 0:
+                no_data += 1
+                continue
+            realized = (exit_ - entry) / entry * 100.0
+            returns.append(realized)
+            scored += 1
+            hits += int(realized > 0)
+        out.append(
+            SwingTriggerScore(
+                trigger=trig, window_days=config.swing_window_days,
+                n_scored=scored, n_immature=immature, n_no_data=no_data, n_hit=hits,
+                hit_rate=(hits / scored) if scored else None,
+                avg_return_pct=(sum(returns) / len(returns)) if returns else None,
+            )
+        )
+    return out
+
+
 def regime_ratio(store: MarketStore, trading_dates: Sequence[str], config: R7Config) -> float | None:
     """레짐 변동성 프록시 — 최근 N일 |등락률| 중앙값 평균 / 직전 기준선 평균. 데이터 부족=None."""
     need = config.regime_recent_days + config.regime_baseline_days
@@ -165,6 +211,7 @@ def evaluate(
     now: datetime,
     config: R7Config | None = None,
     source: str = "r7:code",
+    swing_trigger_log: Sequence[tuple[str, str, str]] = (),
 ) -> tuple[ScoreRecord, list[ThesisOutcome]]:
     """주간 평가 — 전부 결정론. LLM 비개입(해석은 별도)."""
     cfg = config if config is not None else R7Config()
@@ -172,6 +219,7 @@ def evaluate(
     persona_scores, outcomes = score_personas(theses, store, trading_dates)
     ref_c, ref_ok, conf_c, conf_ok = score_r4(events, store, trading_dates, cfg)
     ratio = regime_ratio(store, trading_dates, cfg)
+    swing_scores = score_swing_triggers(swing_trigger_log, store, trading_dates, cfg)
 
     notes = [
         "트리거 발동 감지 불가(흐름 데이터 부재, R7-1) — 방향 채점은 트리거 무관",
@@ -180,6 +228,8 @@ def evaluate(
     ]
     if ratio is None:
         notes.append("레짐 프록시: 거래일 데이터 부족으로 미산출")
+    if not swing_scores:
+        notes.append("스윙 트리거(P-9): 발화 이력 없음 — 채점 없음")
 
     period_start = trading_dates[0] if trading_dates else "00000000"
     period_end = trading_dates[-1] if trading_dates else "00000000"
@@ -191,6 +241,7 @@ def evaluate(
         r4_refuted_checked=ref_c, r4_refuted_correct=ref_ok,
         r4_confirmed_checked=conf_c, r4_confirmed_correct=conf_ok,
         regime_volatility_ratio=ratio,
+        swing_triggers=swing_scores,
         notes=notes,
     )
     return record, outcomes
@@ -219,12 +270,22 @@ def build_interpretation_prompt(record: ScoreRecord, outcomes: Sequence[ThesisOu
         f"## 채점 상세(최대 15)\n{detail}\n\n"
         f"## R4 정확도\n기각 {record.r4_refuted_correct}/{record.r4_refuted_checked} 정확, "
         f"생존 {record.r4_confirmed_correct}/{record.r4_confirmed_checked} 정확\n\n"
+        f"## 스윙 트리거 성적(P-9, 창 {record.swing_triggers[0].window_days if record.swing_triggers else '-'}거래일)\n"
+        + ("\n".join(
+            f"- {s.trigger}: 채점 {s.n_scored} 적중률 "
+            + (f"{s.hit_rate:.0%}" if s.hit_rate is not None else "N/A")
+            + (f" 평균 {s.avg_return_pct:+.1f}%" if s.avg_return_pct is not None else "")
+            + f" (미성숙 {s.n_immature}, 결측 {s.n_no_data})"
+            for s in record.swing_triggers
+        ) or "(발화 이력 없음)") + "\n\n"
         f"## 레짐\n변동성 비율(최근/기준): {record.regime_volatility_ratio}\n\n"
         f"## 측정 한계(결측)\n" + "\n".join(f"- {n}" for n in record.notes) + "\n\n"
         "## 출력 (마크다운)\n"
         "1. 페르소나별 해석(과신/과소신 — 캘리브레이션 관점, 표본 부족하면 부족하다고).\n"
         "2. R4 공격 강도 조정 제안(성적 나쁜 페르소나를 더 가혹하게 — 설계서 §3 R4).\n"
-        "3. 프롬프트 개정안(있다면): 어느 라운드의 프롬프트를 왜·어떻게. "
+        "3. 스윙 트리거 해석(P-9): 적중률·평균수익 기준 임계 조정 방향 제안(SwingConfig 값 —"
+        " 적용은 운영자). 표본<10이면 판단 보류.\n"
+        "4. 프롬프트 개정안(있다면): 어느 라운드의 프롬프트를 왜·어떻게. "
         "**자동 적용되지 않는다 — 운영자 승인용 제안서다.** 표본이 부족하면 '개정 보류'가 정답이다."
     )
 
@@ -237,5 +298,6 @@ __all__ = [
     "regime_ratio",
     "score_personas",
     "score_r4",
+    "score_swing_triggers",
     "score_thesis",
 ]

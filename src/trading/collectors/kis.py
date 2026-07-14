@@ -25,6 +25,9 @@
   ``/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn``
   TR ``FHKST01010200`` — output1에 ``total_bidp_rsqn``·``total_askp_rsqn``(매수/매도 총호가잔량) 관측.
   필드 해석은 호출측(flowsnap)에서, 결측·비수치는 None=관측치 없음으로 처리(추측 금지).
+- 주식현재가 시세: GET ``/uapi/domestic-stock/v1/quotations/inquire-price``
+  TR ``FHKST01010100`` — output에 ``bstp_kor_isnm``(KRX 공식 업종명) 관측(2026-07-13,
+  005930→'전기·전자'). 섹터 태깅(``kis-bstp-v1``, 운영자 결정)에 사용.
 
 조회 전용(시세성) TR만 사용 — 주문 계열 TR은 이 모듈에 두지 않는다(CLAUDE.md rule #3).
 """
@@ -51,6 +54,7 @@ TR_INVESTOR_BY_MARKET = "FHPTJ04040000"
 TR_INVESTOR_INTRADAY = "FHPTJ04030000"  # 시장별 투자자매매동향(시세성·당일 누계) — HTS [0403]
 TR_QUOTE_CCNL = "FHKST01010300"         # 주식현재가 체결(현재가·체결강도, 관측 확정 KIS-RT-1)
 TR_ASKING_PRICE = "FHKST01010200"       # 주식현재가 호가/예상체결(총호가잔량, 관측 확정)
+TR_QUOTE_PRICE = "FHKST01010100"        # 주식현재가 시세(KRX 업종명 bstp_kor_isnm, 관측 확정 2026-07-13)
 # 시장별 TR 파라미터 (업종코드, 시장구분) — 실호출 관측으로 확정
 MARKET_PARAMS = {"KOSPI": ("0001", "KSP"), "KOSDAQ": ("1001", "KSQ")}
 # 시세성 TR 파라미터 (시장구분, 업종구분) — 2026-06-11 장중 조합 프로브로 관측 확정:
@@ -242,6 +246,17 @@ class KisClient:
         out = data.get("output1")
         return dict(out) if isinstance(out, dict) else {}
 
+    def quote_price(self, srtn_cd: str) -> dict[str, Any]:
+        """주식현재가 시세 output(단일 dict, 원시). KRX 공식 업종명 ``bstp_kor_isnm`` 포함
+        (2026-07-13 실호출 관측: 005930 → '전기·전자'). 필드 해석은 호출측."""
+        data = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-price",
+            TR_QUOTE_PRICE,
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": srtn_cd},
+        )
+        out = data.get("output")
+        return dict(out) if isinstance(out, dict) else {}
+
 
 def client_from_env() -> KisClient | None:
     """환경변수로 클라이언트 생성. 키 미설정이면 None(호출측 blocked 처리)."""
@@ -261,6 +276,7 @@ __all__ = [
     "TR_INVESTOR_BY_STOCK",
     "TR_INVESTOR_INTRADAY",
     "TR_QUOTE_CCNL",
+    "TR_QUOTE_PRICE",
     "HttpCall",
     "KisClient",
     "client_from_env",

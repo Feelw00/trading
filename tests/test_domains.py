@@ -1,4 +1,4 @@
-"""도메인 taxonomy(26섹터) + FactRecord 도메인 제약 테스트."""
+"""도메인 taxonomy(29섹터) + FactRecord 도메인 제약 테스트."""
 
 from typing import Any
 
@@ -9,9 +9,10 @@ from trading.contracts.fact import FactRecord
 from trading.domains import SECTORS, Sector, active_sectors
 
 
-def test_sector_count_is_26() -> None:
-    assert len(Sector) == 26
-    assert len(SECTORS) == 26
+def test_sector_count_is_29() -> None:
+    # 26 → 29: P-1 확장(해운·물류/운송/레저·카지노, 2026-07-11)
+    assert len(Sector) == 29
+    assert len(SECTORS) == 29
 
 
 def test_only_semiconductor_active() -> None:

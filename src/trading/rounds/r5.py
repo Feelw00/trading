@@ -27,6 +27,7 @@ from pydantic import ValidationError
 from trading.contracts.event import EventRecord
 from trading.contracts.factpack import FactPack
 from trading.contracts.order import (
+    ExitLevel,
     MarketState,
     OrderDraft,
     OrderType,
@@ -48,7 +49,7 @@ _CONFIRMATION_DEFAULT = "prev_day_high_reclaim"  # §6 확인 트랜치 기본 �
 
 @dataclass(frozen=True)
 class R5Config:
-    max_playbooks: int = 5            # 비용·집중 가드(승인 요청은 저녁 보고 5분 분량)
+    max_playbooks: int = 8            # P-11 Stage B: 자동 집행 체제라 조건부 대안 셋업 상비(5→8)
     time_stop_max_days: int = 15      # 스윙 상한(설계서 §3 R3: 3~15일)
 
 
@@ -121,6 +122,8 @@ def build_prompt(
         f'    "arm_conditions": {{"<흐름변수>": "<조건식>"}},  // 현재 관측 가능 변수만: {observable}\n'
         '    "abort_conditions": {"<흐름변수>": "<조건식>"},\n'
         '    "stop_level": <가격 손절 레벨(숫자) — 심리적 합의 레벨(라운드 넘버·전저점·전고점)만>,\n'
+        '    "soft_stop": {"level": <경고 레벨 — stop_level보다 위>, "pct": <축소 비중%, 통상 50>},  // 선택 — 선제 감축\n'
+        '    "targets": [{"level": <익절1 — 부분 실현>, "pct": 50}, {"level": <최종 타깃 — 잔량 전량>, "pct": 50}],  // 기본 2단 사다리, 오름차순·합=100\n'
         '    "confirmation_condition": "<관측 가능 흐름변수 키 1개만 — 조건식·연산자 금지, 예: prev_day_high_reclaim>",\n'
         '    "time_stop_days": <거래일 단위>,\n'
         '    "summary": "<저녁 결재 보고용 1줄>"\n'
@@ -136,15 +139,24 @@ def build_prompt(
         "- confirmation_condition 은 관측 가능 흐름변수 **키 1개만**(조건식·==true 등 붙이지 마라 — "
         "키만, 보통 prev_day_high_reclaim).\n"
         "- 조건식 문법: 연속 변수(갭·거래량·체결강도·호가)는 `<op><숫자>`(<,<=,>,>=,==), "
-        "boolean 변수(prev_day_high_reclaim·volume_climax·new_low_renewal_fail)는 `==true`/`==false`로. "
-        "시각·문자열 등 그 외 형식 금지(선택기가 평가 불가 → 미충족 처리).\n"
+        "boolean 변수(prev_day_high_reclaim·volume_climax·new_low_renewal_fail·sector_ignition)는 "
+        "`==true`/`==false`로. 시각·문자열 등 그 외 형식 금지(선택기가 평가 불가 → 미충족 처리).\n"
         "- stop_level 은 '논리적 지지선'이 아니라 심리적 합의 레벨(라운드 넘버, 전저점·전고점)로.\n"
         "  근거 가격(위 컨텍스트)에 없는 레벨을 지어내지 마라 — 불확실하면 그 플레이북을 내지 마라.\n"
+        "- targets(익절)·soft_stop(경고 축소)도 같은 규칙: **근거 가격 컨텍스트의 저항·전고·라운드 넘버만**. "
+        "soft_stop.level 은 반드시 stop_level 위(경고→축소, 하드→전량).\n"
+        "- **targets는 2단 사다리가 기본**(운영자 §계단 청산): 익절1에서 부분 실현(통상 50%) → "
+        "코드가 잔량 손절을 본전으로 자동 상향 → 최종 타깃에서 잔량 전량. 레벨 오름차순·pct 합=100, "
+        "**마지막 레벨=전량 청산 라인**(pct는 잔량 전부로 집행된다). 다음 저항이 구조적으로 없어 "
+        "사다리를 못 세울 때만 단일 타깃 허용. 손절·익절 자체가 불확실하면 생략하라(코드가 보수 기본값).\n"
         "- 역추세 플레이북은 '과도하다'는 논리가 아니라 소진의 물리 신호(volume_climax, "
         "new_low_renewal_fail) 확인 조건으로만.\n"
         "- direction=flat 논제, invalidation 이 관측 불가한 논제로는 플레이북을 만들지 마라.\n"
         f"- 플레이북 최대 {config.max_playbooks}개. **조건이 안 서면 빈 배열이 정답이다 — "
         "대부분의 날은 비거래가 정상.**\n"
+        "- 집행은 자동(감시기가 조건 충족 순간 매수)이므로, 확신 높은 주력 셋업 외에 "
+        "**조건이 까다로운 대안 셋업**(발동 확률은 낮지만 발동하면 우위인 것 — 예: 눌림+체결강도 회복, "
+        "섹터 점화 동반 돌파)을 함께 깔아 두는 것이 좋다. 단 조건 근거는 동일한 엄격함으로.\n"
         "- 트랜치 비율·총량 상한은 출력하지 마라(코드가 강제 주입한다)."
     )
 
@@ -191,6 +203,28 @@ def _to_records(
     if not isinstance(stop_level, (int, float)):
         raise ValueError("stop_level 미제공 — 코드가 가격을 지어내지 않는다(폐기)")
 
+    # 계단식 청산(EXEC-2, 선택) — 형식 오류는 해당 필드만 버림(플레이북 폐기 아님: 코드 기본값 경로)
+    targets: list[ExitLevel] = []
+    raw_targets = pb.get("targets")
+    if isinstance(raw_targets, list):
+        try:
+            targets = [
+                ExitLevel(level=float(t["level"]), pct=int(t["pct"]))
+                for t in raw_targets
+                if isinstance(t, dict) and isinstance(t.get("level"), (int, float))
+            ]
+        except (KeyError, TypeError, ValueError):
+            targets = []
+    soft_stop: ExitLevel | None = None
+    raw_soft = pb.get("soft_stop")
+    if isinstance(raw_soft, dict) and isinstance(raw_soft.get("level"), (int, float)):
+        try:
+            cand = ExitLevel(level=float(raw_soft["level"]), pct=int(raw_soft.get("pct") or 50))
+            if cand.level > float(stop_level) and cand.pct < 100:
+                soft_stop = cand
+        except (TypeError, ValueError):
+            soft_stop = None
+
     raw_ts = pb.get("time_stop_days")
     time_stop = (
         int(raw_ts)
@@ -220,6 +254,8 @@ def _to_records(
         stop=Stop(type=StopType.CONDITIONAL_ORDER_AT_BROKER, level=float(stop_level)),
         time_stop_days=time_stop,                     # 손절 2종 모두 충족(§6)
         created_when_market=MarketState.CLOSED,
+        targets=sorted(targets, key=lambda t: t.level),  # 계약이 순증가·합≤100 재검증
+        soft_stop=soft_stop,
     )
     playbook = Playbook(
         id=f"pb.{day}.{srtn}.{side.value}",
