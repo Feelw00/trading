@@ -689,8 +689,8 @@ def test_a6_sync_brackets_detects_gone_and_holds_on_unknown_schema(tmp_path: Pat
     toss.cond_response = "unexpected"
     assert sync_brackets(store=store, mode="live", toss=toss, position_store=pos,  # type: ignore[arg-type]
                          dispatcher=_Rec(), now=NOW) == []  # type: ignore[arg-type]
-    # 생존 — 아무 일 없음
-    toss.cond_response = {"items": [{"conditionalOrderId": "oco-9"}]}
+    # 생존 — 아무 일 없음 (실측 스키마: conditionalOrders 키, 2026-07-14)
+    toss.cond_response = {"conditionalOrders": [{"conditionalOrderId": "oco-9"}]}
     assert sync_brackets(store=store, mode="live", toss=toss, position_store=pos,  # type: ignore[arg-type]
                          dispatcher=_Rec(), now=NOW) == []  # type: ignore[arg-type]
     # 부재 — P0 + 박제, 같은 날 재알림 없음

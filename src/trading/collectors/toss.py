@@ -343,8 +343,16 @@ class TossClient:
             "DELETE", f"/api/v1/conditional-orders/{conditional_order_id}", need_account=True
         )
 
-    def conditional_orders(self) -> Any:
-        out = self._call("GET", "/api/v1/conditional-orders", need_account=True)
+    def conditional_orders(self, status: str = "OPEN") -> Any:
+        """조건주문 목록 — ``status`` 필수(OPEN|CLOSED, 2026-07-14 실호출 관측: 무파라미터는 400).
+
+        응답(관측 확정): ``{"conditionalOrders": [{conditionalOrderId, type, status(WATCHING…),
+        symbol, quantity, expireDate, first/second{triggerPrice, orderPrice, triggeredOrderId},
+        createdAt}]}`` — A6 브래킷 생존 대조가 소비."""
+        out = self._call(
+            "GET", "/api/v1/conditional-orders",
+            params={"status": status}, need_account=True,
+        )
         return out
 
 

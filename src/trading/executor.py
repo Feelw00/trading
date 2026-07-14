@@ -1026,11 +1026,12 @@ def _rebracket(
 def _extract_conditional_ids(raw: object) -> set[str] | None:
     """브로커 조건주문 응답에서 conditionalOrderId 집합 추출(관측 확정 필드만).
 
-    응답 구조가 예상(리스트 또는 {"items": 리스트})과 다르면 **None(판정 보류)** —
+    2026-07-14 실호출 관측: 응답 키는 ``conditionalOrders``. 예상 구조(리스트 또는
+    {"conditionalOrders"|"items": 리스트})와 다르면 **None(판정 보류)** —
     스키마를 추측해 '브래킷이 사라졌다'고 단정하지 않는다(절대금지 #1)."""
     items: object = raw
     if isinstance(raw, dict):
-        items = raw.get("items")
+        items = raw.get("conditionalOrders", raw.get("items"))
     if not isinstance(items, list):
         return None
     ids: set[str] = set()
