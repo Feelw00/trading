@@ -147,8 +147,11 @@ def run_pass(
     try:
         res = assess_fn(now=resolved, playbook_store=playbook_store, kis_client=kis_client)
         notes.extend(res.snapshot_notes)
+        # armed 발화 dedup을 모드별로 분리(B5) — dry-run 발화 흔적이 live 재발동을 막으면 안 된다
+        # (2026-07-14 실증: 09:54 dry-run armed가 live 세션의 뉴파워 재발동을 차단)
+        armed_kind = f"armed@{_exec.exec_mode()}"
         for it in res.items:  # 활성 approved 풀만
-            if not it.active or st.fired(day, it.draft_id, "armed"):
+            if not it.active or st.fired(day, it.draft_id, armed_kind):
                 continue
             met = " / ".join(c.cond_ko for c in it.conditions if c.met) or "(조건 상세 없음)"
             d.notify(
@@ -161,7 +164,7 @@ def run_pass(
                     created_at=resolved,
                 )
             )
-            st.record(day, it.draft_id, "armed", resolved.isoformat())
+            st.record(day, it.draft_id, armed_kind, resolved.isoformat())
             fired.append(f"armed:{it.draft_id}")
         # 마감 전 정리 — 활성 풀이 있고(미발동 포함) 아직 안 알렸으면 1회
         if (
@@ -246,7 +249,10 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
         from trading.regime import Regime, snapshot as regime_snapshot
 
         reg = regime_snapshot(toss, now=now)
-        if reg.regime is not Regime.NORMAL and not store.has(f"_regime_{reg.regime.value}", ("regime",)):
+        # 레짐 P0는 일자당 1회(B7) — 일자 무구분 dedup은 과거 기록이 알림을 영구 침묵시킨다
+        if reg.regime is not Regime.NORMAL and not store.has(
+            f"_regime_{reg.regime.value}", ("regime",), day=day
+        ):
             store.log(day=day, draft_id=f"_regime_{reg.regime.value}", symbol="-",
                       kind="regime", mode=mode, detail="; ".join(reg.lines), at=now.isoformat())
             dispatcher.notify(Alert(
@@ -257,8 +263,9 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
                 deadline="당일", created_at=now,
             ))
         # 발동분 + 오늘 잔고 부족으로 밀린 초안 재시도(EXEC-4 — 교체·청산으로 잔고가 생겼을 수 있음)
+        # 재시도는 같은 모드의 skip만(B2) — dry-run skip이 live 재시도를 만들면 안 된다
         attempt_ids = [k.split(":", 1)[1] for k in fired_keys]
-        attempt_ids += [i for i in store.cash_skips_today(day) if i not in attempt_ids]
+        attempt_ids += [i for i in store.cash_skips_today(day, mode=mode) if i not in attempt_ids]
         active_ids = {dr.id for _, dr, _ in active}
 
         def _pool_weight() -> float:

@@ -62,6 +62,15 @@ def _f(v: Any) -> float | None:
         return None
 
 
+# 전일 고가 일자 캐시(운영자 승인 2026-07-14) — 값은 하루 종일 불변인데 감시 패스(90초)마다
+# 종목당 KIS 1콜을 반복하는 낭비 제거. 안전장치(오염 방지):
+#   ① 프로세스 로컬(파일 없음 — 외부 오염·파싱 손상 표면 자체가 없다)
+#   ② 키에 당일 날짜 포함 + 날짜 바뀌면 전체 폐기(어제 캐시가 오늘 기준선이 될 수 없다)
+#   ③ 성공 관측값(양수 float)만 저장 — 실패·미관측(None)은 절대 캐시하지 않는다
+#      (일시 오류가 하루 종일 '미관측'으로 박제되는 것 방지, 매 패스 재시도)
+_PREV_HIGH_CACHE: dict[tuple[str, str], float] = {}
+
+
 def _prev_day_high(
     store: MarketStore, srtn_cd: str, *,
     kis_client: KisClient | None = None, now: datetime | None = None,
@@ -75,6 +84,12 @@ def _prev_day_high(
     (T-2 고가 9,870을 '전일 고가'로 써 익절 라인 밑에서 발동) 재발 방지."""
     resolved = (now if now is not None else now_kst()).astimezone(KST)
     today = f"{resolved:%Y%m%d}"
+    # 캐시: 당일 키만 유효 — 날짜가 바뀌면 전체 폐기(안전장치 ②)
+    if any(k[1] != today for k in _PREV_HIGH_CACHE):
+        _PREV_HIGH_CACHE.clear()
+    cached = _PREV_HIGH_CACHE.get((srtn_cd, today))
+    if cached is not None:
+        return cached
     daily_fn = getattr(kis_client, "daily_prices", None)
     if callable(daily_fn):
         try:
@@ -84,7 +99,11 @@ def _prev_day_high(
         for r in rows_kis:
             d = str(r.get("stck_bsop_date") or "")
             if d and d < today:
-                return _f(r.get("stck_hgpr"))
+                v = _f(r.get("stck_hgpr"))
+                if v is not None and v > 0:
+                    _PREV_HIGH_CACHE[(srtn_cd, today)] = v  # 성공 관측만 캐시(안전장치 ③)
+                    return v
+                return None  # 비수치 고가 — 미관측(캐시 금지, 다음 패스 재시도)
         if rows_kis:
             return None  # KIS 응답은 있는데 전일 행 부재 — 폴백보다 미관측이 보수적
     cutoff = store.nth_recent_date(3) or ""
@@ -98,7 +117,11 @@ def _prev_day_high(
     )
     if str(rows[-1][3]) != f"{prev_td:%Y%m%d}":
         return None  # DB 최신이 직전 거래일이 아님(공개 대기) — 낡은 기준으로 판정 금지
-    return _f(rows[-1][5])  # series_for 컬럼: (...,bas_dt[3],clpr[4],hipr[5],...)
+    v_db = _f(rows[-1][5])  # series_for 컬럼: (...,bas_dt[3],clpr[4],hipr[5],...)
+    if v_db is not None and v_db > 0:
+        _PREV_HIGH_CACHE[(srtn_cd, today)] = v_db
+        return v_db
+    return None
 
 
 def _load_injected(now: datetime, inject_dir: Path) -> dict[str, dict[str, float]]:

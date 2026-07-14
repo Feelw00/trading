@@ -156,15 +156,22 @@ class ExecStore:
         )
         self._conn.commit()
 
-    def has(self, draft_id: str, kinds: tuple[str, ...], *, mode: str | None = None) -> bool:
+    def has(
+        self, draft_id: str, kinds: tuple[str, ...], *,
+        mode: str | None = None, day: str | None = None,
+    ) -> bool:
         """mode='live'면 live 행만 본다 — dry-run 잔재가 live 판단(dedup 등)을 오염시키지 않게
-        (2026-07-14 전환 사고: dry-run order_intent가 live 재진입을 차단)."""
+        (2026-07-14 전환 사고: dry-run order_intent가 live 재진입을 차단).
+        day를 주면 그날 행만 — 일자 무구분 dedup이 알림을 영구 침묵시키는 것 방지(가드 감사 B7)."""
         q = ",".join("?" for _ in kinds)
         sql = f"SELECT 1 FROM exec_log WHERE draft_id=? AND kind IN ({q})"
         params: tuple[str, ...] = (draft_id, *kinds)
         if mode:
             sql += " AND mode=?"
             params = (*params, mode)
+        if day:
+            sql += " AND day=?"
+            params = (*params, day)
         row = self._conn.execute(sql + " LIMIT 1", params).fetchone()
         return row is not None
 
@@ -180,72 +187,115 @@ class ExecStore:
         row = self._conn.execute(sql, params).fetchone()
         return int(row[0]) if row else 0
 
-    def committed_krw(self) -> int:
-        """진입 시도액 − 교체 매도액(dry-run 가용 잔고 근사 — 레그·스탑 청산은 보수적 미반영)."""
-        row = self._conn.execute(
+    def committed_krw(self, *, mode: str | None = None) -> int:
+        """진입 시도액 − 교체 매도액(dry-run 가용 잔고 근사 — 레그·스탑 청산은 보수적 미반영).
+
+        mode='live'면 live 행만 — dry-run 흔적이 live 폴백 가용액을 깎으면 안 된다(가드 감사 B1)."""
+        sql = (
             "SELECT COALESCE(SUM(CASE WHEN kind IN ('order_intent','order_sent') THEN qty*price"
             "                          WHEN kind IN ('rotation_sell','trim_sell') THEN -(qty*price)"
             "                          ELSE 0 END),0)"
             " FROM exec_log"
-        ).fetchone()
+        )
+        params: tuple[str, ...] = ()
+        if mode:
+            sql += " WHERE mode=?"
+            params = (mode,)
+        row = self._conn.execute(sql, params).fetchone()
         return int(row[0]) if row else 0
 
-    def cash_skips_today(self, day: str) -> list[str]:
-        """오늘 '잔고 부족'으로 스킵됐고 아직 미집행인 초안 — 매 패스 재시도 대상(EXEC-4)."""
-        cur = self._conn.execute(
+    def cash_skips_today(self, day: str, *, mode: str | None = None) -> list[str]:
+        """오늘 '잔고 부족'으로 스킵됐고 아직 미집행인 초안 — 매 패스 재시도 대상(EXEC-4).
+
+        mode='live'면 live의 skip·집행만 본다 — dry-run skip이 live 재시도를 만들면 안 된다(B2)."""
+        sql = (
             "SELECT DISTINCT draft_id FROM exec_log e WHERE day=? AND kind='skip'"
             " AND detail LIKE '잔고 부족%'"
-            " AND NOT EXISTS (SELECT 1 FROM exec_log o WHERE o.draft_id=e.draft_id"
-            "                 AND o.kind IN ('order_intent','order_sent'))",
-            (day,),
         )
+        params: tuple[str, ...] = (day,)
+        if mode:
+            sql += " AND mode=?"
+            params = (*params, mode)
+        sql += (
+            " AND NOT EXISTS (SELECT 1 FROM exec_log o WHERE o.draft_id=e.draft_id"
+            "                 AND o.kind IN ('order_intent','order_sent')"
+        )
+        if mode:
+            sql += " AND o.mode=?"
+            params = (*params, mode)
+        sql += ")"
+        cur = self._conn.execute(sql, params)
         return [str(r[0]) for r in cur]
 
-    def rotations_today(self, day: str) -> int:
-        row = self._conn.execute(
-            "SELECT COUNT(*) FROM exec_log WHERE day=? AND kind='rotation_sell'", (day,)
-        ).fetchone()
+    def rotations_today(self, day: str, *, mode: str | None = None) -> int:
+        """mode='live'면 live 교체만 계수 — dry-run 교체가 live 일1회 예산을 소모하면 안 된다(B3)."""
+        sql = "SELECT COUNT(*) FROM exec_log WHERE day=? AND kind='rotation_sell'"
+        params: tuple[str, ...] = (day,)
+        if mode:
+            sql += " AND mode=?"
+            params = (*params, mode)
+        row = self._conn.execute(sql, params).fetchone()
         return int(row[0]) if row else 0
 
-    def open_symbols(self) -> set[str]:
-        cur = self._conn.execute(
-            "SELECT DISTINCT symbol FROM exec_log WHERE kind IN ('order_intent','order_sent')"
-        )
-        return {str(r[0]) for r in cur}
+    def pending_fills(self, *, mode: str | None = None) -> list[tuple[str, str, str, int, int]]:
+        """스탑 미등록 주문 — (draft_id, symbol, order_id, qty, price).
 
-    def pending_fills(self) -> list[tuple[str, str, str, int, int]]:
-        """스탑 미등록 주문 — (draft_id, symbol, order_id, qty, price). dry-run 포함."""
-        cur = self._conn.execute(
-            "SELECT draft_id, symbol, COALESCE(order_id,''), qty, price FROM exec_log"
+        mode를 주면 그 모드 행만 — 교차 모드 세션이 상대 모드 주문을 체결 처리하면 안 된다(B6)."""
+        sql = (
+            "SELECT draft_id, symbol, COALESCE(order_id,''), qty, price FROM exec_log e"
             " WHERE kind IN ('order_intent','order_sent')"
-            " AND draft_id NOT IN (SELECT draft_id FROM exec_log WHERE kind IN ('stop_intent','stop_sent','skip_stop'))"
         )
+        params: tuple[str, ...] = ()
+        if mode:
+            sql += " AND mode=?"
+            params = (mode,)
+        sql += (
+            " AND draft_id NOT IN (SELECT draft_id FROM exec_log"
+            "                      WHERE kind IN ('stop_intent','stop_sent','skip_stop')"
+        )
+        if mode:
+            sql += " AND mode=?"
+            params = (*params, mode)
+        sql += ")"
+        cur = self._conn.execute(sql, params)
         return [(str(r[0]), str(r[1]), str(r[2]), int(r[3]), int(r[4])) for r in cur]
 
-    def pending_leg_orders(self) -> list[tuple[str, str, str, str, int, int]]:
+    def pending_leg_orders(self, *, mode: str | None = None) -> list[tuple[str, str, str, str, int, int]]:
         """미확인 레그 매도 — (draft_id, symbol, leg_kind, order_id, qty, price).
 
         레그별 최신 주문 행 기준, 'leg_fill'(detail=leg_kind) 해소 전까지 추적."""
-        cur = self._conn.execute(
+        sql = (
             "SELECT draft_id, symbol, kind, order_id, qty, price FROM exec_log e"
             " WHERE kind LIKE 'leg_%' AND kind != 'leg_fill' AND order_id IS NOT NULL AND order_id != ''"
+        )
+        params: tuple[str, ...] = ()
+        if mode:
+            sql += " AND mode=?"
+            params = (mode,)
+        sql += (
             " AND row_id = (SELECT MAX(row_id) FROM exec_log e2"
             "               WHERE e2.draft_id = e.draft_id AND e2.kind = e.kind AND e2.order_id IS NOT NULL)"
             " AND NOT EXISTS (SELECT 1 FROM exec_log f"
             "                 WHERE f.draft_id = e.draft_id AND f.kind = 'leg_fill' AND f.detail = e.kind)"
         )
+        cur = self._conn.execute(sql, params)
         return [
             (str(r[0]), str(r[1]), str(r[2]), str(r[3]), int(r[4]), int(r[5])) for r in cur
         ]
 
-    def latest_bracket(self, draft_id: str) -> tuple[str, int, int] | None:
-        """현재 브래킷 상태 — (조건주문 id, 잔량, 손절 트리거). 미등록이면 None."""
-        row = self._conn.execute(
+    def latest_bracket(self, draft_id: str, *, mode: str | None = None) -> tuple[str, int, int] | None:
+        """현재 브래킷 상태 — (조건주문 id, 잔량, 손절 트리거). 미등록이면 None.
+
+        mode를 주면 그 모드 행만 — dry-run 브래킷을 live 잔량으로 오인하면 안 된다(B4)."""
+        sql = (
             "SELECT COALESCE(order_id,''), qty, price FROM exec_log"
             " WHERE draft_id=? AND kind IN ('stop_intent','stop_sent')"
-            " ORDER BY row_id DESC LIMIT 1",
-            (draft_id,),
-        ).fetchone()
+        )
+        params: tuple[str, ...] = (draft_id,)
+        if mode:
+            sql += " AND mode=?"
+            params = (*params, mode)
+        row = self._conn.execute(sql + " ORDER BY row_id DESC LIMIT 1", params).fetchone()
         if row is None or row[1] is None:
             return None
         return (str(row[0]), int(row[1]), int(row[2]))
@@ -325,7 +375,10 @@ def execute_armed(
     if regime is Regime.RISK_OFF:
         return _skip("레짐 RISK_OFF(코스피 -5% 이하) — 신규 진입 중단")
     # 가용액: live=실 매수가능금액(브로커), dry-run=기준액−기집행(보수 근사, 청산 미반영)
-    available = policy.account_krw - store.committed_krw()
+    # live 폴백은 live 기록만 차감(B1) — dry-run은 live 실약정도 함께 차감(보수)
+    available = policy.account_krw - store.committed_krw(
+        mode="live" if mode == "live" else None
+    )
     if mode == "live" and toss is not None:
         bp = toss.buying_power_krw()
         if bp is not None:
@@ -437,7 +490,7 @@ def reconcile(
     d = dispatcher if dispatcher is not None else AlertDispatcher()
     cal = calendar if calendar is not None else MarketCalendar.default()
     done: list[str] = []
-    for draft_id, symbol, order_id, qty, price in store.pending_fills():
+    for draft_id, symbol, order_id, qty, price in store.pending_fills(mode=mode):
         draft = drafts_by_id.get(draft_id)
         if draft is None:
             continue
@@ -572,7 +625,8 @@ def consider_rotation(
     resolved = (now if now is not None else now_kst()).astimezone(KST)
     day = resolved.strftime("%Y%m%d")
     d = dispatcher if dispatcher is not None else AlertDispatcher()
-    if position_store is None or store.rotations_today(day) >= 1:
+    live_only = "live" if mode == "live" else None
+    if position_store is None or store.rotations_today(day, mode=live_only) >= 1:
         return False
     new_up = planned_upside_pct(new_draft, new_price)
     if new_up <= 0.0:
@@ -582,7 +636,7 @@ def consider_rotation(
         old = drafts_by_id.get(pos.source_ref)
         if old is None or old.id == new_draft.id:
             continue
-        if store.has(old.id, ("leg_t1",)):
+        if store.has(old.id, ("leg_t1",), mode=live_only):
             continue  # 러너 보호
         cur = price_fn(pos.symbol)
         if cur is None:
@@ -599,7 +653,7 @@ def consider_rotation(
     if new_up < max(rem_up * 2.0, 0.02):
         return False  # 교체 마진 미달 — 유지
     sell_price = round_down_to_tick(cur)
-    bracket = store.latest_bracket(old.id)
+    bracket = store.latest_bracket(old.id, mode=mode)
     try:
         if mode == "live" and toss is not None:
             if bracket and bracket[0]:
@@ -655,10 +709,11 @@ def trim_for_shortfall(
     cal = calendar if calendar is not None else MarketCalendar.default()
     if position_store is None or needed_krw <= 0:
         return 0
+    live_only = "live" if mode == "live" else None
     ranked: list[tuple[float, Any, OrderDraft, float]] = []
     for pos in position_store.open_positions():
         old = drafts_by_id.get(pos.source_ref)
-        if old is None or store.has(old.id, ("leg_t1",)) or pos.qty < 2:
+        if old is None or store.has(old.id, ("leg_t1",), mode=live_only) or pos.qty < 2:
             continue  # 러너 보호 · 1주 포지션 트림 불가
         cur = price_fn(pos.symbol)
         if cur is None:
@@ -679,7 +734,7 @@ def trim_for_shortfall(
         trim_qty = min(max_trim, want)
         if trim_qty < 1:
             continue
-        bracket = store.latest_bracket(old.id)
+        bracket = store.latest_bracket(old.id, mode=mode)
         try:
             if mode == "live" and toss is not None:
                 toss.place_limit_order(
@@ -780,9 +835,10 @@ def manage_exits(
     acted: list[str] = []
     if mode == "off" or position_store is None:
         return acted
+    live_only = "live" if mode == "live" else None
     # 0) 레그 매도 체결 확인(v1.1) — 미체결이면 취소 후 현재가로 재호가(패스당 1회씩 수렴)
     if mode == "live" and toss is not None:
-        for l_draft, l_symbol, l_kind, l_oid, l_qty, l_price in store.pending_leg_orders():
+        for l_draft, l_symbol, l_kind, l_oid, l_qty, l_price in store.pending_leg_orders(mode=mode):
             try:
                 o = toss.order(l_oid)
             except Exception:  # noqa: BLE001 — 조회 실패는 다음 패스
@@ -829,7 +885,7 @@ def manage_exits(
         soft = draft.soft_stop
         if not partial_targets and soft is None:
             continue
-        bracket = store.latest_bracket(draft.id)
+        bracket = store.latest_bracket(draft.id, mode=mode)
         if bracket is None:
             continue  # 브래킷 미등록(체결 전) — reconcile 이후에만 관리
         cond_id, rem_qty, cur_trigger = bracket
@@ -849,7 +905,7 @@ def manage_exits(
         reason = ""
         for i, t in enumerate(partial_targets):
             key = f"leg_t{i + 1}"
-            if store.has(draft.id, (key,)):
+            if store.has(draft.id, (key,), mode=live_only):
                 continue
             if price >= t.level:
                 leg_key = key
@@ -858,7 +914,7 @@ def manage_exits(
                 new_trigger = max(cur_trigger, round_down_to_tick(pos.avg_price))
                 reason = f"익절{i + 1}({t.level:,.0f} 도달) — 잔량 손절 본전 상향"
             break  # 패스당 1레그
-        if not leg_key and soft is not None and not store.has(draft.id, ("leg_soft",)):
+        if not leg_key and soft is not None and not store.has(draft.id, ("leg_soft",), mode=live_only):
             if price <= soft.level:
                 leg_key = "leg_soft"
                 leg_qty = min(max(pos.qty * soft.pct // 100, 1), rem_qty - 1)

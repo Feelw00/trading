@@ -557,3 +557,38 @@ def test_min_rr_guard_blocks_entry_near_target(tmp_path: Path) -> None:
                        toss=None, dispatcher=rec, now=NOW)  # type: ignore[arg-type]
     assert r2.action == "ordered"
     store.close()
+
+
+def test_store_queries_mode_isolation(tmp_path: Path) -> None:
+    """가드 감사 B(2026-07-14): dry-run 잔재가 live 판단을 오염시키지 않는다 — 쿼리별 mode 필터."""
+    store = ExecStore(tmp_path / "e.sqlite")
+    at = NOW.isoformat()
+    day = "20260714"
+    # dry-run 흔적: 진입 intent + 잔고부족 skip + 교체 + 브래킷
+    store.log(day=day, draft_id="d1", symbol="144960", kind="order_intent", mode="dry-run",
+              qty=50, price=9_960, at=at)
+    store.log(day=day, draft_id="d2", symbol="095610", kind="skip", mode="dry-run",
+              detail="잔고 부족(가용 0원)", at=at)
+    store.log(day=day, draft_id="d3", symbol="089970", kind="rotation_sell", mode="dry-run",
+              qty=10, price=100_000, at=at)
+    store.log(day=day, draft_id="d1", symbol="144960", kind="stop_intent", mode="dry-run",
+              qty=50, price=9_000, at=at)
+    # B1: live 폴백 가용액은 dry-run 약정을 차감하지 않는다
+    assert store.committed_krw(mode="live") == 0
+    assert store.committed_krw() == 50 * 9_960 - 10 * 100_000
+    # B2: live는 dry-run의 잔고부족 skip을 재시도하지 않는다
+    assert store.cash_skips_today(day, mode="live") == []
+    assert store.cash_skips_today(day, mode="dry-run") == ["d2"]
+    # B3: dry-run 교체가 live 일1회 예산을 소모하지 않는다
+    assert store.rotations_today(day, mode="live") == 0
+    # B4: dry-run 브래킷을 live 잔량으로 오인하지 않는다
+    assert store.latest_bracket("d1", mode="live") is None
+    assert store.latest_bracket("d1", mode="dry-run") is not None
+    # B6: 교차 모드 미체결을 체결 처리하지 않는다
+    assert store.pending_fills(mode="live") == []
+    # B7: 레짐 알림 dedup은 일자 한정 — 과거 기록이 오늘 알림을 침묵시키지 않는다
+    store.log(day="20260713", draft_id="_regime_unknown", symbol="-", kind="regime",
+              mode="dry-run", detail="관측 불가", at=at)
+    assert store.has("_regime_unknown", ("regime",), day="20260714") is False
+    assert store.has("_regime_unknown", ("regime",), day="20260713") is True
+    store.close()
