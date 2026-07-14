@@ -308,7 +308,9 @@ class TossClient:
     ) -> dict[str, Any]:
         """손절+익절 OCO(SELL·SELL) — 한쪽 발동 시 다른쪽 자동 취소. orderType=LIMIT 하드코딩.
 
-        first=손절(하방 감시), second=익절(상방 감시). 종목당 OCO 1개 제한(스펙).
+        **first=익절(상방 감시, 높은 감시가), second=손절(하방 감시)** — 2026-07-14 실호출
+        관측 확정: 반대로 보내면 400 invalid-request("첫번째(익절) 감시가가 두번째(손절)
+        감시가보다 높아야 합니다"). 종목당 OCO 1개 제한(스펙).
         """
         if quantity <= 0 or min(stop_trigger, stop_price, target_trigger, target_price) <= 0:
             raise ValueError("quantity/가격 인자는 양수")
@@ -323,13 +325,13 @@ class TossClient:
             "clientOrderId": client_order_id,
             "first": {
                 "orderSide": "SELL",
-                "triggerPrice": str(stop_trigger),
-                "orderPrice": str(stop_price),
+                "triggerPrice": str(target_trigger),
+                "orderPrice": str(target_price),
             },
             "second": {
                 "orderSide": "SELL",
-                "triggerPrice": str(target_trigger),
-                "orderPrice": str(target_price),
+                "triggerPrice": str(stop_trigger),
+                "orderPrice": str(stop_price),
             },
         }
         out = self._call("POST", "/api/v1/conditional-orders", body=body, need_account=True)
@@ -341,8 +343,16 @@ class TossClient:
             "DELETE", f"/api/v1/conditional-orders/{conditional_order_id}", need_account=True
         )
 
-    def conditional_orders(self) -> Any:
-        out = self._call("GET", "/api/v1/conditional-orders", need_account=True)
+    def conditional_orders(self, status: str = "OPEN") -> Any:
+        """조건주문 목록 — ``status`` 필수(OPEN|CLOSED, 2026-07-14 실호출 관측: 무파라미터는 400).
+
+        응답(관측 확정): ``{"conditionalOrders": [{conditionalOrderId, type, status(WATCHING…),
+        symbol, quantity, expireDate, first/second{triggerPrice, orderPrice, triggeredOrderId},
+        createdAt}]}`` — A6 브래킷 생존 대조가 소비."""
+        out = self._call(
+            "GET", "/api/v1/conditional-orders",
+            params={"status": status}, need_account=True,
+        )
         return out
 
 

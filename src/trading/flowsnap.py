@@ -14,7 +14,7 @@ R5.5 선택기(``selector/engine``)는 ``FlowSnapshot`` ({srtn_cd: {흐름변수
 
 import json
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +31,11 @@ INJECT_DIR = Path(".runtime") / "flow"
 # 짜야 "영영 미충족"을 피한다. NXT 어댑터가 생기면 여기에 추가(R5 프롬프트가 자동 반영).
 # 값은 범위·단위 설명 — R5가 임계값을 범위 밖(예: imbalance>1.15)으로 지어내지 않도록 프롬프트에 주입.
 OBSERVABLE_FLOW_DESC: dict[str, str] = {
-    "prev_day_high_reclaim": "전일 고가 회복 여부(boolean) — 조건식 ==true/==false만",
+    "prev_day_high_reclaim": "전일 고가 완전 회복 여부(boolean) — 조건식 ==true/==false만",
+    "prev_day_high_recovery": (
+        "전일 고가 대비 현재가 비율(연속, 1.0=전일 고가 도달), 통상 0.7~1.3 — "
+        "완전 회복은 >=1.0, 일부 회복은 분석 근거가 있는 임계로(예: >=0.97)"
+    ),
     "orderbook_imbalance": "호가 (매수-매도)/(매수+매도) 잔량비, 범위 -1.0~+1.0, >0 매수우위(통상 ±0.3)",
     "execution_strength": "당일 체결강도, 100 기준(>100 매수체결 우세), 통상 80~150",
     "sector_ignition": (
@@ -58,13 +62,66 @@ def _f(v: Any) -> float | None:
         return None
 
 
-def _prev_day_high(store: MarketStore, srtn_cd: str) -> float | None:
-    """시세 DB 최신 거래일의 고가(hipr) — 9~10시엔 전 거래일 = '전일 고가'."""
+# 전일 고가 일자 캐시(운영자 승인 2026-07-14) — 값은 하루 종일 불변인데 감시 패스(90초)마다
+# 종목당 KIS 1콜을 반복하는 낭비 제거. 안전장치(오염 방지):
+#   ① 프로세스 로컬(파일 없음 — 외부 오염·파싱 손상 표면 자체가 없다)
+#   ② 키에 당일 날짜 포함 + 날짜 바뀌면 전체 폐기(어제 캐시가 오늘 기준선이 될 수 없다)
+#   ③ 성공 관측값(양수 float)만 저장 — 실패·미관측(None)은 절대 캐시하지 않는다
+#      (일시 오류가 하루 종일 '미관측'으로 박제되는 것 방지, 매 패스 재시도)
+_PREV_HIGH_CACHE: dict[tuple[str, str], float] = {}
+
+
+def _prev_day_high(
+    store: MarketStore, srtn_cd: str, *,
+    kis_client: KisClient | None = None, now: datetime | None = None,
+) -> float | None:
+    """**진짜 전일(직전 거래일) 고가.**
+
+    1차: KIS 일자별 시세(FHKST01010400, 관측 확정 2026-07-14) — 당일 행을 건너뛰고
+    직전 거래일 행의 고가. 국내 EOD가 +1영업일 공개라 장중 DB 최신은 T-2다.
+    2차(폴백): EOD DB — **최신 적재일이 직전 거래일과 일치할 때만** 신뢰.
+    불일치(낡은 기준)면 None(미관측 = 보수 미충족) — 2026-07-14 뉴파워 오발동
+    (T-2 고가 9,870을 '전일 고가'로 써 익절 라인 밑에서 발동) 재발 방지."""
+    resolved = (now if now is not None else now_kst()).astimezone(KST)
+    today = f"{resolved:%Y%m%d}"
+    # 캐시: 당일 키만 유효 — 날짜가 바뀌면 전체 폐기(안전장치 ②)
+    if any(k[1] != today for k in _PREV_HIGH_CACHE):
+        _PREV_HIGH_CACHE.clear()
+    cached = _PREV_HIGH_CACHE.get((srtn_cd, today))
+    if cached is not None:
+        return cached
+    daily_fn = getattr(kis_client, "daily_prices", None)
+    if callable(daily_fn):
+        try:
+            rows_kis = daily_fn(srtn_cd)
+        except Exception:  # noqa: BLE001 — 어댑터 오류는 폴백으로(값을 지어내지 않는다)
+            rows_kis = []
+        for r in rows_kis:
+            d = str(r.get("stck_bsop_date") or "")
+            if d and d < today:
+                v = _f(r.get("stck_hgpr"))
+                if v is not None and v > 0:
+                    _PREV_HIGH_CACHE[(srtn_cd, today)] = v  # 성공 관측만 캐시(안전장치 ③)
+                    return v
+                return None  # 비수치 고가 — 미관측(캐시 금지, 다음 패스 재시도)
+        if rows_kis:
+            return None  # KIS 응답은 있는데 전일 행 부재 — 폴백보다 미관측이 보수적
     cutoff = store.nth_recent_date(3) or ""
     rows = store.series_for(srtn_cd, cutoff)
     if not rows:
         return None
-    return _f(rows[-1][5])  # series_for 컬럼: (...,bas_dt[3],clpr[4],hipr[5],...)
+    from trading.market_calendar.calendar import MarketCalendar
+
+    prev_td = MarketCalendar.default().latest_trading_day(
+        resolved.date() - timedelta(days=1)
+    )
+    if str(rows[-1][3]) != f"{prev_td:%Y%m%d}":
+        return None  # DB 최신이 직전 거래일이 아님(공개 대기) — 낡은 기준으로 판정 금지
+    v_db = _f(rows[-1][5])  # series_for 컬럼: (...,bas_dt[3],clpr[4],hipr[5],...)
+    if v_db is not None and v_db > 0:
+        _PREV_HIGH_CACHE[(srtn_cd, today)] = v_db
+        return v_db
+    return None
 
 
 def _load_injected(now: datetime, inject_dir: Path) -> dict[str, dict[str, float]]:
@@ -94,8 +151,10 @@ def _kis_observations(client: KisClient, srtn_cd: str, prev_high: float | None) 
     if strength is not None:
         obs["execution_strength"] = strength
     cur = _f(ccnl.get(_F_CUR_PRICE))
-    if cur is not None and prev_high is not None:
+    if cur is not None and prev_high is not None and prev_high > 0:
         obs["prev_day_high_reclaim"] = 1.0 if cur > prev_high else 0.0
+        # 등급형(운영자 2026-07-14): 계획이 완전/일부 회복을 임계로 명시할 수 있게 연속값 병행
+        obs["prev_day_high_recovery"] = round(cur / prev_high, 4)
     try:
         ask = client.quote_asking_price(srtn_cd)
     except Exception:  # noqa: BLE001
@@ -175,7 +234,7 @@ def build_snapshot(
     for srtn in srtns:
         obs: dict[str, float] = dict(injected.get(srtn, {}))  # 주입을 베이스로
         if kis_client is not None and store is not None:
-            prev_high = _prev_day_high(store, srtn)
+            prev_high = _prev_day_high(store, srtn, kis_client=kis_client, now=resolved)
             obs.update(_kis_observations(kis_client, srtn, prev_high))  # 실시간이 덮어씀
         if hot is not None:
             secs = secmap.get(srtn)

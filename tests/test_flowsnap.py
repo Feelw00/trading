@@ -6,10 +6,18 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from trading import flowsnap
 
 KST = ZoneInfo("Asia/Seoul")
 NOW = datetime(2026, 6, 11, 10, 0, tzinfo=KST)
+
+
+@pytest.fixture(autouse=True)
+def _clear_prev_high_cache() -> None:
+    # 전일 고가 캐시는 프로세스 로컬 — 테스트 간 오염 차단
+    flowsnap._PREV_HIGH_CACHE.clear()
 
 
 class _FakeKis:
@@ -66,7 +74,113 @@ def test_kis_realtime_computes_flow_vars(tmp_path: Path, monkeypatch: Any) -> No
     obs = snap["170920"]
     assert obs["execution_strength"] == 78.03
     assert obs["prev_day_high_reclaim"] == 1.0          # 55300 > 55000
+    assert abs(obs["prev_day_high_recovery"] - 55300 / 55000) < 1e-3  # 등급형 병행
     assert abs(obs["orderbook_imbalance"] - (3000 / 23000)) < 1e-9
+
+
+def test_prev_high_prefers_kis_daily_over_stale_db(tmp_path: Path, monkeypatch: Any) -> None:
+    """KIS 일자별(진짜 전일 고가)이 1차 — 2026-07-14 뉴파워 오발동(T-2 고가 기준) 재발 방지."""
+    monkeypatch.setattr(flowsnap, "_toss_from_env", lambda: None)
+    monkeypatch.setattr(flowsnap, "INJECT_DIR", tmp_path)
+
+    class _Store:
+        def nth_recent_date(self, n: int) -> str:
+            return "20260605"
+
+        def series_for(self, srtn_cd: str, cutoff: str) -> list[tuple[Any, ...]]:
+            # DB는 T-2(6/9)까지만 적재(낡음) — 고가 50000
+            return [("170920", "x", "KOSPI", "20260609", "49000", "50000", "", "", "")]
+
+    class _KisDaily(_FakeKis):
+        def daily_prices(self, srtn_cd: str) -> list[dict[str, Any]]:
+            return [
+                {"stck_bsop_date": "20260611", "stck_hgpr": "56000"},  # 당일 진행분 — 건너뜀
+                {"stck_bsop_date": "20260610", "stck_hgpr": "55500"},  # 진짜 전일
+            ]
+
+    kis = _KisDaily(ccnl={"stck_prpr": "55300", "tday_rltv": "91.8"}, asking={})
+    snap, _ = flowsnap.build_snapshot(
+        ["170920"], kis_client=kis, market_store=_Store(), now=NOW  # type: ignore[arg-type]
+    )
+    obs = snap["170920"]
+    assert obs["prev_day_high_reclaim"] == 0.0                       # 55300 < 55500(진짜 전일)
+    assert abs(obs["prev_day_high_recovery"] - 55300 / 55500) < 1e-3
+
+
+def test_prev_high_stale_db_yields_no_observation(tmp_path: Path, monkeypatch: Any) -> None:
+    """KIS 일자별 부재 + DB 최신이 직전 거래일이 아니면 미관측(보수) — 낡은 기준 판정 금지."""
+    monkeypatch.setattr(flowsnap, "_toss_from_env", lambda: None)
+    monkeypatch.setattr(flowsnap, "INJECT_DIR", tmp_path)
+
+    class _Store:
+        def nth_recent_date(self, n: int) -> str:
+            return "20260605"
+
+        def series_for(self, srtn_cd: str, cutoff: str) -> list[tuple[Any, ...]]:
+            # NOW=6/11(목)의 직전 거래일은 6/10 — DB는 6/9까지만(낡음)
+            return [("170920", "x", "KOSPI", "20260609", "49000", "50000", "", "", "")]
+
+    kis = _FakeKis(ccnl={"stck_prpr": "55300", "tday_rltv": "91.8"}, asking={})
+    snap, _ = flowsnap.build_snapshot(
+        ["170920"], kis_client=kis, market_store=_Store(), now=NOW  # type: ignore[arg-type]
+    )
+    obs = snap["170920"]
+    assert "prev_day_high_reclaim" not in obs
+    assert "prev_day_high_recovery" not in obs
+    assert obs["execution_strength"] == 91.8  # 다른 관측은 정상
+
+
+def test_prev_high_day_cache_hits_and_never_caches_failure(
+    tmp_path: Path, monkeypatch: Any,
+) -> None:
+    """캐시: 같은 날 2회째는 KIS 미호출(1콜) · 실패는 캐시 금지(다음 패스 재시도) · 날짜 전환 시 폐기."""
+    monkeypatch.setattr(flowsnap, "_toss_from_env", lambda: None)
+    monkeypatch.setattr(flowsnap, "INJECT_DIR", tmp_path)
+
+    class _Store:
+        def nth_recent_date(self, n: int) -> str:
+            return "20260605"
+
+        def series_for(self, srtn_cd: str, cutoff: str) -> list[tuple[Any, ...]]:
+            return []  # DB 폴백 없음 — KIS 경로만 검증
+
+    class _KisCounting(_FakeKis):
+        calls = 0
+        fail_first = False
+
+        def daily_prices(self, srtn_cd: str) -> list[dict[str, Any]]:
+            type(self).calls += 1
+            if self.fail_first and type(self).calls == 1:
+                raise RuntimeError("일시 오류")
+            return [{"stck_bsop_date": "20260610", "stck_hgpr": "55500"}]
+
+    kis = _KisCounting(ccnl={"stck_prpr": "55300", "tday_rltv": "91.8"}, asking={})
+    for _ in range(2):  # 같은 날 두 패스 — 두 번째는 캐시 히트
+        snap, _ = flowsnap.build_snapshot(
+            ["170920"], kis_client=kis, market_store=_Store(), now=NOW  # type: ignore[arg-type]
+        )
+    assert _KisCounting.calls == 1
+    assert abs(snap["170920"]["prev_day_high_recovery"] - 55300 / 55500) < 1e-3
+    # 날짜 전환 → 캐시 폐기 → 재조회
+    next_day = datetime(2026, 6, 12, 10, 0, tzinfo=KST)
+    flowsnap.build_snapshot(
+        ["170920"], kis_client=kis, market_store=_Store(), now=next_day  # type: ignore[arg-type]
+    )
+    assert _KisCounting.calls == 2
+    # 실패는 캐시하지 않는다 — 첫 호출 오류 후 다음 패스에 재시도
+    flowsnap._PREV_HIGH_CACHE.clear()
+    _KisCounting.calls = 0
+    kis2 = _KisCounting(ccnl={"stck_prpr": "55300", "tday_rltv": "91.8"}, asking={})
+    kis2.fail_first = True
+    s1, _ = flowsnap.build_snapshot(
+        ["170920"], kis_client=kis2, market_store=_Store(), now=NOW  # type: ignore[arg-type]
+    )
+    assert "prev_day_high_recovery" not in s1["170920"]  # 오류=미관측(지어내지 않음)
+    s2, _ = flowsnap.build_snapshot(
+        ["170920"], kis_client=kis2, market_store=_Store(), now=NOW  # type: ignore[arg-type]
+    )
+    assert _KisCounting.calls == 2  # 재시도 발생(실패가 박제되지 않음)
+    assert abs(s2["170920"]["prev_day_high_recovery"] - 55300 / 55500) < 1e-3
 
 
 def test_kis_realtime_overrides_injected(tmp_path: Path, monkeypatch: Any) -> None:

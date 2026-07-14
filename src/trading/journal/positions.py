@@ -72,6 +72,19 @@ class PositionStore:
                 out.append(pos)
         return out
 
+    def latest_for_source(self, source_ref: str) -> PositionRecord | None:
+        """초안(source_ref)에 연결된 포지션의 최신 상태 — 재진입 판정(EXEC-8)용."""
+        rows = self._conn.execute(
+            "SELECT payload FROM positions WHERE version = "
+            "(SELECT MAX(v.version) FROM positions v WHERE v.id = positions.id) "
+            "ORDER BY as_of DESC"
+        ).fetchall()
+        for (payload,) in rows:
+            pos = PositionRecord.model_validate_json(payload)
+            if pos.source_ref == source_ref:
+                return pos
+        return None
+
     def close(self) -> None:
         self._conn.close()
 

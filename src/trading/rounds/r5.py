@@ -27,6 +27,7 @@ from pydantic import ValidationError
 from trading.contracts.event import EventRecord
 from trading.contracts.factpack import FactPack
 from trading.contracts.order import (
+    EntryBand,
     ExitLevel,
     MarketState,
     OrderDraft,
@@ -36,6 +37,7 @@ from trading.contracts.order import (
     StopType,
     Tranche,
 )
+from trading.executor import derive_entry_band
 from trading.contracts.playbook import FLOW_VARIABLES, Playbook
 from trading.contracts.scenario import ScenarioAxis
 from trading.flowsnap import OBSERVABLE_FLOW_DESC, OBSERVABLE_FLOW_VARS
@@ -44,7 +46,8 @@ from trading.collectors.base import now_kst
 from trading.llm import LLMClient, LLMError, complete_json
 
 TOTAL_SIZE_CAP = "0.5 * normal_unit"   # 설계서 §4 고정값
-_CONFIRMATION_DEFAULT = "prev_day_high_reclaim"  # §6 확인 트랜치 기본 조건(가격 상승으로만 충족)
+# 확인 트랜치 기본 조건은 폐지(운영자 2026-07-14: 조건은 분석이 정한다 — 고정 주입 금지).
+# R5가 confirmation_condition 을 내지 않으면 그 플레이북은 규율 위반으로 폐기된다.
 
 
 @dataclass(frozen=True)
@@ -124,7 +127,9 @@ def build_prompt(
         '    "stop_level": <가격 손절 레벨(숫자) — 심리적 합의 레벨(라운드 넘버·전저점·전고점)만>,\n'
         '    "soft_stop": {"level": <경고 레벨 — stop_level보다 위>, "pct": <축소 비중%, 통상 50>},  // 선택 — 선제 감축\n'
         '    "targets": [{"level": <익절1 — 부분 실현>, "pct": 50}, {"level": <최종 타깃 — 잔량 전량>, "pct": 50}],  // 기본 2단 사다리, 오름차순·합=100\n'
-        '    "confirmation_condition": "<관측 가능 흐름변수 키 1개만 — 조건식·연산자 금지, 예: prev_day_high_reclaim>",\n'
+        '    "confirmation_condition": "<관측 가능 흐름변수 키 1개만 — 조건식·연산자 금지. 필수(기본값 없음)>",\n'
+        '    "max_entries": <1|2 — 재진입 정책: 1=1회만(기본), 2=청산(익절·본전) 후 1회 재진입 허용>,\n'
+        '    "entry_band": {"low": <매수 유효 하한>, "high": <상한>},  // 선택 — 코드 산출 밴드를 좁힐 때만\n'
         '    "time_stop_days": <거래일 단위>,\n'
         '    "summary": "<저녁 결재 보고용 1줄>"\n'
         "  }]\n"
@@ -136,9 +141,15 @@ def build_prompt(
         f"지어내지 마라, 예: orderbook_imbalance>1.15는 불가):\n{observable_desc}\n"
         f"  미관측 변수({unobserved})는 NXT/소스 부재로 매일 '관측치 없음'이라 영영 미충족이 된다 — "
         "절대 쓰지 마라(쓰면 그 플레이북은 발동 불가). 가치·내러티브 변수도 금지.\n"
-        "- confirmation_condition 은 관측 가능 흐름변수 **키 1개만**(조건식·==true 등 붙이지 마라 — "
-        "키만, 보통 prev_day_high_reclaim).\n"
-        "- 조건식 문법: 연속 변수(갭·거래량·체결강도·호가)는 `<op><숫자>`(<,<=,>,>=,==), "
+        "- confirmation_condition 은 관측 가능 흐름변수 **키 1개만**(조건식·==true 등 붙이지 마라). "
+        "**필수 — 기본값 주입은 없다. 논제가 요구하는 확인 신호를 분석으로 골라라.**\n"
+        "- **조건은 분석에서 도출됐을 때만 건다 — 습관적·기본 조건 금지(운영자 2026-07-14).** "
+        "가격 회복 확인이 논제에 필요하면 prev_day_high_recovery 로 등급을 명시하라"
+        "(완전 회복 >=1.0, 일부 회복은 근거 가격 컨텍스트로 정당화되는 비율만). "
+        "**트리거가 익절 타깃과 겹치는 설계 금지**: arm 충족 시점 가격에서 최종 타깃까지의 보상이 "
+        "손절까지의 위험보다 작으면(잔여 R:R<1) 그 플레이북은 내지 마라(집행 가드가 어차피 차단한다).\n"
+        "- 조건식 문법: 연속 변수(갭·거래량·체결강도·호가·prev_day_high_recovery)는 "
+        "`<op><숫자>`(<,<=,>,>=,==), "
         "boolean 변수(prev_day_high_reclaim·volume_climax·new_low_renewal_fail·sector_ignition)는 "
         "`==true`/`==false`로. 시각·문자열 등 그 외 형식 금지(선택기가 평가 불가 → 미충족 처리).\n"
         "- stop_level 은 '논리적 지지선'이 아니라 심리적 합의 레벨(라운드 넘버, 전저점·전고점)로.\n"
@@ -149,6 +160,10 @@ def build_prompt(
         "코드가 잔량 손절을 본전으로 자동 상향 → 최종 타깃에서 잔량 전량. 레벨 오름차순·pct 합=100, "
         "**마지막 레벨=전량 청산 라인**(pct는 잔량 전부로 집행된다). 다음 저항이 구조적으로 없어 "
         "사다리를 못 세울 때만 단일 타깃 허용. 손절·익절 자체가 불확실하면 생략하라(코드가 보수 기본값).\n"
+        "- max_entries=2(재진입 1회)는 재진입이 셋업 논리에 맞을 때만(예: 눌림 재매집형). "
+        "하드 스탑 청산 후 재진입은 코드가 금지하고, 2회차 사이즈는 자동 절반이다. 모르면 1.\n"
+        "- entry_band 는 코드가 손절·익절 레벨로 산출하는 매수 유효 범위를 **좁힐 때만** 지정"
+        "(넓히면 그 플레이북은 폐기된다). 근거 가격 컨텍스트가 없으면 생략하라 — 코드 밴드가 기본.\n"
         "- 역추세 플레이북은 '과도하다'는 논리가 아니라 소진의 물리 신호(volume_climax, "
         "new_low_renewal_fail) 확인 조건으로만.\n"
         "- direction=flat 논제, invalidation 이 관측 불가한 논제로는 플레이북을 만들지 마라.\n"
@@ -232,7 +247,9 @@ def _to_records(
         else thesis.horizon_days  # grounded 폴백(논제 시계)
     )
 
-    confirmation_raw = str(pb.get("confirmation_condition") or _CONFIRMATION_DEFAULT).strip()
+    confirmation_raw = str(pb.get("confirmation_condition") or "").strip()
+    if not confirmation_raw:
+        raise ValueError("confirmation_condition 미제공 — 기본 조건 주입 금지(운영자 2026-07-14)")
     # R5가 키에 조건식(==true 등)을 붙여 와도 흐름변수 키만 사용(코드 강제 — confirmation은 키 1개)
     key_match = re.match(r"[a-z_]+", confirmation_raw)
     confirmation = key_match.group(0) if key_match else confirmation_raw
@@ -243,6 +260,10 @@ def _to_records(
     abort = pb.get("abort_conditions")
     arm_d = {str(k): str(v) for k, v in arm.items()} if isinstance(arm, dict) else {}
     abort_d = {str(k): str(v) for k, v in abort.items()} if isinstance(abort, dict) else {}
+
+    # 재진입 정책(EXEC-8) — R5 명시, 1|2 외 값은 보수 기본(1)
+    raw_me = pb.get("max_entries")
+    max_entries = int(raw_me) if isinstance(raw_me, (int, float)) and int(raw_me) in (1, 2) else 1
 
     day = f"{now:%Y%m%d}"
     draft = OrderDraft(
@@ -256,7 +277,24 @@ def _to_records(
         created_when_market=MarketState.CLOSED,
         targets=sorted(targets, key=lambda t: t.level),  # 계약이 순증가·합≤100 재검증
         soft_stop=soft_stop,
+        max_entries=max_entries,
     )
+    # 진입 밴드 조임(EXEC-8) — R5는 코드 산출 밴드를 **좁힐 때만** 지정 가능(확장=폐기)
+    raw_band = pb.get("entry_band")
+    if isinstance(raw_band, dict):
+        try:
+            r5_low, r5_high = float(raw_band["low"]), float(raw_band["high"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("entry_band 형식 오류(low/high 숫자 필수) — 폐기") from None
+        code_band = derive_entry_band(draft)
+        if code_band is None:
+            raise ValueError("entry_band 지정 불가(가격 컨텍스트 부족) — 폐기")
+        c_low, c_high = code_band
+        if r5_low < c_low - 1e-9 or r5_high > c_high + 1e-9:
+            raise ValueError(
+                f"entry_band 확장 금지(코드 밴드 [{c_low:,.0f}, {c_high:,.0f}] 밖) — 폐기"
+            )
+        draft = draft.model_copy(update={"entry_band": EntryBand(low=r5_low, high=r5_high)})
     playbook = Playbook(
         id=f"pb.{day}.{srtn}.{side.value}",
         as_of=now, fetched_at=now, source=source,

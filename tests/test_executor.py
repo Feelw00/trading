@@ -218,7 +218,8 @@ def test_live_flow_order_then_fill_then_stop(tmp_path: Path) -> None:
     assert done == [d.id]
     assert len(toss.stops) == 1
     st = toss.stops[0]
-    assert st["trigger"] == 65_000 and st["order_price"] == 64_800  # 트리거 2틱(100원) 아래 지정가
+    # 플로어 = max(2틱, 1%) = 650 → 64,350 → 틱(100원) 절사 64,300 (급락 관통 체결, EXEC-8)
+    assert st["trigger"] == 65_000 and st["order_price"] == 64_300
     # P-11 Stage B: OCO 익절 — 체결 70,100 + 1.5×(70,100−65,000)=77,750 → 틱 절사 77,700
     assert st.get("oco") is True and st["target"] == 77_700
     assert store.has(d.id, ("stop_sent",))
@@ -432,7 +433,7 @@ def test_broken_setup_guard_blocks_entry_below_stop(tmp_path: Path) -> None:
     r = execute_armed(_draft(stop_level=65_000.0), price=64_000, store=store,
                       policy=ExecPolicy(), mode="dry-run", toss=None,
                       dispatcher=_Rec(), now=NOW)  # type: ignore[arg-type]
-    assert r.action == "skipped" and "셋업 붕괴" in r.detail
+    assert r.action == "skipped" and "진입 밴드 하한" in r.detail  # 밴드 통합(EXEC-8)
     store.close()
 
 
@@ -491,7 +492,7 @@ def test_exhausted_setup_guard_blocks_entry_above_first_target(tmp_path: Path) -
     d = _ladder_draft()  # 익절 12,000/15,000 · 손절 9,000
     r = execute_armed(d, price=12_500, store=store, policy=ExecPolicy(),
                       mode="dry-run", toss=None, dispatcher=_Rec(), now=NOW)  # type: ignore[arg-type]
-    assert r.action == "skipped" and "셋업 소진" in r.detail
+    assert r.action == "skipped" and "진입 밴드 상한" in r.detail  # 밴드 통합(EXEC-8)
     store.close()
 
 
@@ -551,9 +552,323 @@ def test_min_rr_guard_blocks_entry_near_target(tmp_path: Path) -> None:
     # 익절 직전(9,990): 보상 10원 vs 위험 990원 → 스킵
     r = execute_armed(d, price=9_995, store=store, policy=ExecPolicy(), mode="dry-run",
                       toss=None, dispatcher=rec, now=NOW)  # type: ignore[arg-type]
-    assert r.action == "skipped" and "잔여 R:R 부족" in r.detail
+    assert r.action == "skipped" and "진입 밴드 상한" in r.detail  # 밴드 통합(EXEC-8)
     # 계획 구간(9,400): R:R 1.5 → 진입
     r2 = execute_armed(d, price=9_400, store=store, policy=ExecPolicy(), mode="dry-run",
                        toss=None, dispatcher=rec, now=NOW)  # type: ignore[arg-type]
     assert r2.action == "ordered"
     store.close()
+
+
+def test_store_queries_mode_isolation(tmp_path: Path) -> None:
+    """가드 감사 B(2026-07-14): dry-run 잔재가 live 판단을 오염시키지 않는다 — 쿼리별 mode 필터."""
+    store = ExecStore(tmp_path / "e.sqlite")
+    at = NOW.isoformat()
+    day = "20260714"
+    # dry-run 흔적: 진입 intent + 잔고부족 skip + 교체 + 브래킷
+    store.log(day=day, draft_id="d1", symbol="144960", kind="order_intent", mode="dry-run",
+              qty=50, price=9_960, at=at)
+    store.log(day=day, draft_id="d2", symbol="095610", kind="skip", mode="dry-run",
+              detail="잔고 부족(가용 0원)", at=at)
+    store.log(day=day, draft_id="d3", symbol="089970", kind="rotation_sell", mode="dry-run",
+              qty=10, price=100_000, at=at)
+    store.log(day=day, draft_id="d1", symbol="144960", kind="stop_intent", mode="dry-run",
+              qty=50, price=9_000, at=at)
+    # B1: live 폴백 가용액은 dry-run 약정을 차감하지 않는다
+    assert store.committed_krw(mode="live") == 0
+    assert store.committed_krw() == 50 * 9_960 - 10 * 100_000
+    # B2: live는 dry-run의 잔고부족 skip을 재시도하지 않는다
+    assert store.cash_skips_today(day, mode="live") == []
+    assert store.cash_skips_today(day, mode="dry-run") == ["d2"]
+    # B3: dry-run 교체가 live 일1회 예산을 소모하지 않는다
+    assert store.rotations_today(day, mode="live") == 0
+    # B4: dry-run 브래킷을 live 잔량으로 오인하지 않는다
+    assert store.latest_bracket("d1", mode="live") is None
+    assert store.latest_bracket("d1", mode="dry-run") is not None
+    # B6: 교차 모드 미체결을 체결 처리하지 않는다
+    assert store.pending_fills(mode="live") == []
+    # B7: 레짐 알림 dedup은 일자 한정 — 과거 기록이 오늘 알림을 침묵시키지 않는다
+    store.log(day="20260713", draft_id="_regime_unknown", symbol="-", kind="regime",
+              mode="dry-run", detail="관측 불가", at=at)
+    assert store.has("_regime_unknown", ("regime",), day="20260714") is False
+    assert store.has("_regime_unknown", ("regime",), day="20260713") is True
+    store.close()
+
+
+def test_a1_bracket_gap_flags_p0_and_blocks_next_legs(tmp_path: Path) -> None:
+    """A1: 취소 후 재등록(재시도 포함) 실패 → P0+bracket_gone 박제, 다음 패스 레그 중단(이중 매도 금지)."""
+    from trading.executor import manage_exits
+
+    class _GapToss(_FakeToss):
+        fail_place = False
+
+        def place_oco_sell(self, *a: Any, **k: Any) -> dict[str, Any]:
+            if self.fail_place:
+                raise RuntimeError("place boom")
+            return super().place_oco_sell(*a, **k)
+
+        def place_stop_sell_conditional(self, *a: Any, **k: Any) -> dict[str, Any]:
+            if self.fail_place:
+                raise RuntimeError("place boom")
+            return super().place_stop_sell_conditional(*a, **k)
+
+        def cancel_order(self, order_id: str) -> dict[str, Any]:
+            return {}
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _GapToss()
+    d = _fill_ladder(store, pos, toss, "live")
+    toss.fail_place = True
+    rec = _Rec()
+    acted = manage_exits(store=store, mode="live", toss=toss, drafts_by_id={d.id: d},  # type: ignore[arg-type]
+                         price_fn=lambda s: 12_050.0, position_store=pos,
+                         dispatcher=rec, now=NOW)  # type: ignore[arg-type]
+    assert acted == []  # 레그는 나갔으나 브래킷 무방비 — 성공 처리 아님
+    assert store.has(d.id, ("bracket_gone",), mode="live")
+    assert any(a.severity.value == "P0" and "무방비" in a.what for a in rec.alerts)
+    sells_before = len([o for o in toss.orders if o["side"] == "SELL"])
+    # 다음 패스: bracket_gone 박제 → 레그 재시도 없음(이중 매도 금지)
+    manage_exits(store=store, mode="live", toss=toss, drafts_by_id={d.id: d},  # type: ignore[arg-type]
+                 price_fn=lambda s: 12_050.0, position_store=pos,
+                 dispatcher=_Rec(), now=NOW)  # type: ignore[arg-type]
+    assert len([o for o in toss.orders if o["side"] == "SELL"]) == sells_before
+    store.close(); pos.close()
+
+
+def test_a2_partial_fill_cancels_remainder_and_registers_stop(tmp_path: Path) -> None:
+    """A2: 부분 체결 → 잔여 매수 즉시 취소 + 체결분 스탑 등록(추가 체결 무방비 방지)."""
+
+    class _PartialToss(_FakeToss):
+        def __init__(self) -> None:
+            super().__init__()
+            self.buy_cancels: list[str] = []
+
+        def order(self, order_id: str) -> dict[str, Any]:
+            return {"status": "PARTIAL_FILLED",
+                    "execution": {"filledQuantity": "10", "averagePrice": "10000"}}
+
+        def cancel_order(self, order_id: str) -> dict[str, Any]:
+            self.buy_cancels.append(order_id)
+            return {}
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _PartialToss()
+    d = _ladder_draft()
+    execute_armed(d, price=10_000, store=store, policy=ExecPolicy(), mode="live",
+                  toss=toss, dispatcher=_Rec(), now=NOW)  # type: ignore[arg-type]
+    reconcile(store=store, mode="live", toss=toss, drafts_by_id={d.id: d},  # type: ignore[arg-type]
+              dispatcher=_Rec(), position_store=pos, now=NOW)  # type: ignore[arg-type]
+    assert toss.buy_cancels == ["ord-9"]                      # 잔여 취소
+    bracket = store.latest_bracket(d.id, mode="live")
+    assert bracket is not None and bracket[1] == 10           # 체결분만 보호
+    assert store.has(d.id, ("buy_cancel_rest",), mode="live")
+    assert store.pending_fills(mode="live") == []             # 추적 종결(스탑 등록됨)
+    store.close(); pos.close()
+
+
+def test_a6_sync_brackets_detects_gone_and_holds_on_unknown_schema(tmp_path: Path) -> None:
+    """A6: 브로커 목록에 브래킷 부재 → P0+박제(일 1회). 스키마 불명 응답은 판정 보류."""
+    from trading.executor import sync_brackets
+
+    class _CondToss(_FakeToss):
+        cond_response: Any = {"items": []}
+
+        def cancel_order(self, order_id: str) -> dict[str, Any]:
+            return {}
+
+        def conditional_orders(self) -> Any:
+            return self.cond_response
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _CondToss()
+    d = _fill_ladder(store, pos, toss, "live")
+    # 스키마 불명 — 판정 보류(지어내지 않음)
+    toss.cond_response = "unexpected"
+    assert sync_brackets(store=store, mode="live", toss=toss, position_store=pos,  # type: ignore[arg-type]
+                         dispatcher=_Rec(), now=NOW) == []  # type: ignore[arg-type]
+    # 생존 — 아무 일 없음 (실측 스키마: conditionalOrders 키, 2026-07-14)
+    toss.cond_response = {"conditionalOrders": [{"conditionalOrderId": "oco-9"}]}
+    assert sync_brackets(store=store, mode="live", toss=toss, position_store=pos,  # type: ignore[arg-type]
+                         dispatcher=_Rec(), now=NOW) == []  # type: ignore[arg-type]
+    # 부재 — P0 + 박제, 같은 날 재알림 없음
+    toss.cond_response = {"items": []}
+    rec = _Rec()
+    assert sync_brackets(store=store, mode="live", toss=toss, position_store=pos,  # type: ignore[arg-type]
+                         dispatcher=rec, now=NOW) == [d.id]  # type: ignore[arg-type]
+    assert any("브래킷 부재" in a.what for a in rec.alerts)
+    assert sync_brackets(store=store, mode="live", toss=toss, position_store=pos,  # type: ignore[arg-type]
+                         dispatcher=_Rec(), now=NOW) == []  # type: ignore[arg-type]
+    store.close(); pos.close()
+
+
+def test_a7_stale_pending_buy_canceled_on_setup_break(tmp_path: Path) -> None:
+    """A7: 미체결 매수 + 현재가가 손절 이하(셋업 붕괴) → 매수 취소(되돌림 역선택 체결 방지)."""
+
+    class _PendingToss(_FakeToss):
+        def __init__(self) -> None:
+            super().__init__()
+            self.status = "PENDING"
+            self.buy_cancels: list[str] = []
+
+        def cancel_order(self, order_id: str) -> dict[str, Any]:
+            self.buy_cancels.append(order_id)
+            return {}
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _PendingToss()
+    d = _ladder_draft()
+    execute_armed(d, price=10_000, store=store, policy=ExecPolicy(), mode="live",
+                  toss=toss, dispatcher=_Rec(), now=NOW)  # type: ignore[arg-type]
+    # 현재가 8,900 ≤ 손절 9,000 — 깨진 셋업의 지정가는 취소
+    reconcile(store=store, mode="live", toss=toss, drafts_by_id={d.id: d},  # type: ignore[arg-type]
+              dispatcher=_Rec(), position_store=pos, now=NOW,  # type: ignore[arg-type]
+              price_fn=lambda s: 8_900.0)
+    assert toss.buy_cancels == ["ord-9"]
+    assert store.pending_fills(mode="live") == []  # buy_cancel로 추적 종결
+    store.close(); pos.close()
+
+
+def test_derive_entry_band_values() -> None:
+    """EXEC-8 밴드 산식: 하한=경고×(1+1%) · 상한=가중 보상 R:R≥1(사다리 pct 가중, C4 해소)."""
+    from trading.executor import derive_entry_band
+
+    band = derive_entry_band(_ladder_draft())  # 손절 9,000 · 경고 9,300 · 12,000(50)/15,000(50)
+    assert band is not None
+    low, high = band
+    assert abs(low - 9_300 * 1.01) < 1e-6
+    assert abs(high - 11_250.0) < 1e-6  # (0.5×12,000 + 0.5×15,000 + 1.0×9,000) / (1.0 + 1.0)
+    assert derive_entry_band(_draft(stop_level=None)) is None  # 가격 스탑 없음 — 밴드 없음
+
+
+def test_reentry_policy_gates_and_half_size(tmp_path: Path) -> None:
+    """EXEC-8 재진입: 한도·기보유·하드스탑 청산·쿨다운 가드 + 2회차 체감 50%(운영자 결정)."""
+    from datetime import timedelta
+
+    from trading.contracts.position import PositionRecord, PositionStatus
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _FakeToss()
+    d = _ladder_draft().model_copy(update={"max_entries": 2})
+    r1 = execute_armed(d, price=10_000, store=store, policy=ExecPolicy(), mode="live",
+                       toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r1.action == "ordered" and "500주" in r1.detail
+    # 청산 미확정 — 재진입 보류
+    r2 = execute_armed(d, price=10_500, store=store, policy=ExecPolicy(), mode="live",
+                       toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r2.action == "skipped" and "청산 미확정" in r2.detail
+
+    def _pos_rec(status: PositionStatus, reason: str, closed_ago_min: int) -> PositionRecord:
+        return PositionRecord(
+            id="pos.20260714.005930", as_of=NOW - timedelta(minutes=closed_ago_min),
+            fetched_at=NOW, source="executor", symbol="005930", qty=500, avg_price=10_000.0,
+            source_ref=d.id, status=status, close_reason=reason)
+
+    # 하드 스탑 청산 — 재진입 금지(무효화 규율)
+    pos.append(_pos_rec(PositionStatus.CLOSED, "가격 스탑 이탈", 60))
+    r3 = execute_armed(d, price=10_500, store=store, policy=ExecPolicy(), mode="live",
+                       toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r3.action == "skipped" and "하드 스탑" in r3.detail
+    # 익절 청산 + 쿨다운 미경과 — 보류
+    pos.append(_pos_rec(PositionStatus.CLOSED, "익절1 부분 실현 후 잔량 본전 청산", 10))
+    r4 = execute_armed(d, price=10_500, store=store, policy=ExecPolicy(), mode="live",
+                       toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r4.action == "skipped" and "쿨다운" in r4.detail
+    # 익절 청산 + 쿨다운 경과 — 재진입, 체감 50%: 500만×0.5 / 10,500 = 238주
+    pos.append(_pos_rec(PositionStatus.CLOSED, "익절1 부분 실현 후 잔량 본전 청산", 40))
+    r5 = execute_armed(d, price=10_500, store=store, policy=ExecPolicy(), mode="live",
+                       toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r5.action == "ordered" and "238주" in r5.detail
+    # 한도(2회) 소진 — 3회차 없음
+    r6 = execute_armed(d, price=10_500, store=store, policy=ExecPolicy(), mode="live",
+                       toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r6.action == "skipped" and "한도 소진" in r6.detail
+    store.close(); pos.close()
+
+
+def test_reentry_blocked_while_holding_same_symbol(tmp_path: Path) -> None:
+    """EXEC-8: 동일 종목 기보유 시 재진입 금지(운영자 지정)."""
+    from trading.contracts.position import PositionRecord, PositionStatus
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _FakeToss()
+    d = _ladder_draft().model_copy(update={"max_entries": 2})
+    execute_armed(d, price=10_000, store=store, policy=ExecPolicy(), mode="live",
+                  toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    pos.append(PositionRecord(
+        id="pos.20260714.005930", as_of=NOW, fetched_at=NOW, source="executor",
+        symbol="005930", qty=500, avg_price=10_000.0, source_ref=d.id,
+        status=PositionStatus.OPEN))
+    r = execute_armed(d, price=10_500, store=store, policy=ExecPolicy(), mode="live",
+                      toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r.action == "skipped" and "기보유" in r.detail
+    store.close(); pos.close()
+
+
+def test_time_stop_auto_liquidation_in_window(tmp_path: Path) -> None:
+    """EXEC-9: 시간손절 도래일 14:30~14:50 창에서 브래킷 취소→전량 매도→포지션 마감 (운영자 2026-07-14)."""
+    from trading.executor import manage_time_stops
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _FakeToss()
+    d = _fill_ladder(store, pos, toss, "live")  # time_stop 7거래일, 진입 7/14
+    in_window = datetime(2026, 7, 24, 14, 35, tzinfo=KST)  # 도래일 7/24(7/14+7거래일 — 7/17 휴장 스킵)
+
+    # 도래 전(7/23) — 창 안이어도 미집행
+    early = manage_time_stops(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                              price_fn=lambda s: 10_100.0, position_store=pos,
+                              dispatcher=_Rec(), now=datetime(2026, 7, 23, 14, 35, tzinfo=KST))  # type: ignore[arg-type]
+    assert early == []
+    # 도래일 창 밖(10:00) — 미집행
+    off_window = manage_time_stops(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                                   price_fn=lambda s: 10_100.0, position_store=pos,
+                                   dispatcher=_Rec(), now=datetime(2026, 7, 24, 10, 0, tzinfo=KST))  # type: ignore[arg-type]
+    assert off_window == []
+    # 도래일 14:35 — 브래킷 취소 + 전량 매도 + 포지션 마감 + 저널
+    rec = _Rec()
+    acted = manage_time_stops(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                              price_fn=lambda s: 10_100.0, position_store=pos,
+                              dispatcher=rec, now=in_window)  # type: ignore[arg-type]
+    assert acted == [d.id]
+    assert toss.cancels == ["oco-9"]
+    sells = [o for o in toss.orders if o["side"] == "SELL"]
+    assert sells and sells[-1]["qty"] == 500 and sells[-1]["price"] == 10_100
+    assert store.has(d.id, ("leg_timestop",), mode="live")
+    assert pos.open_positions() == []
+    last = pos.latest_for_source(d.id)
+    assert last is not None and "시간손절" in last.close_reason
+    assert any("시간손절 매도" in a.what for a in rec.alerts)
+    # 재집행 없음(저널 dedup)
+    again = manage_time_stops(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                              price_fn=lambda s: 10_100.0, position_store=pos,
+                              dispatcher=_Rec(), now=in_window)  # type: ignore[arg-type]
+    assert again == []
+    store.close(); pos.close()
+
+
+def test_time_stop_cancel_failure_keeps_protection(tmp_path: Path) -> None:
+    """EXEC-9 + A1: 브래킷 취소 실패 시 매도하지 않는다(기존 보호 유지, 다음 패스 재시도)."""
+    from trading.executor import manage_time_stops
+
+    class _CancelFailToss(_FakeToss):
+        def cancel_conditional(self, conditional_order_id: str) -> None:
+            raise RuntimeError("cancel boom")
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _CancelFailToss()
+    d = _fill_ladder(store, pos, toss, "live")
+    n_orders = len(toss.orders)
+    acted = manage_time_stops(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                              price_fn=lambda s: 10_100.0, position_store=pos,
+                              dispatcher=_Rec(), now=datetime(2026, 7, 24, 14, 35, tzinfo=KST))  # type: ignore[arg-type]
+    assert acted == [] and len(toss.orders) == n_orders  # 매도 미발생
+    assert not store.has(d.id, ("leg_timestop",), mode="live")
+    assert pos.open_positions() != []  # 포지션 유지
+    store.close(); pos.close()

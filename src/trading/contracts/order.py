@@ -62,6 +62,22 @@ class Stop(BaseModel):
     level: float | None = None
 
 
+class EntryBand(BaseModel):
+    """진입 유효 가격 범위(EXEC-8, 운영자 결정 2026-07-14) — 코드가 결정론 산출,
+    R5는 이 범위 안에서 조이기만 가능(넓히기=계약 위반 폐기)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    low: float = Field(gt=0)    # 하한 — 손절·경고 라인과의 최소 이격(스탑 잡음 진입 차단)
+    high: float = Field(gt=0)   # 상한 — 가중 보상 R:R + 익절1 이격(익절 근접 진입 차단)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "EntryBand":
+        if self.low >= self.high:
+            raise ValueError("entry_band: low < high 여야 한다")
+        return self
+
+
 class MarketState(str, Enum):
     """주문 초안은 장 마감 후에만 생성 — closed만 허용(설계서 §1·§5)."""
 
@@ -89,6 +105,9 @@ class OrderDraft(BaseRecord):
     # --- 계단식 청산 (EXEC-2, 선택 — R5 분석 지정. 구필드 레코드 호환 위해 기본값) ---
     targets: list[ExitLevel] = Field(default_factory=list)  # 상방 익절 사다리(레벨 오름차순)
     soft_stop: ExitLevel | None = None                      # 경고 축소(하드 스탑 위) — 하드는 stop
+    # --- 진입 정책 (EXEC-8, 운영자 결정 2026-07-14. 구필드 레코드 호환 위해 기본값) ---
+    max_entries: int = Field(default=1, ge=1, le=2)  # 1=재진입 불허 · 2=1회 재진입(체감 50%)
+    entry_band: EntryBand | None = None              # 코드 산출 밴드(∩ R5 조임) — 집행 시 검사
 
     @model_validator(mode="after")
     def _require_stop_or_time_stop(self) -> "OrderDraft":
@@ -115,6 +134,7 @@ class OrderDraft(BaseRecord):
 
 
 __all__ = [
+    "EntryBand",
     "ExitLevel",
     "MarketState",
     "OrderDraft",

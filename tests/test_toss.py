@@ -108,7 +108,8 @@ def test_oco_sell_body_stop_and_target(tmp_path: Path) -> None:
     body = json.loads(http.calls[1][1] or b"{}")
     assert body["type"] == "OCO" and body["orderType"] == "LIMIT"
     assert body["first"]["orderSide"] == body["second"]["orderSide"] == "SELL"
-    assert body["first"]["triggerPrice"] == "65000" and body["second"]["triggerPrice"] == "77900"
+    # first=익절(높은 감시가)·second=손절 — 2026-07-14 실호출 관측 확정(반대는 400)
+    assert body["first"]["triggerPrice"] == "77900" and body["second"]["triggerPrice"] == "65000"
     with pytest.raises(ValueError):  # 익절 트리거가 손절 이하 — 논리 오류 차단
         c.place_oco_sell("005930", 1, stop_trigger=65_000, stop_price=64_800,
                          target_trigger=64_000, target_price=64_000,
