@@ -885,6 +885,12 @@ def test_liquidation_queue_sells_and_cleans(tmp_path: Path) -> None:
     q = tmp_path / "liq.queue"
     assert queue_liquidation([d.id, "order.ghost.buy"], queue_file=q) == [d.id, "order.ghost.buy"]
     assert queue_liquidation([d.id], queue_file=q) == []  # 중복 등록 무시
+    # 09:30 전엔 처리 안 함(운영자: 시초 변동성 회피) — 큐 그대로
+    early = process_liquidation_queue(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                                      price_fn=lambda s: 10_050.0, position_store=pos,
+                                      dispatcher=_Rec(), queue_file=q,  # type: ignore[arg-type]
+                                      now=datetime(2026, 7, 14, 9, 5, tzinfo=KST))
+    assert early == [] and len(q.read_text().strip().splitlines()) == 2
     rec = _Rec()
     acted = process_liquidation_queue(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
                                       price_fn=lambda s: 10_050.0, position_store=pos,

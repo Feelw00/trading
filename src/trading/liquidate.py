@@ -31,7 +31,7 @@ def run(argv: Sequence[str]) -> int:
     skipped = [a for a in argv if a not in added]
     for a in skipped:
         print(f"이미 큐에 있음: {a}")
-    print("감시기가 다음 세션 창(09:00~20:00) 패스에서 매도합니다 — P0 보고 발송됨.")
+    print("감시기가 다음 세션 창(09:30 이후~20:00) 패스에서 매도합니다 — P0 보고 발송됨.")
     return 0
 
 
