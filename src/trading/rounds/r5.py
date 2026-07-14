@@ -99,13 +99,16 @@ def build_prompt(
     packs: Sequence[FactPack],
     macro_lines: Sequence[str],
     config: R5Config,
+    intraday_lines: Sequence[str] = (),
 ) -> str:
-    observable = ", ".join(sorted(OBSERVABLE_FLOW_VARS))
-    observable_desc = "\n".join(
-        f"  - {k}: {OBSERVABLE_FLOW_DESC[k]}" for k in sorted(OBSERVABLE_FLOW_DESC)
-    )
+    # 이진 reclaim은 신규 계획 메뉴에서 폐지(운영자 2026-07-14 밤: "전고점 기준이 너무 강해")
+    # — 가격 회복은 등급형 recovery 임계로만. 기존 풀 초안의 평가는 계속된다(관측은 유지).
+    menu = {k: v for k, v in OBSERVABLE_FLOW_DESC.items() if k != "prev_day_high_reclaim"}
+    observable = ", ".join(sorted(menu))
+    observable_desc = "\n".join(f"  - {k}: {menu[k]}" for k in sorted(menu))
     unobserved = ", ".join(sorted(FLOW_VARIABLES - OBSERVABLE_FLOW_VARS))
     macro = "\n".join(f"- {m}" for m in macro_lines) or "  (없음)"
+    intraday = "\n".join(f"- {m}" for m in intraday_lines)
     return (
         "너는 스윙 트레이딩 시스템의 야간 합성 라운드(R5)다. "
         "아래 생존 논제들을 시나리오 트리로 합성하고, "
@@ -113,7 +116,8 @@ def build_prompt(
         f"## 논제 (R3 산출)\n{_thesis_lines(theses)}\n\n"
         f"## 촉매 이벤트 (R4 검증 상태 포함)\n{_event_lines(events)}\n\n"
         f"## 가격 컨텍스트 (EOD, 결정론 산출)\n{_price_lines(packs)}\n\n"
-        f"## 거시 백드롭\n{macro}\n\n"
+        + (f"## 당일 가격 (KIS 실측 — 회복 임계 산정용)\n{intraday}\n\n" if intraday else "")
+        + f"## 거시 백드롭\n{macro}\n\n"
         "## 출력 스키마 (JSON, 다른 텍스트 금지)\n"
         "{\n"
         '  "scenario_tree": [{"title": "<축 제목 — 테마/리스크 축 하나>",\n'
@@ -150,8 +154,13 @@ def build_prompt(
         "손절까지의 위험보다 작으면(잔여 R:R<1) 그 플레이북은 내지 마라(집행 가드가 어차피 차단한다).\n"
         "- 조건식 문법: 연속 변수(갭·거래량·체결강도·호가·prev_day_high_recovery)는 "
         "`<op><숫자>`(<,<=,>,>=,==), "
-        "boolean 변수(prev_day_high_reclaim·volume_climax·new_low_renewal_fail·sector_ignition)는 "
+        "boolean 변수(volume_climax·new_low_renewal_fail·sector_ignition)는 "
         "`==true`/`==false`로. 시각·문자열 등 그 외 형식 금지(선택기가 평가 불가 → 미충족 처리).\n"
+        "- **prev_day_high_reclaim(이진 완전 회복)은 폐지 — 쓰면 그 플레이북은 폐기된다"
+        "(운영자 2026-07-14).** 가격 회복 확인은 prev_day_high_recovery 임계로만: "
+        "**'## 당일 가격'의 고가 이격을 보고 도달 가능한 임계를 골라라.** 종가가 당일 고가 대비 "
+        "-3% 이내면 완전 회복(>=1.0)도 현실적이지만, 이격이 크면 완전 회복은 사실상 미발동 계획이다 — "
+        "일부 회복(예: >=0.95~0.98, 근거 레벨로 정당화) 또는 다른 확인 신호를 써라.\n"
         "- stop_level 은 '논리적 지지선'이 아니라 심리적 합의 레벨(라운드 넘버, 전저점·전고점)로.\n"
         "  근거 가격(위 컨텍스트)에 없는 레벨을 지어내지 마라 — 불확실하면 그 플레이북을 내지 마라.\n"
         "- targets(익절)·soft_stop(경고 축소)도 같은 규칙: **근거 가격 컨텍스트의 저항·전고·라운드 넘버만**. "
@@ -260,6 +269,11 @@ def _to_records(
     abort = pb.get("abort_conditions")
     arm_d = {str(k): str(v) for k, v in arm.items()} if isinstance(arm, dict) else {}
     abort_d = {str(k): str(v) for k, v in abort.items()} if isinstance(abort, dict) else {}
+    # 이진 완전 회복 폐지(운영자 2026-07-14 밤) — 등급형 recovery 임계로만(도달 가능성 정당화 강제)
+    if "prev_day_high_reclaim" in arm_d or "prev_day_high_reclaim" in abort_d:
+        raise ValueError(
+            "prev_day_high_reclaim 폐지 — prev_day_high_recovery 임계로 표현하라(운영자 2026-07-14)"
+        )
 
     # 재진입 정책(EXEC-8) — R5 명시, 1|2 외 값은 보수 기본(1)
     raw_me = pb.get("max_entries")
@@ -338,6 +352,7 @@ def run_r5(
     packs: Sequence[FactPack],
     *,
     macro_lines: Sequence[str] = (),
+    intraday_lines: Sequence[str] = (),
     now: datetime | None = None,
     config: R5Config | None = None,
     source: str = "r5:claude",
@@ -353,7 +368,10 @@ def run_r5(
             checklist=[], rejected=0,
         )
     try:
-        data = complete_json(client, build_prompt(actionable, events, packs, macro_lines, cfg))
+        data = complete_json(
+            client,
+            build_prompt(actionable, events, packs, macro_lines, cfg, intraday_lines),
+        )
     except LLMError as e:
         return R5Result(
             playbooks=[], drafts=[], scenario_tree=[], checklist=[], rejected=0,

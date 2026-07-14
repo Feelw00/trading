@@ -264,3 +264,29 @@ def test_entry_band_tighten_only() -> None:
     assert tight.rejected == 0
     band = tight.drafts[0].entry_band
     assert band is not None and band.low == 5_200 and band.high == 6_000
+
+
+def test_binary_reclaim_deprecated_in_arm_conditions() -> None:
+    # 운영자 2026-07-14 밤: "전고점 기준이 너무 강해" — 이진 완전 회복은 신규 계획에서 폐지
+    res = _run({"playbooks": [_proposal(
+        arm_conditions={"prev_day_high_reclaim": "==true", "execution_strength": ">110"},
+    )]})
+    assert res.rejected == 1 and "폐지" in res.rejected_reasons[0]
+    # 등급형 recovery는 정상 경로
+    ok = _run({"playbooks": [_proposal(
+        arm_conditions={"prev_day_high_recovery": ">=0.97", "execution_strength": ">110"},
+    )]})
+    assert ok.rejected == 0
+
+
+def test_prompt_excludes_reclaim_menu_and_injects_intraday() -> None:
+    p = build_prompt([_thesis()], [], [], [], R5Config(),
+                     intraday_lines=["001740: 20260714 고가 5,500 · 종가 5,100 (종가→고가 +7.8%) — recovery 1.0 = 5,500"])
+    # 메뉴(관측 가능 목록)에선 빠지고, 폐지 규칙으로만 언급
+    assert "  - prev_day_high_reclaim" not in p
+    assert "폐지" in p and "prev_day_high_recovery" in p
+    # 당일 가격 섹션 주입 — 임계 산정 근거
+    assert "## 당일 가격" in p and "recovery 1.0 = 5,500" in p
+    # 미주입 시 섹션 없음(규칙 문구의 언급과 구분 — 섹션 헤더 전체로 검사)
+    p2 = build_prompt([_thesis()], [], [], [], R5Config())
+    assert "## 당일 가격 (KIS 실측" not in p2
