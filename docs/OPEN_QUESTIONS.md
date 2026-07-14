@@ -205,8 +205,13 @@
 - 검증: `test_prev_high_prefers_kis_daily_over_stale_db`·`test_prev_high_stale_db_yields_no_observation`·
   `test_confirmation_condition_missing_discards_playbook`·`test_graded_recovery_is_flow_variable` +
   실DB arm_check에서 뉴파워 reclaim이 10,400 기준 미충족(0)으로 전환 확인.
-- **잔여(🟡):** 기존 승인 풀(7/13 산출)은 여전히 이진 reclaim 사용 — 오늘 밤 R5 산출부터 새 규칙 적용.
-  가드 일괄 감사(2026-07-14)의 나머지 항목은 별도 수정 대기.
+- **2차 개정(2026-07-14 밤, 운영자 "여전히 전고점 기준이 너무 강해"):** 21:05 첫 산출에서 4건 중
+  3건이 여전히 `reclaim==true`(-5% 급락일에 완전 회복 = 사실상 미발동 계획) → ① **이진 reclaim을
+  신규 계획에서 폐지**(arm/abort에 쓰면 폐기 — 완전 회복도 `recovery>=1.0`으로 명시) ② R5에
+  **당일 고가·종가 이격 주입**(`synth._intraday_price_lines`, KIS 일자별 결정론) ③ 임계 산정 가이드
+  (이격 -3% 이내만 완전 회복 현실적, 그 외 일부 회복 임계·타 신호). 기존 풀 초안의 reclaim 평가는
+  유지(관측·선택기 불변). confirmation 트랜치 키는 v1 미집행이라 폐지 대상 아님.
+- **잔여(🟡):** 가드 일괄 감사(2026-07-14)의 나머지 항목(A5·C2·C3·D1)은 별도 수정 대기.
 
 ### 🟡 R7-1 — R7 채점·레짐의 입력 데이터 갭
 - **맥락:** 설계서 §3 R7 채점은 "트리거 발동 후 시계 내 방향 일치"·운영자 준수율, 레짐은 시초 1시간 변동성·개인 강도 프록시(신용잔고·예탁금·레버리지 ETF)를 요구. 현재 ①흐름 데이터 부재로 트리거 발동 감지 불가 ②집행 데이터 부재(KIS 미구현)로 준수율 측정 불가 ③레짐 입력(금융투자협회 신용잔고 등, 부록 A) 수집기 부재.

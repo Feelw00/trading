@@ -31,6 +31,41 @@ DEFAULT_THESES_LIMIT = 60
 _MACRO_GLOB = "macro_indicators.sqlite"
 
 
+def _intraday_price_lines(srtns: list[str]) -> list[str]:
+    """당일(최근 확정 거래일) 고가·종가와 이격 — R5 회복 임계 산정용(운영자 2026-07-14 밤:
+    "전고점 기준이 너무 강해" — 도달 불가능한 완전 회복 조건 방지).
+
+    KIS 일자별 시세(관측 확정 TR) 결정론 수집. 키 미설정·호출 실패·비수치는 그 종목 결측
+    (추측 금지) — 결측이면 R5는 보수적으로 임계를 잡거나 다른 확인 신호를 쓴다."""
+    from trading.collectors.kis import client_from_env as kis_from_env
+
+    kis = kis_from_env()
+    if kis is None:
+        return []
+    out: list[str] = []
+    for s in srtns:
+        try:
+            rows = kis.daily_prices(s)
+        except Exception:  # noqa: BLE001 — 종목 단위 결측 흡수
+            continue
+        if not rows:
+            continue
+        r0 = rows[0]
+        try:
+            hi = float(str(r0.get("stck_hgpr") or 0))
+            cl = float(str(r0.get("stck_clpr") or 0))
+        except (TypeError, ValueError):
+            continue
+        if hi <= 0 or cl <= 0:
+            continue
+        gap = (hi - cl) / cl * 100
+        out.append(
+            f"{s}: {r0.get('stck_bsop_date')} 고가 {hi:,.0f} · 종가 {cl:,.0f} "
+            f"(종가→고가 +{gap:.1f}%) — recovery 1.0 = {hi:,.0f}"
+        )
+    return out
+
+
 def _macro_lines() -> list[str]:
     """최신 거시 수집 sqlite에서 verified 지표를 compact 라인으로(reason_news와 동일 규약)."""
     base = Path(".runtime") / "collect"
@@ -124,6 +159,7 @@ def run(
     result: R5Result = run_r5(
         llm, theses, events, packs,
         macro_lines=_macro_lines() + live_backdrop_lines(now=now),
+        intraday_lines=_intraday_price_lines(srtns),
         now=now, config=config or R5Config(),
     )
 

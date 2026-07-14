@@ -118,17 +118,18 @@ def test_candidate_shows_would_arm_preview(tmp_path: Path, monkeypatch: Any) -> 
 
 
 def test_boolean_arm_condition_activates(tmp_path: Path, monkeypatch: Any) -> None:
-    # SEL-2 end-to-end: prev_day_high_reclaim ==true 조건이 발동까지 반영된다
+    # SEL-2 end-to-end: boolean ==true 조건이 발동까지 반영된다
+    # (reclaim은 2026-07-14 폐지 — 잔존 boolean인 sector_ignition으로 검증)
     _no_kis(monkeypatch)
     inj = tmp_path / "flow"
     inj.mkdir()
     (inj / "20260611.json").write_text(
-        json.dumps({"001740": {"prev_day_high_reclaim": 1.0}}), encoding="utf-8"
+        json.dumps({"001740": {"sector_ignition": 1.0}}), encoding="utf-8"
     )
     monkeypatch.setattr(flowsnap, "INJECT_DIR", inj)
     ps = PlaybookStore(tmp_path / "pb.sqlite")
     res = run_r5(
-        _OneShotClient({"playbooks": [_proposal(arm_conditions={"prev_day_high_reclaim": "==true"})],
+        _OneShotClient({"playbooks": [_proposal(arm_conditions={"sector_ignition": "==true"})],
                         "checklist": [], "scenario_tree": []}),
         [_thesis()], [], [], now=SYNTH,
     )
