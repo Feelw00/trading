@@ -4,6 +4,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from trading import approve
 from trading.contracts.order import (
     MarketState,
@@ -122,4 +124,22 @@ def test_active_pool_dedup_latest_per_symbol_side(tmp_path: Path) -> None:
     active = ps.active_playbooks(datetime(2026, 6, 11, 9, 0, tzinfo=KST))
     assert len(active) == 1
     assert active[0][1].id == "order.20260610.005930.buy"  # 최신 as_of
+    ps.close()
+
+
+# --- 활성 풀 다이제스트 CLI (--pool, boot 배선) ---
+
+
+def test_print_pool_digest_and_empty(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from trading.collectors.base import now_kst
+
+    ps = PlaybookStore(tmp_path / "pb.sqlite")
+    assert approve._print_pool(playbook_store=ps) == 0
+    assert "활성(approved) 풀 없음" in capsys.readouterr().out
+
+    _add(ps, now_kst().strftime("%Y%m%d"), "001740", status=OrderStatus.APPROVED,
+         as_of=now_kst())
+    assert approve._print_pool(playbook_store=ps) == 0
+    out = capsys.readouterr().out
+    assert "활성(approved) 풀 1건" in out and "001740" in out and "손절 5,000" in out
     ps.close()

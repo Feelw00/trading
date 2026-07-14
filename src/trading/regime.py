@@ -111,4 +111,19 @@ def live_backdrop_lines(*, now: datetime | None = None) -> list[str]:
     return lines
 
 
-__all__ = ["Regime", "RegimeSnapshot", "live_backdrop_lines", "snapshot"]
+def main() -> int:
+    """CLI — 부팅·수시 점검용 실시간 백드롭 출력(결정론). `python -m trading.regime`."""
+    from trading.collectors.toss import client_from_env
+
+    snap = snapshot(client_from_env())
+    print(f"레짐 {snap.regime.value.upper()}")
+    for line in snap.lines:
+        print(line)
+    return 0
+
+
+__all__ = ["Regime", "RegimeSnapshot", "live_backdrop_lines", "main", "snapshot"]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

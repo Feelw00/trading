@@ -12,7 +12,7 @@ description: 거시지표 수집 — 금리·환율·유가·주요지수를 실
 |---|---|
 | 한국 기준금리·국고채 3Y/10Y | **ECOS** |
 | USD/KRW | **ECOS** |
-| KOSPI·KOSDAQ | **공공데이터/KRX** |
+| KOSPI·KOSDAQ | **공공데이터/KRX** (EOD) + **토스 지표 실시간**(오버레이, EXEC-7) |
 | S&P500·NASDAQ·SOX(필라델피아 반도체) | **FRED** |
 | WTI·Brent | **FRED** |
 
@@ -20,7 +20,8 @@ description: 거시지표 수집 — 금리·환율·유가·주요지수를 실
 이 수집은 **결정론적 어댑터가 수행**한다. 스킬은 트리거·보고만 — LLM은 데이터에 손대지 않는다:
 1. `.env` 로드 후 `python -m trading.collectors.macro` 실행.
 2. 어댑터가 FRED/ECOS 조회 → `.runtime/collect/<날짜>/macro_indicators.sqlite` append-only 적재.
-3. 어댑터 출력(`적재 N건(verified) / blocked N건`)을 그대로 보고.
+3. **실시간 오버레이(EXEC-7)**: `poetry run python -m trading.regime` — 토스 지표로 코스피·코스닥 **현재가·당일 등락률·레짐 판정**(결정론, 순수 코드). 토스 미설정·조회 실패는 UNKNOWN 그대로 보고(추측 금지).
+4. 보고: 어댑터 출력(`적재 N건(verified) / blocked N건`) + **실시간 줄과 EOD as_of를 병기**. EOD 지수(KOSPI 등)는 +1영업일 공개라 실시간과 다를 수 있다 — **코스피·코스닥 헤드라인 값은 실시간을 우선**하고 EOD값은 as_of를 붙여 보조로만(2026-07-14 오독: 7/13 -8.9% 폭락 다음날 아침 백드롭에 7/10 값이 나갔다 — 재발 방지).
 
 > **하네스(COLLECT-3):** 데이터 fetch는 어댑터(승인 소스)만 한다. **독자 웹서치 금지.** 소스 실패·키 미설정·ECOS 코드 미설정 항목은 `blocked`로 출력하고 **다른 소스·웹서치로 대체하지 않는다.** ECOS 통계코드는 COLLECT-2 미확정 → 현재 blocked, 확정 후 `src/trading/collectors/macro.py` 레지스트리에 입력.
 

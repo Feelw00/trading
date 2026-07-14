@@ -40,3 +40,13 @@ def test_regime_snapshot_lines_carry_change() -> None:
     assert any("KOSPI" in ln and "-9.0%" in ln for ln in s.lines)
 
 
+
+
+def test_regime_cli_unknown_without_toss(capsys: Any, monkeypatch: Any) -> None:
+    import trading.collectors.toss as toss_mod
+    from trading.regime import main
+
+    monkeypatch.setattr(toss_mod, "client_from_env", lambda: None)
+    assert main() == 0
+    out = capsys.readouterr().out
+    assert "레짐 UNKNOWN" in out and "관측 불가" in out

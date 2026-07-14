@@ -33,8 +33,10 @@ description: 부팅 컨텍스트 — DB에서 데이터 신선도·스크리너 
 - **PASS만이면 한 줄 요약. WARN/FAIL 있으면 ⚠️ 잡명+사유 보고**(잡별 로그 `.runtime/logs/cron/<잡>.log` 참조). 라운드 실패 P1 알림(Telegram) 수신분과 대조.
 - 게이트웨이 생존도 함께: tmux `openclaw-trading` 세션 + 포트 18790 (죽었으면 `bash ops/openclaw/start-gateway.sh` 제안).
 
-## 2. 오늘 후보 (스크리너 — DB 위)
+## 2. 오늘 감시 풀 + 스크리너 후보
+- **오늘의 실제 대상은 approved 풀이다(EXEC-1 자동 승인 체제)**: `poetry run python -m trading.approve --pool` — 종목명·손절/경고/익절·만료 다이제스트. 부팅 보고에서 스크리너보다 **먼저** 보여준다.
 - `poetry run python -m trading.screener` → 상위 후보 + 섹터 태그. **1a 자동 수집이 있었으면 수집 완료 후에 실행**(최신 시세 기준 후보).
+- **stale 라벨(필수)**: 스크리너 `as_of`가 최근 거래일보다 이전(공개대기 — 아침 부팅에선 항상 그렇다)이면 "**전일 미반영(as_of=…) — 참고용**" 라벨을 붙인다. 전일·당일 지수 급변(collect-macro 실시간 오버레이가 CAUTION/RISK_OFF이거나 전일 급락)이 있었으면 **이 순위는 사실상 무효**라고 명시한다(7/14 오독: 7/13 -8.9% 폭락 다음날 아침, 7/10 기준 순위가 "오늘 후보"로 나갔다).
 
 ## 2b. 보유 포지션 점검 (P-8)
 - `poetry run python -m trading.positions` — open 포지션의 손익·스탑 잔여 거리·시간손절 잔여.
