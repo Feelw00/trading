@@ -655,7 +655,8 @@ def reconcile(
         if stop_level:
             trigger = round_down_to_tick(stop_level)
             order_price = stop_order_price(trigger)  # 플로어 = max(2틱, 1%) — 급락 관통 체결(EXEC-8)
-            expiry = cal.add_trading_days(resolved.date(), draft.time_stop_days or 20)
+            # 브래킷 만료 = 시간손절 +1거래일(EXEC-9) — 만료 시각 미확정이라 집행 창을 덮는다
+            expiry = cal.add_trading_days(resolved.date(), (draft.time_stop_days or 20) + 1)
             # 브래킷 상단(EXEC-2): R5가 targets를 지정했으면 **최종 타깃**(부분 레그는 감시
             # 루프의 manage_exits 몫), 없으면 R:R 비율(EXEC_RR, 기본 1.5) 폴백.
             if draft.targets:
@@ -929,7 +930,7 @@ def trim_for_shortfall(
         store.log(day=day, draft_id=old.id, symbol=pos.symbol, kind="trim_sell", mode=mode,
                   qty=trim_qty, price=sell_price, at=resolved.isoformat(),
                   detail=f"부분 회수(잔여 여력 {rem_up:.1%}) — 신규 트리거 자금")
-        expiry = cal.add_trading_days(resolved.date(), old.time_stop_days or 20)
+        expiry = cal.add_trading_days(resolved.date(), (old.time_stop_days or 20) + 1)  # EXEC-9 +1
         stop_trigger = round_down_to_tick(old.stop.level) if old.stop and old.stop.level else 0
         final_t = round_down_to_tick(old.targets[-1].level) if old.targets else 0
         if bracket and stop_trigger:
@@ -1095,6 +1096,118 @@ def sync_brackets(
     return acted
 
 
+# 시간손절 자동 집행 창(운영자 결정 2026-07-14): 14:30~14:50 — 15:00 직전 단타 변수 회피
+TIME_STOP_WINDOW: tuple[dt_time, dt_time] = (dt_time(14, 30), dt_time(14, 50))
+
+
+def manage_time_stops(
+    *,
+    store: ExecStore,
+    mode: str,
+    toss: TossClient | None,
+    price_fn: Callable[[str], float | None],
+    position_store: PositionStore | None,
+    dispatcher: AlertDispatcher | None = None,
+    calendar: MarketCalendar | None = None,
+    now: datetime | None = None,
+) -> list[str]:
+    """시간손절 자동 집행(EXEC-9, 운영자 결정 2026-07-14) — 도래일 14:30~14:50 창에서 잔량 정리.
+
+    기존엔 [정리 검토] 플래그만 뜨고 매도는 수동이었다(가드 감사 D2: 브래킷 만료 후 무방비).
+    이제 도래일(놓쳤으면 그 이후 첫 거래일)의 창에서 브래킷 취소→지정가 전량 매도.
+    - 취소 실패 = 집행 중단(기존 보호 유지, 다음 패스 재시도) · 매도 실패 = 브래킷 원복(A1).
+    - 미체결 추격은 레그 재호가 루프가 담당(kind ``leg_timestop`` — pending_leg_orders 규약).
+    반환 = 집행한 draft_id."""
+    resolved = (now if now is not None else now_kst()).astimezone(KST)
+    day = resolved.strftime("%Y%m%d")
+    d = dispatcher if dispatcher is not None else AlertDispatcher()
+    acted: list[str] = []
+    if mode == "off" or position_store is None:
+        return acted
+    if not (TIME_STOP_WINDOW[0] <= resolved.time() < TIME_STOP_WINDOW[1]):
+        return acted
+    cal = calendar if calendar is not None else MarketCalendar.default()
+    live_only = "live" if mode == "live" else None
+    for pos in position_store.open_positions():
+        if not pos.time_stop_days or not pos.source_ref:
+            continue
+        expiry = cal.add_trading_days(pos.as_of.astimezone(KST).date(), pos.time_stop_days)
+        if resolved.date() < expiry:
+            continue
+        draft_id = pos.source_ref
+        if store.has(draft_id, ("leg_timestop",), mode=live_only):
+            continue  # 이미 집행(추격은 레그 루프 몫)
+        if store.has(draft_id, ("bracket_gone",), mode=live_only):
+            continue  # 보유 상태 불명(A6) — 자동 매도 금지, P0로 수동 유도됨
+        price = price_fn(pos.symbol)
+        if price is None:
+            continue  # 관측 불가 — 값을 지어내지 않는다, 다음 패스
+        sell_price = round_down_to_tick(price)
+        bracket = store.latest_bracket(draft_id, mode=mode)
+        leg_oid = ""
+        if mode == "live" and toss is not None:
+            if bracket and bracket[0]:
+                try:
+                    toss.cancel_conditional(bracket[0])
+                except Exception as exc:  # noqa: BLE001 — 보호 잔존, 다음 패스 재시도
+                    store.log(day=day, draft_id=draft_id, symbol=pos.symbol, kind="error",
+                              mode=mode, detail=f"시간손절 중단(브래킷 취소 실패): {exc}"[:200],
+                              at=resolved.isoformat())
+                    continue
+            try:
+                res = toss.place_limit_order(
+                    pos.symbol, "SELL", pos.qty, sell_price,
+                    client_order_id=f"tstop-{draft_id}"[:36].replace(".", "-"),
+                )
+                leg_oid = str(res.get("orderId") or "")
+            except Exception as exc:  # noqa: BLE001 — 매도 실패: 브래킷 원복(A1)
+                store.log(day=day, draft_id=draft_id, symbol=pos.symbol, kind="error",
+                          mode=mode, detail=f"시간손절 매도 실패: {exc}"[:200],
+                          at=resolved.isoformat())
+                if bracket and bracket[0]:
+                    try:
+                        restored = _place_bracket(
+                            toss, symbol=pos.symbol, qty=bracket[1], stop_trigger=bracket[2],
+                            final_target=0,
+                            expire_date=cal.add_trading_days(resolved.date(), 1).isoformat(),
+                            client_order_id=f"restore-{draft_id}"[:36].replace(".", "-"),
+                        )
+                    except Exception:  # noqa: BLE001
+                        restored = ""
+                    if restored:
+                        store.log(day=day, draft_id=draft_id, symbol=pos.symbol,
+                                  kind="stop_sent", mode=mode, qty=bracket[1], price=bracket[2],
+                                  order_id=restored, detail="시간손절 실패 — 손절 단독 원복(A1)",
+                                  at=resolved.isoformat())
+                    else:
+                        store.log(day=day, draft_id=draft_id, symbol=pos.symbol,
+                                  kind="bracket_gone", mode=mode,
+                                  detail="시간손절 중 무방비(매도·원복 실패)",
+                                  at=resolved.isoformat())
+                        d.notify(Alert(severity=Severity.P0,
+                                       what=f"브래킷 무방비 — {pos.symbol} {pos.qty}주 (시간손절 실패)",
+                                       rule="시간손절(EXEC-9): 취소 후 매도·원복 실패(A1)",
+                                       action="토스 앱에서 수동 매도 또는 손절 재등록",
+                                       deadline="즉시", created_at=resolved))
+                continue
+        store.log(day=day, draft_id=draft_id, symbol=pos.symbol, kind="leg_timestop",
+                  mode=mode, qty=pos.qty, price=sell_price, order_id=leg_oid or None,
+                  at=resolved.isoformat(),
+                  detail=f"시간손절 집행(도래 {expiry.isoformat()}, 14:30~14:50 창)")
+        position_store.append(pos.model_copy(update={
+            "status": PositionStatus.CLOSED,
+            "close_reason": f"시간손절({pos.time_stop_days}거래일) 자동 집행",
+        }))
+        tag = "시간손절 매도" if mode == "live" else "시간손절 매도 (dry-run)"
+        d.notify(Alert(severity=Severity.P0,
+                       what=f"{tag} — {pos.symbol} {pos.qty}주 @{sell_price:,} (도래 {expiry.isoformat()})",
+                       rule="시간손절(EXEC-9): 도래일 14:30~14:50 창 자동 정리 — 미진행 셋업 회수",
+                       action="개입 불필요 — 미체결 시 자동 재호가",
+                       deadline="-", created_at=resolved))
+        acted.append(draft_id)
+    return acted
+
+
 def manage_exits(
     *,
     store: ExecStore,
@@ -1188,7 +1301,7 @@ def manage_exits(
         final_target = (
             round_down_to_tick(draft.targets[-1].level) if draft.targets else 0
         )
-        expiry = cal.add_trading_days(resolved.date(), draft.time_stop_days or 20)
+        expiry = cal.add_trading_days(resolved.date(), (draft.time_stop_days or 20) + 1)  # EXEC-9 +1
 
         leg_key = ""
         leg_qty = 0
@@ -1280,6 +1393,6 @@ def manage_exits(
 __all__ = [
     "BracketGapError", "DEFAULT_DB", "KILL_FILE", "ExecPolicy", "ExecResult", "ExecStore",
     "cap_fraction", "consider_rotation", "derive_entry_band", "exec_mode", "execute_armed",
-    "manage_exits", "planned_upside_pct", "reconcile",
+    "manage_exits", "manage_time_stops", "planned_upside_pct", "reconcile",
     "round_down_to_tick", "stop_order_price", "sync_brackets", "tick_size", "trim_for_shortfall",
 ]

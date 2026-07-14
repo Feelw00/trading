@@ -392,6 +392,13 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
         )
         for did in legs:
             print(f"  청산 레그[{mode}]: {did}")
+        # 시간손절 자동 집행(EXEC-9) — 도래일 14:30~14:50 창(운영자 결정 2026-07-14)
+        for did in _exec.manage_time_stops(
+            store=store, mode=mode, toss=toss,
+            price_fn=lambda s: _live_price(s, toss),
+            position_store=pos, dispatcher=dispatcher, now=now,
+        ):
+            print(f"  시간손절 집행[{mode}]: {did}")
     finally:
         ps.close()
         store.close()

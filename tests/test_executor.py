@@ -808,3 +808,67 @@ def test_reentry_blocked_while_holding_same_symbol(tmp_path: Path) -> None:
                       toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
     assert r.action == "skipped" and "기보유" in r.detail
     store.close(); pos.close()
+
+
+def test_time_stop_auto_liquidation_in_window(tmp_path: Path) -> None:
+    """EXEC-9: 시간손절 도래일 14:30~14:50 창에서 브래킷 취소→전량 매도→포지션 마감 (운영자 2026-07-14)."""
+    from trading.executor import manage_time_stops
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _FakeToss()
+    d = _fill_ladder(store, pos, toss, "live")  # time_stop 7거래일, 진입 7/14
+    in_window = datetime(2026, 7, 24, 14, 35, tzinfo=KST)  # 도래일 7/24(7/14+7거래일 — 7/17 휴장 스킵)
+
+    # 도래 전(7/23) — 창 안이어도 미집행
+    early = manage_time_stops(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                              price_fn=lambda s: 10_100.0, position_store=pos,
+                              dispatcher=_Rec(), now=datetime(2026, 7, 23, 14, 35, tzinfo=KST))  # type: ignore[arg-type]
+    assert early == []
+    # 도래일 창 밖(10:00) — 미집행
+    off_window = manage_time_stops(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                                   price_fn=lambda s: 10_100.0, position_store=pos,
+                                   dispatcher=_Rec(), now=datetime(2026, 7, 24, 10, 0, tzinfo=KST))  # type: ignore[arg-type]
+    assert off_window == []
+    # 도래일 14:35 — 브래킷 취소 + 전량 매도 + 포지션 마감 + 저널
+    rec = _Rec()
+    acted = manage_time_stops(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                              price_fn=lambda s: 10_100.0, position_store=pos,
+                              dispatcher=rec, now=in_window)  # type: ignore[arg-type]
+    assert acted == [d.id]
+    assert toss.cancels == ["oco-9"]
+    sells = [o for o in toss.orders if o["side"] == "SELL"]
+    assert sells and sells[-1]["qty"] == 500 and sells[-1]["price"] == 10_100
+    assert store.has(d.id, ("leg_timestop",), mode="live")
+    assert pos.open_positions() == []
+    last = pos.latest_for_source(d.id)
+    assert last is not None and "시간손절" in last.close_reason
+    assert any("시간손절 매도" in a.what for a in rec.alerts)
+    # 재집행 없음(저널 dedup)
+    again = manage_time_stops(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                              price_fn=lambda s: 10_100.0, position_store=pos,
+                              dispatcher=_Rec(), now=in_window)  # type: ignore[arg-type]
+    assert again == []
+    store.close(); pos.close()
+
+
+def test_time_stop_cancel_failure_keeps_protection(tmp_path: Path) -> None:
+    """EXEC-9 + A1: 브래킷 취소 실패 시 매도하지 않는다(기존 보호 유지, 다음 패스 재시도)."""
+    from trading.executor import manage_time_stops
+
+    class _CancelFailToss(_FakeToss):
+        def cancel_conditional(self, conditional_order_id: str) -> None:
+            raise RuntimeError("cancel boom")
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _CancelFailToss()
+    d = _fill_ladder(store, pos, toss, "live")
+    n_orders = len(toss.orders)
+    acted = manage_time_stops(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                              price_fn=lambda s: 10_100.0, position_store=pos,
+                              dispatcher=_Rec(), now=datetime(2026, 7, 24, 14, 35, tzinfo=KST))  # type: ignore[arg-type]
+    assert acted == [] and len(toss.orders) == n_orders  # 매도 미발생
+    assert not store.has(d.id, ("leg_timestop",), mode="live")
+    assert pos.open_positions() != []  # 포지션 유지
+    store.close(); pos.close()
