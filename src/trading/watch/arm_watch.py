@@ -356,9 +356,16 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
         done = _exec.reconcile(
             store=store, mode=mode, toss=toss, drafts_by_id=drafts,
             dispatcher=dispatcher, position_store=pos, now=now,
+            price_fn=lambda s: _live_price(s, toss),  # A7: 미체결 매수 역선택 정리
         )
         for did in done:
             print(f"  체결 처리[{mode}]: {did}")
+        # 브래킷 생존 대조(A6) — 익절/손절 체결·취소를 감지해 유령 보유 매도 시도 차단
+        for did in _exec.sync_brackets(
+            store=store, mode=mode, toss=toss, position_store=pos,
+            dispatcher=dispatcher, now=now,
+        ):
+            print(f"  브래킷 부재[{mode}]: {did}")
         # 계단식 청산(EXEC-2) — 부분 익절·경고 축소·본전 상향
         legs = _exec.manage_exits(
             store=store, mode=mode, toss=toss, drafts_by_id=drafts,

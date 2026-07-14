@@ -592,3 +592,140 @@ def test_store_queries_mode_isolation(tmp_path: Path) -> None:
     assert store.has("_regime_unknown", ("regime",), day="20260714") is False
     assert store.has("_regime_unknown", ("regime",), day="20260713") is True
     store.close()
+
+
+def test_a1_bracket_gap_flags_p0_and_blocks_next_legs(tmp_path: Path) -> None:
+    """A1: 취소 후 재등록(재시도 포함) 실패 → P0+bracket_gone 박제, 다음 패스 레그 중단(이중 매도 금지)."""
+    from trading.executor import manage_exits
+
+    class _GapToss(_FakeToss):
+        fail_place = False
+
+        def place_oco_sell(self, *a: Any, **k: Any) -> dict[str, Any]:
+            if self.fail_place:
+                raise RuntimeError("place boom")
+            return super().place_oco_sell(*a, **k)
+
+        def place_stop_sell_conditional(self, *a: Any, **k: Any) -> dict[str, Any]:
+            if self.fail_place:
+                raise RuntimeError("place boom")
+            return super().place_stop_sell_conditional(*a, **k)
+
+        def cancel_order(self, order_id: str) -> dict[str, Any]:
+            return {}
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _GapToss()
+    d = _fill_ladder(store, pos, toss, "live")
+    toss.fail_place = True
+    rec = _Rec()
+    acted = manage_exits(store=store, mode="live", toss=toss, drafts_by_id={d.id: d},  # type: ignore[arg-type]
+                         price_fn=lambda s: 12_050.0, position_store=pos,
+                         dispatcher=rec, now=NOW)  # type: ignore[arg-type]
+    assert acted == []  # 레그는 나갔으나 브래킷 무방비 — 성공 처리 아님
+    assert store.has(d.id, ("bracket_gone",), mode="live")
+    assert any(a.severity.value == "P0" and "무방비" in a.what for a in rec.alerts)
+    sells_before = len([o for o in toss.orders if o["side"] == "SELL"])
+    # 다음 패스: bracket_gone 박제 → 레그 재시도 없음(이중 매도 금지)
+    manage_exits(store=store, mode="live", toss=toss, drafts_by_id={d.id: d},  # type: ignore[arg-type]
+                 price_fn=lambda s: 12_050.0, position_store=pos,
+                 dispatcher=_Rec(), now=NOW)  # type: ignore[arg-type]
+    assert len([o for o in toss.orders if o["side"] == "SELL"]) == sells_before
+    store.close(); pos.close()
+
+
+def test_a2_partial_fill_cancels_remainder_and_registers_stop(tmp_path: Path) -> None:
+    """A2: 부분 체결 → 잔여 매수 즉시 취소 + 체결분 스탑 등록(추가 체결 무방비 방지)."""
+
+    class _PartialToss(_FakeToss):
+        def __init__(self) -> None:
+            super().__init__()
+            self.buy_cancels: list[str] = []
+
+        def order(self, order_id: str) -> dict[str, Any]:
+            return {"status": "PARTIAL_FILLED",
+                    "execution": {"filledQuantity": "10", "averagePrice": "10000"}}
+
+        def cancel_order(self, order_id: str) -> dict[str, Any]:
+            self.buy_cancels.append(order_id)
+            return {}
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _PartialToss()
+    d = _ladder_draft()
+    execute_armed(d, price=10_000, store=store, policy=ExecPolicy(), mode="live",
+                  toss=toss, dispatcher=_Rec(), now=NOW)  # type: ignore[arg-type]
+    reconcile(store=store, mode="live", toss=toss, drafts_by_id={d.id: d},  # type: ignore[arg-type]
+              dispatcher=_Rec(), position_store=pos, now=NOW)  # type: ignore[arg-type]
+    assert toss.buy_cancels == ["ord-9"]                      # 잔여 취소
+    bracket = store.latest_bracket(d.id, mode="live")
+    assert bracket is not None and bracket[1] == 10           # 체결분만 보호
+    assert store.has(d.id, ("buy_cancel_rest",), mode="live")
+    assert store.pending_fills(mode="live") == []             # 추적 종결(스탑 등록됨)
+    store.close(); pos.close()
+
+
+def test_a6_sync_brackets_detects_gone_and_holds_on_unknown_schema(tmp_path: Path) -> None:
+    """A6: 브로커 목록에 브래킷 부재 → P0+박제(일 1회). 스키마 불명 응답은 판정 보류."""
+    from trading.executor import sync_brackets
+
+    class _CondToss(_FakeToss):
+        cond_response: Any = {"items": []}
+
+        def cancel_order(self, order_id: str) -> dict[str, Any]:
+            return {}
+
+        def conditional_orders(self) -> Any:
+            return self.cond_response
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _CondToss()
+    d = _fill_ladder(store, pos, toss, "live")
+    # 스키마 불명 — 판정 보류(지어내지 않음)
+    toss.cond_response = "unexpected"
+    assert sync_brackets(store=store, mode="live", toss=toss, position_store=pos,  # type: ignore[arg-type]
+                         dispatcher=_Rec(), now=NOW) == []  # type: ignore[arg-type]
+    # 생존 — 아무 일 없음
+    toss.cond_response = {"items": [{"conditionalOrderId": "oco-9"}]}
+    assert sync_brackets(store=store, mode="live", toss=toss, position_store=pos,  # type: ignore[arg-type]
+                         dispatcher=_Rec(), now=NOW) == []  # type: ignore[arg-type]
+    # 부재 — P0 + 박제, 같은 날 재알림 없음
+    toss.cond_response = {"items": []}
+    rec = _Rec()
+    assert sync_brackets(store=store, mode="live", toss=toss, position_store=pos,  # type: ignore[arg-type]
+                         dispatcher=rec, now=NOW) == [d.id]  # type: ignore[arg-type]
+    assert any("브래킷 부재" in a.what for a in rec.alerts)
+    assert sync_brackets(store=store, mode="live", toss=toss, position_store=pos,  # type: ignore[arg-type]
+                         dispatcher=_Rec(), now=NOW) == []  # type: ignore[arg-type]
+    store.close(); pos.close()
+
+
+def test_a7_stale_pending_buy_canceled_on_setup_break(tmp_path: Path) -> None:
+    """A7: 미체결 매수 + 현재가가 손절 이하(셋업 붕괴) → 매수 취소(되돌림 역선택 체결 방지)."""
+
+    class _PendingToss(_FakeToss):
+        def __init__(self) -> None:
+            super().__init__()
+            self.status = "PENDING"
+            self.buy_cancels: list[str] = []
+
+        def cancel_order(self, order_id: str) -> dict[str, Any]:
+            self.buy_cancels.append(order_id)
+            return {}
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _PendingToss()
+    d = _ladder_draft()
+    execute_armed(d, price=10_000, store=store, policy=ExecPolicy(), mode="live",
+                  toss=toss, dispatcher=_Rec(), now=NOW)  # type: ignore[arg-type]
+    # 현재가 8,900 ≤ 손절 9,000 — 깨진 셋업의 지정가는 취소
+    reconcile(store=store, mode="live", toss=toss, drafts_by_id={d.id: d},  # type: ignore[arg-type]
+              dispatcher=_Rec(), position_store=pos, now=NOW,  # type: ignore[arg-type]
+              price_fn=lambda s: 8_900.0)
+    assert toss.buy_cancels == ["ord-9"]
+    assert store.pending_fills(mode="live") == []  # buy_cancel로 추적 종결
+    store.close(); pos.close()

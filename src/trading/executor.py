@@ -34,7 +34,7 @@ import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from math import floor
 from pathlib import Path
 
@@ -251,7 +251,7 @@ class ExecStore:
             params = (mode,)
         sql += (
             " AND draft_id NOT IN (SELECT draft_id FROM exec_log"
-            "                      WHERE kind IN ('stop_intent','stop_sent','skip_stop')"
+            "                      WHERE kind IN ('stop_intent','stop_sent','skip_stop','buy_cancel')"
         )
         if mode:
             sql += " AND mode=?"
@@ -483,8 +483,12 @@ def reconcile(
     position_store: PositionStore | None = None,
     calendar: MarketCalendar | None = None,
     now: datetime | None = None,
+    price_fn: Callable[[str], float | None] | None = None,
 ) -> list[str]:
-    """미체결 추적 → 체결 시 손절 조건주문 등록 + 포지션 박제. 반환=처리된 draft_id."""
+    """미체결 추적 → 체결 시 손절 조건주문 등록 + 포지션 박제. 반환=처리된 draft_id.
+
+    ``price_fn`` 이 주어지면(운영 루프) 미체결 매수의 역선택 정리(A7)도 수행 —
+    셋업 붕괴(현재가≤손절)·소진(현재가≥익절1)·마감 정리 창(14:40~)이면 매수를 취소한다."""
     resolved = (now if now is not None else now_kst()).astimezone(KST)
     day = resolved.strftime("%Y%m%d")
     d = dispatcher if dispatcher is not None else AlertDispatcher()
@@ -503,16 +507,66 @@ def reconcile(
             except Exception:  # noqa: BLE001 — 조회 실패는 다음 패스 재시도
                 continue
             status = str(o.get("status") or "")
-            if status not in ("FILLED", "PARTIAL_FILLED"):
-                continue
             ex = o.get("execution") or {}
             try:
-                filled_qty = int(float(str(ex.get("filledQuantity") or 0)))
+                filled_from_ex = int(float(str(ex.get("filledQuantity") or 0)))
+            except ValueError:
+                filled_from_ex = 0
+            if status in ("CANCELED", "REJECTED") and filled_from_ex < 1:
+                # 체결 없이 종결 — 미체결 좀비 추적 중단(A7). 부분 체결분이 있으면 아래
+                # 체결 경로로 넘어가 스탑 등록을 계속 재시도한다(무방비 금지).
+                store.log(day=day, draft_id=draft_id, symbol=symbol, kind="buy_cancel",
+                          mode=mode, detail=f"매수 {status} — 추적 종료", at=resolved.isoformat())
+                continue
+            if status not in ("FILLED", "PARTIAL_FILLED", "CANCELED", "REJECTED"):
+                # A7: 미체결 매수 역선택 정리 — 셋업이 깨졌거나 마감 정리 창이면 취소
+                cur = price_fn(symbol) if price_fn is not None else None
+                broken = bool(draft.stop and draft.stop.level and cur is not None
+                              and cur <= draft.stop.level)
+                exhausted = bool(draft.targets and cur is not None
+                                 and cur >= draft.targets[0].level)
+                closeout = resolved.time() >= dt_time(14, 40)
+                if broken or exhausted or closeout:
+                    why = ("셋업 붕괴" if broken else "셋업 소진" if exhausted else "마감 정리")
+                    try:
+                        toss.cancel_order(order_id)
+                    except Exception as exc:  # noqa: BLE001 — 취소 실패는 다음 패스 재시도
+                        store.log(day=day, draft_id=draft_id, symbol=symbol, kind="error",
+                                  mode=mode, detail=f"미체결 매수 취소 실패: {exc}"[:200],
+                                  at=resolved.isoformat())
+                        continue
+                    store.log(day=day, draft_id=draft_id, symbol=symbol, kind="buy_cancel",
+                              mode=mode, qty=qty, price=price,
+                              detail=f"미체결 매수 취소({why}, A7)", at=resolved.isoformat())
+                    d.notify(Alert(severity=Severity.P1,
+                                   what=f"미체결 매수 취소 — {symbol} {qty}주 @{price:,} ({why})",
+                                   rule="집행 정리(A7): 깨진 셋업의 지정가가 되돌림에서 체결되는 것 방지",
+                                   action="개입 불필요", deadline="-", created_at=resolved))
+                continue
+            try:
+                filled_qty = filled_from_ex if filled_from_ex > 0 else qty
                 avg = float(str(ex.get("averagePrice") or price))
             except ValueError:
                 filled_qty, avg = qty, float(price)
             if filled_qty < 1:
                 continue
+            if status == "PARTIAL_FILLED":
+                # A2: 잔여 매수 즉시 취소 — 스탑 등록 후 추가 체결분이 무방비로 남는 것 방지.
+                # 기록은 buy_cancel_rest(추적 비종결) — 스탑 등록 실패 시 다음 패스 재시도 유지
+                try:
+                    toss.cancel_order(order_id)
+                    store.log(day=day, draft_id=draft_id, symbol=symbol, kind="buy_cancel_rest",
+                              mode=mode, qty=qty - filled_qty, price=price,
+                              detail="부분 체결 — 잔여 매수 취소(A2)", at=resolved.isoformat())
+                except Exception as exc:  # noqa: BLE001 — 취소 실패 = 추가 체결 위험, 수동 개입 요청
+                    d.notify(Alert(severity=Severity.P1,
+                                   what=f"부분 체결 잔여 취소 실패 — {symbol} 잔여 {qty - filled_qty}주",
+                                   rule="자동 집행(A2): 이후 체결분은 손절 미등록 상태",
+                                   action="토스 앱에서 미체결 매수 수동 취소",
+                                   deadline="즉시", created_at=resolved))
+                    store.log(day=day, draft_id=draft_id, symbol=symbol, kind="error",
+                              mode=mode, detail=f"부분 체결 잔여 취소 실패: {exc}"[:200],
+                              at=resolved.isoformat())
         # dry-run은 발동가 체결 가정 — 즉시 청산 조건 등록 시뮬레이션
         stop_level = draft.stop.level if draft.stop else None
         target_txt = ""
@@ -638,6 +692,8 @@ def consider_rotation(
             continue
         if store.has(old.id, ("leg_t1",), mode=live_only):
             continue  # 러너 보호
+        if store.has(old.id, ("bracket_gone",), mode=live_only):
+            continue  # 보유 상태 불명(A6) — 확인 전 매각 대상 제외
         cur = price_fn(pos.symbol)
         if cur is None:
             continue
@@ -654,18 +710,58 @@ def consider_rotation(
         return False  # 교체 마진 미달 — 유지
     sell_price = round_down_to_tick(cur)
     bracket = store.latest_bracket(old.id, mode=mode)
-    try:
-        if mode == "live" and toss is not None:
-            if bracket and bracket[0]:
+    if mode == "live" and toss is not None:
+        if bracket and bracket[0]:
+            try:
                 toss.cancel_conditional(bracket[0])  # 브래킷 해제 후 전량 매도
+            except Exception as exc:  # noqa: BLE001 — 취소 실패: 기존 보호 잔존, 교체 중단(A1)
+                store.log(day=day, draft_id=old.id, symbol=pos.symbol, kind="error", mode=mode,
+                          detail=f"교체 중단(브래킷 취소 실패 — 기존 보호 유지): {exc}"[:200],
+                          at=resolved.isoformat())
+                return False
+        try:
             toss.place_limit_order(
                 pos.symbol, "SELL", pos.qty, sell_price,
                 client_order_id=f"rot-{old.id}"[:36].replace(".", "-"),
             )
-    except Exception as exc:  # noqa: BLE001 — 실패 시 교체 중단(기존 보호 유지 시도)
-        store.log(day=day, draft_id=old.id, symbol=pos.symbol, kind="error", mode=mode,
-                  detail=f"교체 매도 실패: {exc}"[:200], at=resolved.isoformat())
-        return False
+        except Exception as exc:  # noqa: BLE001 — 매도 실패인데 브래킷은 이미 취소됨 → 원복(A1)
+            store.log(day=day, draft_id=old.id, symbol=pos.symbol, kind="error", mode=mode,
+                      detail=f"교체 매도 실패: {exc}"[:200], at=resolved.isoformat())
+            if bracket and bracket[0]:
+                from trading.market_calendar.calendar import MarketCalendar as _Cal
+
+                expiry_r = _Cal.default().add_trading_days(
+                    resolved.date(), old.time_stop_days or 20
+                )
+                restored = ""
+                try:
+                    restored = _place_bracket(
+                        toss, symbol=pos.symbol, qty=bracket[1], stop_trigger=bracket[2],
+                        final_target=round_down_to_tick(old.targets[-1].level) if old.targets else 0,
+                        expire_date=expiry_r.isoformat(),
+                        client_order_id=f"restore-{old.id}"[:36].replace(".", "-"),
+                    )
+                except Exception:  # noqa: BLE001 — 원복까지 실패 = 무방비
+                    restored = ""
+                if restored:
+                    store.log(day=day, draft_id=old.id, symbol=pos.symbol, kind="stop_sent",
+                              mode=mode, qty=bracket[1], price=bracket[2], order_id=restored,
+                              detail="교체 매도 실패 — 브래킷 원복(A1)", at=resolved.isoformat())
+                    d.notify(Alert(severity=Severity.P1,
+                                   what=f"교체 실패·브래킷 원복 — {pos.symbol} {bracket[1]}주 (손절 {bracket[2]:,})",
+                                   rule="갈아타기(EXEC-4): 매도 오류 → 기존 보호 재등록",
+                                   action="개입 불필요 — 교체는 다음 기회에",
+                                   deadline="-", created_at=resolved))
+                else:
+                    store.log(day=day, draft_id=old.id, symbol=pos.symbol, kind="bracket_gone",
+                              mode=mode, detail="교체 중 무방비(매도·원복 모두 실패)",
+                              at=resolved.isoformat())
+                    d.notify(Alert(severity=Severity.P0,
+                                   what=f"브래킷 무방비 — {pos.symbol} {pos.qty}주 보호 없음(교체 실패)",
+                                   rule="갈아타기(EXEC-4): 브래킷 취소 후 매도·원복 실패(A1)",
+                                   action="토스 앱에서 손절 조건주문 즉시 수동 등록",
+                                   deadline="즉시", created_at=resolved))
+            return False
     store.log(day=day, draft_id=old.id, symbol=pos.symbol, kind="rotation_sell", mode=mode,
               qty=pos.qty, price=sell_price, at=resolved.isoformat(),
               detail=f"→ {new_draft.symbol} (신규 여력 {new_up:.1%} vs 잔여 {rem_up:.1%})")
@@ -715,6 +811,8 @@ def trim_for_shortfall(
         old = drafts_by_id.get(pos.source_ref)
         if old is None or store.has(old.id, ("leg_t1",), mode=live_only) or pos.qty < 2:
             continue  # 러너 보호 · 1주 포지션 트림 불가
+        if store.has(old.id, ("bracket_gone",), mode=live_only):
+            continue  # 보유 상태 불명(A6) — 확인 전 트림 제외
         cur = price_fn(pos.symbol)
         if cur is None:
             continue
@@ -741,23 +839,38 @@ def trim_for_shortfall(
                     pos.symbol, "SELL", trim_qty, sell_price,
                     client_order_id=f"trim-{old.id}"[:36].replace(".", "-"),
                 )
-            expiry = cal.add_trading_days(resolved.date(), old.time_stop_days or 20)
-            stop_trigger = round_down_to_tick(old.stop.level) if old.stop and old.stop.level else 0
-            final_t = round_down_to_tick(old.targets[-1].level) if old.targets else 0
-            if bracket and stop_trigger:
+        except Exception as exc:  # noqa: BLE001 — 매도 실패: 브래킷 미접촉, 다음 후보로
+            store.log(day=day, draft_id=old.id, symbol=pos.symbol, kind="error", mode=mode,
+                      detail=f"트림 매도 실패: {exc}"[:200], at=resolved.isoformat())
+            continue
+        # 트림 매도는 전송 즉시 박제(A1 부수) — 브래킷 교체 실패가 재트림(이중 매도)을 만들지 않게
+        store.log(day=day, draft_id=old.id, symbol=pos.symbol, kind="trim_sell", mode=mode,
+                  qty=trim_qty, price=sell_price, at=resolved.isoformat(),
+                  detail=f"부분 회수(잔여 여력 {rem_up:.1%}) — 신규 트리거 자금")
+        expiry = cal.add_trading_days(resolved.date(), old.time_stop_days or 20)
+        stop_trigger = round_down_to_tick(old.stop.level) if old.stop and old.stop.level else 0
+        final_t = round_down_to_tick(old.targets[-1].level) if old.targets else 0
+        if bracket and stop_trigger:
+            try:
                 _rebracket(
                     toss=toss, mode=mode, symbol=pos.symbol, draft_id=old.id,
                     old_cond_id=bracket[0], qty=pos.qty - trim_qty,
                     stop_trigger=stop_trigger, final_target=final_t,
                     expire_date=expiry.isoformat(), tag="trim",
                 )
-        except Exception as exc:  # noqa: BLE001 — 실패는 다음 후보로(기존 보호 유지)
-            store.log(day=day, draft_id=old.id, symbol=pos.symbol, kind="error", mode=mode,
-                      detail=f"트림 실패: {exc}"[:200], at=resolved.isoformat())
-            continue
-        store.log(day=day, draft_id=old.id, symbol=pos.symbol, kind="trim_sell", mode=mode,
-                  qty=trim_qty, price=sell_price, at=resolved.isoformat(),
-                  detail=f"부분 회수(잔여 여력 {rem_up:.1%}) — 신규 트리거 자금")
+            except BracketGapError as exc:  # A1: 무방비 확정 — P0 + 박제
+                store.log(day=day, draft_id=old.id, symbol=pos.symbol, kind="bracket_gone",
+                          mode=mode, detail=f"트림 교체 중 무방비: {exc}"[:200],
+                          at=resolved.isoformat())
+                d.notify(Alert(severity=Severity.P0,
+                               what=f"브래킷 무방비 — {pos.symbol} 잔량 {pos.qty - trim_qty}주 보호 없음",
+                               rule="부분 트림(EXEC-6): 브래킷 취소 후 재등록 실패(A1)",
+                               action="토스 앱에서 손절 조건주문 즉시 수동 등록",
+                               deadline="즉시", created_at=resolved))
+            except Exception as exc:  # noqa: BLE001 — 취소 실패: 기존 브래킷 잔존(수량만 불일치)
+                store.log(day=day, draft_id=old.id, symbol=pos.symbol, kind="error", mode=mode,
+                          detail=f"트림 브래킷 교체 실패(기존 잔존): {exc}"[:200],
+                          at=resolved.isoformat())
         position_store.append(pos.model_copy(update={"qty": pos.qty - trim_qty}))
         freed += trim_qty * sell_price
         tag = "부분 회수" if mode == "live" else "부분 회수 (dry-run)"
@@ -767,6 +880,30 @@ def trim_for_shortfall(
                        action="개입 불필요",
                        deadline="-", created_at=resolved))
     return freed
+
+
+class BracketGapError(RuntimeError):
+    """브래킷 취소는 됐는데 재등록(재시도 포함)까지 실패 — 체결분 무방비(P0 대상, 가드 감사 A1)."""
+
+
+def _place_bracket(
+    toss: TossClient, *, symbol: str, qty: int, stop_trigger: int,
+    final_target: int, expire_date: str, client_order_id: str,
+) -> str:
+    """보호 브래킷 등록(OCO 또는 손절 단독) — 반환=조건주문 id."""
+    order_price = round_down_to_tick(stop_trigger - 2 * tick_size(stop_trigger))
+    if final_target > stop_trigger:
+        res = toss.place_oco_sell(
+            symbol, qty, stop_trigger=stop_trigger, stop_price=order_price,
+            target_trigger=final_target, target_price=final_target,
+            expire_date=expire_date, client_order_id=client_order_id,
+        )
+    else:
+        res = toss.place_stop_sell_conditional(
+            symbol, qty, trigger_price=stop_trigger, order_price=order_price,
+            expire_date=expire_date, client_order_id=client_order_id,
+        )
+    return str(res.get("conditionalOrderId") or "")
 
 
 def _rebracket(
@@ -782,29 +919,97 @@ def _rebracket(
     expire_date: str,
     tag: str,
 ) -> str:
-    """브래킷 교체(취소→재등록) — 잔량·본전 상향 반영. 반환=새 조건주문 id(dry-run은 '')."""
+    """브래킷 교체(취소→재등록) — 잔량·본전 상향 반영. 반환=새 조건주문 id(dry-run은 '').
+
+    원자성(가드 감사 A1): 취소 실패는 그대로 예외(기존 보호 잔존 — 이중 등록 금지).
+    취소 성공 후 재등록 실패는 1회 즉시 재시도, 그래도 실패면 ``BracketGapError``
+    (체결분 무방비 — 호출측이 P0 승격 + bracket_gone 박제)."""
     if mode != "live" or toss is None:
         return ""
     if old_cond_id:
+        toss.cancel_conditional(old_cond_id)  # 실패 시 raise — 기존 보호 잔존(이중 등록 금지)
+    last: Exception | None = None
+    for _attempt in range(2):  # 재등록 1회 즉시 재시도(일시 오류 흡수)
         try:
-            toss.cancel_conditional(old_cond_id)
-        except Exception:  # noqa: BLE001 — 취소 실패 시 이중 등록 위험 → 재등록 중단(기존 보호 유지)
-            raise
-    order_price = round_down_to_tick(stop_trigger - 2 * tick_size(stop_trigger))
-    if final_target > stop_trigger:
-        res = toss.place_oco_sell(
-            symbol, qty, stop_trigger=stop_trigger, stop_price=order_price,
-            target_trigger=final_target, target_price=final_target,
-            expire_date=expire_date,
-            client_order_id=f"{tag}-{draft_id}"[:36].replace(".", "-"),
-        )
-    else:
-        res = toss.place_stop_sell_conditional(
-            symbol, qty, trigger_price=stop_trigger, order_price=order_price,
-            expire_date=expire_date,
-            client_order_id=f"{tag}-{draft_id}"[:36].replace(".", "-"),
-        )
-    return str(res.get("conditionalOrderId") or "")
+            return _place_bracket(
+                toss, symbol=symbol, qty=qty, stop_trigger=stop_trigger,
+                final_target=final_target, expire_date=expire_date,
+                client_order_id=f"{tag}-{draft_id}"[:36].replace(".", "-"),
+            )
+        except Exception as exc:  # noqa: BLE001 — 마지막 실패는 BracketGapError로 승격
+            last = exc
+    raise BracketGapError(f"브래킷 재등록 실패(취소는 완료 — 무방비): {last}")
+
+
+def _extract_conditional_ids(raw: object) -> set[str] | None:
+    """브로커 조건주문 응답에서 conditionalOrderId 집합 추출(관측 확정 필드만).
+
+    응답 구조가 예상(리스트 또는 {"items": 리스트})과 다르면 **None(판정 보류)** —
+    스키마를 추측해 '브래킷이 사라졌다'고 단정하지 않는다(절대금지 #1)."""
+    items: object = raw
+    if isinstance(raw, dict):
+        items = raw.get("items")
+    if not isinstance(items, list):
+        return None
+    ids: set[str] = set()
+    for it in items:
+        if isinstance(it, dict):
+            v = it.get("conditionalOrderId")
+            if v is not None:
+                ids.add(str(v))
+    return ids
+
+
+def sync_brackets(
+    *,
+    store: ExecStore,
+    mode: str,
+    toss: TossClient | None,
+    position_store: PositionStore | None,
+    dispatcher: AlertDispatcher | None = None,
+    now: datetime | None = None,
+) -> list[str]:
+    """브래킷 생존 대조(가드 감사 A6) — 내부 장부의 브래킷 id가 브로커 조건주문 목록에
+    없으면 체결(익절/손절)·취소·만료로 판단하고 ``bracket_gone`` 박제 + P0.
+
+    박제된 초안은 레그·갈아타기·트림 대상에서 제외 — 유령 보유에 매도를 시도하는
+    사고(2026-07-14 시나리오 검토에서 적발) 방지. 포지션 자동 마감은 하지 않는다:
+    보유 수량 확인(holdings 스키마)이 미확정이라 **알림+중단까지만**(보수). 반환=박제 draft_id."""
+    resolved = (now if now is not None else now_kst()).astimezone(KST)
+    day = resolved.strftime("%Y%m%d")
+    d = dispatcher if dispatcher is not None else AlertDispatcher()
+    acted: list[str] = []
+    if mode != "live" or toss is None or position_store is None:
+        return acted
+    open_pos = [p for p in position_store.open_positions() if p.source_ref]
+    if not open_pos:
+        return acted
+    try:
+        raw = toss.conditional_orders()
+    except Exception:  # noqa: BLE001 — 조회 실패는 다음 패스(판정 보류)
+        return acted
+    ids = _extract_conditional_ids(raw)
+    if ids is None:
+        return acted  # 스키마 불명 — 지어내지 않는다
+    for pos in open_pos:
+        bracket = store.latest_bracket(pos.source_ref, mode=mode)
+        if bracket is None or not bracket[0]:
+            continue  # 브래킷 미등록(체결 전) — 대조 대상 아님
+        if bracket[0] in ids:
+            continue  # 생존
+        if store.has(pos.source_ref, ("bracket_gone",), mode=mode, day=day):
+            continue  # 오늘 이미 박제
+        store.log(day=day, draft_id=pos.source_ref, symbol=pos.symbol, kind="bracket_gone",
+                  mode=mode, qty=bracket[1], price=bracket[2],
+                  detail="브로커 조건주문 목록에 브래킷 부재 — 체결(익절/손절)·취소·만료 추정",
+                  at=resolved.isoformat())
+        d.notify(Alert(severity=Severity.P0,
+                       what=f"브래킷 부재 감지 — {pos.symbol} {bracket[1]}주 (내부 장부는 보유 중)",
+                       rule="브래킷 동기화(A6): 익절/손절 체결 또는 취소·만료로 추정",
+                       action="토스 앱에서 체결 확인 → 청산 확정 시 /positions 로 정리",
+                       deadline="당일", created_at=resolved))
+        acted.append(pos.source_ref)
+    return acted
 
 
 def manage_exits(
@@ -881,6 +1086,9 @@ def manage_exits(
         draft = drafts_by_id.get(pos.source_ref)
         if draft is None or draft.side.value != "buy":
             continue
+        # 브래킷 부재 확정(체결·취소·무방비) 초안은 레그 중단(A6) — 유령 매도 시도 방지
+        if store.has(draft.id, ("bracket_gone",), mode=live_only):
+            continue
         partial_targets = draft.targets[:-1]  # 최종 타깃은 브래킷 몫
         soft = draft.soft_stop
         if not partial_targets and soft is None:
@@ -931,24 +1139,46 @@ def manage_exits(
                     client_order_id=f"{leg_key}-{draft.id}"[:36].replace(".", "-"),
                 )
                 leg_order_id = str(res_leg.get("orderId") or "")
+        except Exception as exc:  # noqa: BLE001 — 레그 주문 실패: 브래킷 미접촉(보호 유지), 다음 패스 재시도
+            store.log(day=day, draft_id=draft.id, symbol=pos.symbol, kind="error", mode=mode,
+                      detail=f"{leg_key} 레그 주문 실패: {exc}"[:300], at=resolved.isoformat())
+            d.notify(Alert(severity=Severity.P1,
+                           what=f"청산 레그 실패 — {pos.symbol} {leg_key} {leg_qty}주",
+                           rule="계단식 청산(EXEC-2): 부분 매도 주문 오류",
+                           action="토스 앱에서 조건주문 상태 확인",
+                           deadline="당일", created_at=resolved))
+            continue
+        # 레그는 전송 즉시 박제 — 이후 브래킷 교체가 실패해도 다음 패스 이중 매도 금지(A1 부수 결함)
+        store.log(day=day, draft_id=draft.id, symbol=pos.symbol, kind=leg_key, mode=mode,
+                  qty=leg_qty, price=sell_price, order_id=leg_order_id or None,
+                  at=resolved.isoformat(), detail=reason)
+        try:
             new_cond = _rebracket(
                 toss=toss, mode=mode, symbol=pos.symbol, draft_id=draft.id,
                 old_cond_id=cond_id, qty=rem_qty - leg_qty,
                 stop_trigger=new_trigger, final_target=final_target,
                 expire_date=expiry.isoformat(), tag=leg_key,
             )
-        except Exception as exc:  # noqa: BLE001 — 실패는 기록+보고, 기존 브래킷 보호 유지
+        except BracketGapError as exc:  # A1: 취소 후 재등록 실패 — 무방비 확정, P0 + 박제
+            store.log(day=day, draft_id=draft.id, symbol=pos.symbol, kind="bracket_gone",
+                      mode=mode, detail=f"{leg_key} 교체 중 무방비: {exc}"[:300],
+                      at=resolved.isoformat())
+            d.notify(Alert(severity=Severity.P0,
+                           what=f"브래킷 무방비 — {pos.symbol} 잔량 {rem_qty - leg_qty}주 보호 없음",
+                           rule="계단식 청산(EXEC-2): 브래킷 취소 후 재등록 실패(A1)",
+                           action="토스 앱에서 손절 조건주문 즉시 수동 등록",
+                           deadline="즉시", created_at=resolved))
+            continue
+        except Exception as exc:  # noqa: BLE001 — 취소 실패: 기존 브래킷 잔존(보호 유지)
             store.log(day=day, draft_id=draft.id, symbol=pos.symbol, kind="error", mode=mode,
-                      detail=f"{leg_key} 집행 실패: {exc}"[:300], at=resolved.isoformat())
+                      detail=f"{leg_key} 브래킷 교체 실패(기존 잔존): {exc}"[:300],
+                      at=resolved.isoformat())
             d.notify(Alert(severity=Severity.P1,
-                           what=f"청산 레그 실패 — {pos.symbol} {leg_key} {leg_qty}주",
-                           rule="계단식 청산(EXEC-2): 레그 주문/브래킷 교체 오류",
-                           action="토스 앱에서 조건주문 상태 확인",
+                           what=f"브래킷 교체 실패 — {pos.symbol} (기존 브래킷 유지 추정, 잔량 불일치)",
+                           rule="계단식 청산(EXEC-2): 조건주문 취소 오류",
+                           action="토스 앱에서 조건주문 수량·레벨 확인",
                            deadline="당일", created_at=resolved))
             continue
-        store.log(day=day, draft_id=draft.id, symbol=pos.symbol, kind=leg_key, mode=mode,
-                  qty=leg_qty, price=sell_price, order_id=leg_order_id or None,
-                  at=resolved.isoformat(), detail=reason)
         store.log(day=day, draft_id=draft.id, symbol=pos.symbol,
                   kind="stop_sent" if mode == "live" else "stop_intent", mode=mode,
                   qty=rem_qty - leg_qty, price=new_trigger, order_id=new_cond or None,
@@ -965,8 +1195,8 @@ def manage_exits(
 
 
 __all__ = [
-    "DEFAULT_DB", "KILL_FILE", "ExecPolicy", "ExecResult", "ExecStore",
+    "BracketGapError", "DEFAULT_DB", "KILL_FILE", "ExecPolicy", "ExecResult", "ExecStore",
     "cap_fraction", "consider_rotation", "exec_mode", "execute_armed",
     "manage_exits", "planned_upside_pct", "reconcile",
-    "round_down_to_tick", "tick_size", "trim_for_shortfall",
+    "round_down_to_tick", "sync_brackets", "tick_size", "trim_for_shortfall",
 ]
