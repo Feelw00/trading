@@ -9,7 +9,7 @@
 ### sync
 - `TZ=Asia/Seoul date '+%Y-%m-%d %H:%M (%a)'` — **콘솔 날짜 기준**(모델 추정 날짜 신뢰 금지)
 - `collect-macro` 스킬 — 거시 어댑터 적재 + **실시간 오버레이 `poetry run python -m trading.regime`**(코스피·코스닥 헤드라인은 실시간 우선, EOD는 as_of 병기)
-- `work-boot` 스킬 — 시세·뉴스 신선도(미수집 자동 수집) + `drill.py --audit` + **감시 풀 `approve --pool` 우선** + 스크리너(stale 라벨 필수)
+- `work-boot` 스킬 — **스케줄러(cron 16슬롯) 축적 DB 읽기 전용 요약**: 감시 풀 `approve --pool`(진입/손절/익절) 우선 + 보유 포지션 + 스크리너(stale 라벨 필수). 수집·신선도 보정·`drill --audit` 없음
 
 ### state
 - 감시기: `arm-watch` 프로세스 + `.runtime/watch-heartbeat` 신선도(장중 필수)
@@ -19,6 +19,7 @@
 ### gotchas
 - **.env 변경 = 게이트웨이 재기동 필수** — env는 tmux 기동 시점 스냅샷(7/14 사고: 토스 키 없이 감시기 기동)
 - 국내 EOD는 +1영업일 공개 — 아침 스크리너는 항상 전일 미반영. 급변 후엔 그 순위 무효 명시
+- 부팅은 수집·점검 안 함(스케줄러가 축적) — 시세 갭·뉴스 미적재·사이클 WARN 의심 시 `/collect`·`/collect-news`·`drill.py --audit` 수동 실행
 - 휴장일(예: 2026-07-17 제헌절) 잡 무동작이 정상 — `market_calendar`가 기준
 - 통합 보고 양식·수집 하네스·절대 금지 사항은 CLAUDE.md·프로젝트 스킬이 상위 기준
 
