@@ -32,7 +32,7 @@
 import os
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time
 from math import floor
@@ -1099,6 +1099,142 @@ def sync_brackets(
 # 시간손절 자동 집행 창(운영자 결정 2026-07-14): 14:30~14:50 — 15:00 직전 단타 변수 회피
 TIME_STOP_WINDOW: tuple[dt_time, dt_time] = (dt_time(14, 30), dt_time(14, 50))
 
+# 운영자 지시 청산 큐(EXEC-1 잔여 '임의 청산 자동화 없음' 해소, 2026-07-14 밤) —
+# CLI(python -m trading.liquidate)로 등록하면 감시기가 세션 창(09:00~20:00)에서 처리.
+LIQUIDATE_QUEUE = Path(".runtime") / "exec" / "liquidate.queue"
+
+
+def queue_liquidation(
+    draft_ids: Sequence[str], *, queue_file: Path = LIQUIDATE_QUEUE
+) -> list[str]:
+    """청산 큐 등록(중복 제거) — 반환=새로 등록된 id."""
+    queue_file.parent.mkdir(parents=True, exist_ok=True)
+    existing: set[str] = set()
+    if queue_file.exists():
+        existing = {ln.strip() for ln in queue_file.read_text().splitlines() if ln.strip()}
+    added = [d for d in draft_ids if d and d not in existing]
+    if added:
+        with queue_file.open("a", encoding="utf-8") as f:
+            for d in added:
+                f.write(d + "\n")
+    return added
+
+
+def process_liquidation_queue(
+    *,
+    store: ExecStore,
+    mode: str,
+    toss: TossClient | None,
+    price_fn: Callable[[str], float | None],
+    position_store: PositionStore | None,
+    dispatcher: AlertDispatcher | None = None,
+    queue_file: Path = LIQUIDATE_QUEUE,
+    now: datetime | None = None,
+) -> list[str]:
+    """청산 큐 처리 — 큐의 초안(source_ref)에 연결된 보유를 전량 지정가 매도.
+
+    시간손절과 같은 A1 규율: 브래킷 취소 실패=중단(보호 유지, 큐 잔류·재시도),
+    매도 실패=손절 단독 원복(큐 잔류), 원복 실패=무방비 P0(큐 제거 — 수동 전환).
+    미체결 추격은 레그 재호가 루프(kind ``leg_liquidate``). 성공·보유 없음은 큐에서 제거."""
+    resolved = (now if now is not None else now_kst()).astimezone(KST)
+    day = resolved.strftime("%Y%m%d")
+    d = dispatcher if dispatcher is not None else AlertDispatcher()
+    acted: list[str] = []
+    if mode == "off" or position_store is None or not queue_file.exists():
+        return acted
+    ids = [ln.strip() for ln in queue_file.read_text().splitlines() if ln.strip()]
+    if not ids:
+        return acted
+    open_by_ref = {p.source_ref: p for p in position_store.open_positions() if p.source_ref}
+    remaining = list(ids)
+    live_only = "live" if mode == "live" else None
+    for did in ids:
+        if store.has(did, ("leg_liquidate",), mode=live_only):
+            remaining.remove(did)  # 이미 매도 전송됨(재기동 등) — 추격은 레그 루프 몫
+            continue
+        pos = open_by_ref.get(did)
+        if pos is None:
+            remaining.remove(did)  # 보유 없음(기청산·오기입) — 큐 정리
+            store.log(day=day, draft_id=did, symbol="-", kind="skip", mode=mode,
+                      detail="지시 청산 스킵 — 보유 없음(큐 제거)", at=resolved.isoformat())
+            continue
+        if store.has(did, ("bracket_gone",), mode=live_only):
+            remaining.remove(did)  # 보유 상태 불명 — 자동 매도 금지, 수동 전환(P0 기발송)
+            d.notify(Alert(severity=Severity.P1,
+                           what=f"지시 청산 보류 — {pos.symbol} (브래킷 상태 불명)",
+                           rule="지시 청산: A6 무방비/부재 감지 초안은 자동 매도 금지",
+                           action="토스 앱에서 보유·조건주문 확인 후 수동 매도",
+                           deadline="당일", created_at=resolved))
+            continue
+        price = price_fn(pos.symbol)
+        if price is None:
+            continue  # 관측 불가 — 큐 잔류, 다음 패스
+        sell_price = round_down_to_tick(price)
+        bracket = store.latest_bracket(did, mode=mode)
+        leg_oid = ""
+        if mode == "live" and toss is not None:
+            if bracket and bracket[0]:
+                try:
+                    toss.cancel_conditional(bracket[0])
+                except Exception as exc:  # noqa: BLE001 — 보호 잔존, 큐 잔류·재시도
+                    store.log(day=day, draft_id=did, symbol=pos.symbol, kind="error",
+                              mode=mode, detail=f"지시 청산 중단(브래킷 취소 실패): {exc}"[:200],
+                              at=resolved.isoformat())
+                    continue
+            try:
+                res = toss.place_limit_order(
+                    pos.symbol, "SELL", pos.qty, sell_price,
+                    client_order_id=f"liq-{did}"[:36].replace(".", "-"),
+                )
+                leg_oid = str(res.get("orderId") or "")
+            except Exception as exc:  # noqa: BLE001 — 매도 실패: 원복(A1)
+                store.log(day=day, draft_id=did, symbol=pos.symbol, kind="error", mode=mode,
+                          detail=f"지시 청산 매도 실패: {exc}"[:200], at=resolved.isoformat())
+                restored = ""
+                if bracket and bracket[0]:
+                    try:
+                        restored = _place_bracket(
+                            toss, symbol=pos.symbol, qty=bracket[1], stop_trigger=bracket[2],
+                            final_target=0,
+                            expire_date=MarketCalendar.default()
+                            .add_trading_days(resolved.date(), 1).isoformat(),
+                            client_order_id=f"restore-{did}"[:36].replace(".", "-"),
+                        )
+                    except Exception:  # noqa: BLE001
+                        restored = ""
+                if bracket and bracket[0] and restored:
+                    store.log(day=day, draft_id=did, symbol=pos.symbol, kind="stop_sent",
+                              mode=mode, qty=bracket[1], price=bracket[2], order_id=restored,
+                              detail="지시 청산 실패 — 손절 단독 원복(A1)", at=resolved.isoformat())
+                elif bracket and bracket[0]:
+                    remaining.remove(did)
+                    store.log(day=day, draft_id=did, symbol=pos.symbol, kind="bracket_gone",
+                              mode=mode, detail="지시 청산 중 무방비(매도·원복 실패)",
+                              at=resolved.isoformat())
+                    d.notify(Alert(severity=Severity.P0,
+                                   what=f"브래킷 무방비 — {pos.symbol} {pos.qty}주 (지시 청산 실패)",
+                                   rule="지시 청산: 취소 후 매도·원복 실패(A1)",
+                                   action="토스 앱에서 수동 매도 또는 손절 재등록",
+                                   deadline="즉시", created_at=resolved))
+                continue
+        store.log(day=day, draft_id=did, symbol=pos.symbol, kind="leg_liquidate", mode=mode,
+                  qty=pos.qty, price=sell_price, order_id=leg_oid or None,
+                  at=resolved.isoformat(), detail="운영자 지시 청산(큐)")
+        position_store.append(pos.model_copy(update={
+            "status": PositionStatus.CLOSED, "close_reason": "운영자 지시 청산(큐)",
+        }))
+        remaining.remove(did)
+        tag = "지시 청산 매도" if mode == "live" else "지시 청산 매도 (dry-run)"
+        d.notify(Alert(severity=Severity.P0,
+                       what=f"{tag} — {pos.symbol} {pos.qty}주 @{sell_price:,}",
+                       rule="지시 청산: 운영자 큐 등록분 자동 매도(브래킷 해제 포함)",
+                       action="개입 불필요 — 미체결 시 자동 재호가",
+                       deadline="-", created_at=resolved))
+        acted.append(did)
+    if len(remaining) != len(ids):
+        queue_file.write_text("".join(f"{d_}\n" for d_ in remaining), encoding="utf-8")
+    return acted
+
 
 def manage_time_stops(
     *,
@@ -1393,6 +1529,7 @@ def manage_exits(
 __all__ = [
     "BracketGapError", "DEFAULT_DB", "KILL_FILE", "ExecPolicy", "ExecResult", "ExecStore",
     "cap_fraction", "consider_rotation", "derive_entry_band", "exec_mode", "execute_armed",
-    "manage_exits", "manage_time_stops", "planned_upside_pct", "reconcile",
+    "manage_exits", "manage_time_stops", "planned_upside_pct",
+    "process_liquidation_queue", "queue_liquidation", "reconcile",
     "round_down_to_tick", "stop_order_price", "sync_brackets", "tick_size", "trim_for_shortfall",
 ]
