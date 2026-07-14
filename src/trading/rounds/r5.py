@@ -44,7 +44,8 @@ from trading.collectors.base import now_kst
 from trading.llm import LLMClient, LLMError, complete_json
 
 TOTAL_SIZE_CAP = "0.5 * normal_unit"   # 설계서 §4 고정값
-_CONFIRMATION_DEFAULT = "prev_day_high_reclaim"  # §6 확인 트랜치 기본 조건(가격 상승으로만 충족)
+# 확인 트랜치 기본 조건은 폐지(운영자 2026-07-14: 조건은 분석이 정한다 — 고정 주입 금지).
+# R5가 confirmation_condition 을 내지 않으면 그 플레이북은 규율 위반으로 폐기된다.
 
 
 @dataclass(frozen=True)
@@ -124,7 +125,7 @@ def build_prompt(
         '    "stop_level": <가격 손절 레벨(숫자) — 심리적 합의 레벨(라운드 넘버·전저점·전고점)만>,\n'
         '    "soft_stop": {"level": <경고 레벨 — stop_level보다 위>, "pct": <축소 비중%, 통상 50>},  // 선택 — 선제 감축\n'
         '    "targets": [{"level": <익절1 — 부분 실현>, "pct": 50}, {"level": <최종 타깃 — 잔량 전량>, "pct": 50}],  // 기본 2단 사다리, 오름차순·합=100\n'
-        '    "confirmation_condition": "<관측 가능 흐름변수 키 1개만 — 조건식·연산자 금지, 예: prev_day_high_reclaim>",\n'
+        '    "confirmation_condition": "<관측 가능 흐름변수 키 1개만 — 조건식·연산자 금지. 필수(기본값 없음)>",\n'
         '    "time_stop_days": <거래일 단위>,\n'
         '    "summary": "<저녁 결재 보고용 1줄>"\n'
         "  }]\n"
@@ -136,9 +137,15 @@ def build_prompt(
         f"지어내지 마라, 예: orderbook_imbalance>1.15는 불가):\n{observable_desc}\n"
         f"  미관측 변수({unobserved})는 NXT/소스 부재로 매일 '관측치 없음'이라 영영 미충족이 된다 — "
         "절대 쓰지 마라(쓰면 그 플레이북은 발동 불가). 가치·내러티브 변수도 금지.\n"
-        "- confirmation_condition 은 관측 가능 흐름변수 **키 1개만**(조건식·==true 등 붙이지 마라 — "
-        "키만, 보통 prev_day_high_reclaim).\n"
-        "- 조건식 문법: 연속 변수(갭·거래량·체결강도·호가)는 `<op><숫자>`(<,<=,>,>=,==), "
+        "- confirmation_condition 은 관측 가능 흐름변수 **키 1개만**(조건식·==true 등 붙이지 마라). "
+        "**필수 — 기본값 주입은 없다. 논제가 요구하는 확인 신호를 분석으로 골라라.**\n"
+        "- **조건은 분석에서 도출됐을 때만 건다 — 습관적·기본 조건 금지(운영자 2026-07-14).** "
+        "가격 회복 확인이 논제에 필요하면 prev_day_high_recovery 로 등급을 명시하라"
+        "(완전 회복 >=1.0, 일부 회복은 근거 가격 컨텍스트로 정당화되는 비율만). "
+        "**트리거가 익절 타깃과 겹치는 설계 금지**: arm 충족 시점 가격에서 최종 타깃까지의 보상이 "
+        "손절까지의 위험보다 작으면(잔여 R:R<1) 그 플레이북은 내지 마라(집행 가드가 어차피 차단한다).\n"
+        "- 조건식 문법: 연속 변수(갭·거래량·체결강도·호가·prev_day_high_recovery)는 "
+        "`<op><숫자>`(<,<=,>,>=,==), "
         "boolean 변수(prev_day_high_reclaim·volume_climax·new_low_renewal_fail·sector_ignition)는 "
         "`==true`/`==false`로. 시각·문자열 등 그 외 형식 금지(선택기가 평가 불가 → 미충족 처리).\n"
         "- stop_level 은 '논리적 지지선'이 아니라 심리적 합의 레벨(라운드 넘버, 전저점·전고점)로.\n"
@@ -232,7 +239,9 @@ def _to_records(
         else thesis.horizon_days  # grounded 폴백(논제 시계)
     )
 
-    confirmation_raw = str(pb.get("confirmation_condition") or _CONFIRMATION_DEFAULT).strip()
+    confirmation_raw = str(pb.get("confirmation_condition") or "").strip()
+    if not confirmation_raw:
+        raise ValueError("confirmation_condition 미제공 — 기본 조건 주입 금지(운영자 2026-07-14)")
     # R5가 키에 조건식(==true 등)을 붙여 와도 흐름변수 키만 사용(코드 강제 — confirmation은 키 1개)
     key_match = re.match(r"[a-z_]+", confirmation_raw)
     confirmation = key_match.group(0) if key_match else confirmation_raw

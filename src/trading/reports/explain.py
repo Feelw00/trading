@@ -24,7 +24,8 @@ FLOW_VAR_KO: dict[str, str] = {
     "volume_climax": "거래량 클라이맥스(소진 신호)",
     "new_low_after": "신저가 갱신 시각 조건",
     "new_low_renewal_fail": "신저가 갱신 실패",
-    "prev_day_high_reclaim": "전일 고가 회복(상승 확인)",
+    "prev_day_high_reclaim": "전일 고가 완전 회복(상승 확인)",
+    "prev_day_high_recovery": "전일 고가 회복률(1.0=전일 고가)",
     "sector_ignition": "섹터 점화(실시간 거래대금 상위에 소속 업종 집중)",
 }
 

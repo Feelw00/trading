@@ -228,3 +228,20 @@ def test_confirmation_condition_strips_operator_to_key() -> None:
 def test_whitelist_matches_design_doc() -> None:
     # 설계서 §4 예시·§6 확인 조건이 화이트리스트에 존재
     assert {"gap_pct", "premkt_volume_rank", "new_low_after", "prev_day_high_reclaim"} <= FLOW_VARIABLES
+
+
+def test_confirmation_condition_missing_discards_playbook() -> None:
+    # 운영자 2026-07-14: 기본 조건 주입 금지 — R5가 확인 조건을 안 내면 규율 위반으로 폐기
+    res = _run({"playbooks": [_proposal(confirmation_condition=None)]})
+    assert res.rejected == 1 and "기본 조건 주입 금지" in res.rejected_reasons[0]
+
+
+def test_graded_recovery_is_flow_variable() -> None:
+    # 운영자 2026-07-14: 완전/일부 회복을 계획이 임계로 명시 — 연속 변수 화이트리스트 등재
+    assert "prev_day_high_recovery" in FLOW_VARIABLES
+    res = _run({"playbooks": [_proposal(
+        arm_conditions={"prev_day_high_recovery": ">=0.97", "execution_strength": ">110"},
+    )]})
+    assert res.rejected == 0
+    [pb] = res.playbooks
+    assert pb.arm_conditions["prev_day_high_recovery"] == ">=0.97"

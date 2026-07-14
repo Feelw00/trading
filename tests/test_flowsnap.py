@@ -66,7 +66,60 @@ def test_kis_realtime_computes_flow_vars(tmp_path: Path, monkeypatch: Any) -> No
     obs = snap["170920"]
     assert obs["execution_strength"] == 78.03
     assert obs["prev_day_high_reclaim"] == 1.0          # 55300 > 55000
+    assert abs(obs["prev_day_high_recovery"] - 55300 / 55000) < 1e-3  # 등급형 병행
     assert abs(obs["orderbook_imbalance"] - (3000 / 23000)) < 1e-9
+
+
+def test_prev_high_prefers_kis_daily_over_stale_db(tmp_path: Path, monkeypatch: Any) -> None:
+    """KIS 일자별(진짜 전일 고가)이 1차 — 2026-07-14 뉴파워 오발동(T-2 고가 기준) 재발 방지."""
+    monkeypatch.setattr(flowsnap, "_toss_from_env", lambda: None)
+    monkeypatch.setattr(flowsnap, "INJECT_DIR", tmp_path)
+
+    class _Store:
+        def nth_recent_date(self, n: int) -> str:
+            return "20260605"
+
+        def series_for(self, srtn_cd: str, cutoff: str) -> list[tuple[Any, ...]]:
+            # DB는 T-2(6/9)까지만 적재(낡음) — 고가 50000
+            return [("170920", "x", "KOSPI", "20260609", "49000", "50000", "", "", "")]
+
+    class _KisDaily(_FakeKis):
+        def daily_prices(self, srtn_cd: str) -> list[dict[str, Any]]:
+            return [
+                {"stck_bsop_date": "20260611", "stck_hgpr": "56000"},  # 당일 진행분 — 건너뜀
+                {"stck_bsop_date": "20260610", "stck_hgpr": "55500"},  # 진짜 전일
+            ]
+
+    kis = _KisDaily(ccnl={"stck_prpr": "55300", "tday_rltv": "91.8"}, asking={})
+    snap, _ = flowsnap.build_snapshot(
+        ["170920"], kis_client=kis, market_store=_Store(), now=NOW  # type: ignore[arg-type]
+    )
+    obs = snap["170920"]
+    assert obs["prev_day_high_reclaim"] == 0.0                       # 55300 < 55500(진짜 전일)
+    assert abs(obs["prev_day_high_recovery"] - 55300 / 55500) < 1e-3
+
+
+def test_prev_high_stale_db_yields_no_observation(tmp_path: Path, monkeypatch: Any) -> None:
+    """KIS 일자별 부재 + DB 최신이 직전 거래일이 아니면 미관측(보수) — 낡은 기준 판정 금지."""
+    monkeypatch.setattr(flowsnap, "_toss_from_env", lambda: None)
+    monkeypatch.setattr(flowsnap, "INJECT_DIR", tmp_path)
+
+    class _Store:
+        def nth_recent_date(self, n: int) -> str:
+            return "20260605"
+
+        def series_for(self, srtn_cd: str, cutoff: str) -> list[tuple[Any, ...]]:
+            # NOW=6/11(목)의 직전 거래일은 6/10 — DB는 6/9까지만(낡음)
+            return [("170920", "x", "KOSPI", "20260609", "49000", "50000", "", "", "")]
+
+    kis = _FakeKis(ccnl={"stck_prpr": "55300", "tday_rltv": "91.8"}, asking={})
+    snap, _ = flowsnap.build_snapshot(
+        ["170920"], kis_client=kis, market_store=_Store(), now=NOW  # type: ignore[arg-type]
+    )
+    obs = snap["170920"]
+    assert "prev_day_high_reclaim" not in obs
+    assert "prev_day_high_recovery" not in obs
+    assert obs["execution_strength"] == 91.8  # 다른 관측은 정상
 
 
 def test_kis_realtime_overrides_injected(tmp_path: Path, monkeypatch: Any) -> None:

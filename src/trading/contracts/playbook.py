@@ -28,7 +28,9 @@ FLOW_VARIABLES: frozenset[str] = frozenset(
         "volume_climax",            # 거래량 클라이맥스
         "new_low_after",            # 신저가 갱신 시각 조건 (§4 abort 예시)
         "new_low_renewal_fail",     # 신저가 갱신 실패
-        "prev_day_high_reclaim",    # 전일 고가 회복 (§6 확인 트랜치 조건)
+        "prev_day_high_reclaim",    # 전일 고가 완전 회복(boolean) (§6 확인 트랜치 조건)
+        "prev_day_high_recovery",   # 전일 고가 대비 현재가 비율(연속) — 완전/일부 회복을
+                                    # 계획이 임계로 명시(운영자 2026-07-14: 고정 가드 금지)
         # P-11 Stage B(운영자 채택 2026-07-13): 장중 흐름 변수 — 토스 실시간 랭킹 × KRX 업종.
         # 주문 흐름 파생 변수라 §3 R5 원칙(f(주문 흐름)) 정합 — 가치·내러티브 아님.
         "sector_ignition",          # 섹터 점화(boolean) — 소속 섹터가 실시간 거래대금 상위 집중

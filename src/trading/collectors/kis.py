@@ -55,6 +55,7 @@ TR_INVESTOR_INTRADAY = "FHPTJ04030000"  # 시장별 투자자매매동향(시세
 TR_QUOTE_CCNL = "FHKST01010300"         # 주식현재가 체결(현재가·체결강도, 관측 확정 KIS-RT-1)
 TR_ASKING_PRICE = "FHKST01010200"       # 주식현재가 호가/예상체결(총호가잔량, 관측 확정)
 TR_QUOTE_PRICE = "FHKST01010100"        # 주식현재가 시세(KRX 업종명 bstp_kor_isnm, 관측 확정 2026-07-13)
+TR_DAILY_PRICE = "FHKST01010400"        # 주식현재가 일자별(최근 ~30거래일 OHLC, 관측 확정 2026-07-14)
 # 시장별 TR 파라미터 (업종코드, 시장구분) — 실호출 관측으로 확정
 MARKET_PARAMS = {"KOSPI": ("0001", "KSP"), "KOSDAQ": ("1001", "KSQ")}
 # 시세성 TR 파라미터 (시장구분, 업종구분) — 2026-06-11 장중 조합 프로브로 관측 확정:
@@ -256,6 +257,25 @@ class KisClient:
         )
         out = data.get("output")
         return dict(out) if isinstance(out, dict) else {}
+
+    def daily_prices(self, srtn_cd: str) -> list[dict[str, Any]]:
+        """주식현재가 일자별 output(일봉 행, 최신 우선 — [0]=당일 진행분). 원시 dict 그대로.
+
+        2026-07-14 실호출 관측 확정: ``stck_bsop_date``·``stck_oprc``·``stck_hgpr``·
+        ``stck_lwpr``·``stck_clpr``. 국내 EOD 공개(+1영업일)를 기다리지 않고 **진짜 전일
+        고가**를 장중에 얻는 유일한 확정 경로 — flowsnap 전일 고가 기준선이 1차로 사용."""
+        data = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-daily-price",
+            TR_DAILY_PRICE,
+            {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": srtn_cd,
+                "FID_PERIOD_DIV_CODE": "D",
+                "FID_ORG_ADJ_PRC": "0",
+            },
+        )
+        out = data.get("output")
+        return [dict(r) for r in out] if isinstance(out, list) else []
 
 
 def client_from_env() -> KisClient | None:
