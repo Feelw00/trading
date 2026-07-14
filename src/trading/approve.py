@@ -118,13 +118,26 @@ def _print_pool(*, playbook_store: PlaybookStore | None = None) -> int:
             return 0
         names = _symbol_names_safe([d.symbol for _, d, _ in pool])
         print(f"활성(approved) 풀 {len(pool)}건 — 오늘 감시 대상:")
+        from trading.executor import derive_entry_band
+
         for _pb, d, expiry in pool:
             nm = names.get(d.symbol) or d.symbol
             stop = f"{d.stop.level:,.0f}" if d.stop and d.stop.level else "시간손절"
             soft = f" 경고 {d.soft_stop.level:,.0f} ·" if d.soft_stop else ""
             tgt = "→".join(f"{t.level:,.0f}" for t in d.targets) if d.targets else "R:R 자동"
             exp = expiry.isoformat() if expiry else "-"
-            print(f"  {nm}({d.symbol}) — 손절 {stop} ·{soft} 익절 {tgt} · 만료 {exp} · {d.id}")
+            # 매수 유효 범위(EXEC-8) — 코드 산출 ∩ R5 조임. 결재 시 보이게(운영자 결정)
+            band = derive_entry_band(d)
+            band_txt = ""
+            if band is not None:
+                b_lo, b_hi = band
+                if d.entry_band is not None:
+                    b_lo, b_hi = max(b_lo, d.entry_band.low), min(b_hi, d.entry_band.high)
+                hi_txt = f"{b_hi:,.0f}" if b_hi != float("inf") else "∞"
+                band_txt = (f" 매수범위 {b_lo:,.0f}~{hi_txt} ·" if b_hi > b_lo
+                            else " ⚠️매수범위 공집합(진입 불가) ·")
+            re_txt = " 재진입 1회 ·" if d.max_entries > 1 else ""
+            print(f"  {nm}({d.symbol}) — 손절 {stop} ·{soft} 익절 {tgt} ·{band_txt}{re_txt} 만료 {exp} · {d.id}")
         return 0
     finally:
         if playbook_store is None:

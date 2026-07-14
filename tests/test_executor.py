@@ -218,7 +218,8 @@ def test_live_flow_order_then_fill_then_stop(tmp_path: Path) -> None:
     assert done == [d.id]
     assert len(toss.stops) == 1
     st = toss.stops[0]
-    assert st["trigger"] == 65_000 and st["order_price"] == 64_800  # 트리거 2틱(100원) 아래 지정가
+    # 플로어 = max(2틱, 1%) = 650 → 64,350 → 틱(100원) 절사 64,300 (급락 관통 체결, EXEC-8)
+    assert st["trigger"] == 65_000 and st["order_price"] == 64_300
     # P-11 Stage B: OCO 익절 — 체결 70,100 + 1.5×(70,100−65,000)=77,750 → 틱 절사 77,700
     assert st.get("oco") is True and st["target"] == 77_700
     assert store.has(d.id, ("stop_sent",))
@@ -432,7 +433,7 @@ def test_broken_setup_guard_blocks_entry_below_stop(tmp_path: Path) -> None:
     r = execute_armed(_draft(stop_level=65_000.0), price=64_000, store=store,
                       policy=ExecPolicy(), mode="dry-run", toss=None,
                       dispatcher=_Rec(), now=NOW)  # type: ignore[arg-type]
-    assert r.action == "skipped" and "셋업 붕괴" in r.detail
+    assert r.action == "skipped" and "진입 밴드 하한" in r.detail  # 밴드 통합(EXEC-8)
     store.close()
 
 
@@ -491,7 +492,7 @@ def test_exhausted_setup_guard_blocks_entry_above_first_target(tmp_path: Path) -
     d = _ladder_draft()  # 익절 12,000/15,000 · 손절 9,000
     r = execute_armed(d, price=12_500, store=store, policy=ExecPolicy(),
                       mode="dry-run", toss=None, dispatcher=_Rec(), now=NOW)  # type: ignore[arg-type]
-    assert r.action == "skipped" and "셋업 소진" in r.detail
+    assert r.action == "skipped" and "진입 밴드 상한" in r.detail  # 밴드 통합(EXEC-8)
     store.close()
 
 
@@ -551,7 +552,7 @@ def test_min_rr_guard_blocks_entry_near_target(tmp_path: Path) -> None:
     # 익절 직전(9,990): 보상 10원 vs 위험 990원 → 스킵
     r = execute_armed(d, price=9_995, store=store, policy=ExecPolicy(), mode="dry-run",
                       toss=None, dispatcher=rec, now=NOW)  # type: ignore[arg-type]
-    assert r.action == "skipped" and "잔여 R:R 부족" in r.detail
+    assert r.action == "skipped" and "진입 밴드 상한" in r.detail  # 밴드 통합(EXEC-8)
     # 계획 구간(9,400): R:R 1.5 → 진입
     r2 = execute_armed(d, price=9_400, store=store, policy=ExecPolicy(), mode="dry-run",
                        toss=None, dispatcher=rec, now=NOW)  # type: ignore[arg-type]
@@ -728,4 +729,82 @@ def test_a7_stale_pending_buy_canceled_on_setup_break(tmp_path: Path) -> None:
               price_fn=lambda s: 8_900.0)
     assert toss.buy_cancels == ["ord-9"]
     assert store.pending_fills(mode="live") == []  # buy_cancel로 추적 종결
+    store.close(); pos.close()
+
+
+def test_derive_entry_band_values() -> None:
+    """EXEC-8 밴드 산식: 하한=경고×(1+1%) · 상한=가중 보상 R:R≥1(사다리 pct 가중, C4 해소)."""
+    from trading.executor import derive_entry_band
+
+    band = derive_entry_band(_ladder_draft())  # 손절 9,000 · 경고 9,300 · 12,000(50)/15,000(50)
+    assert band is not None
+    low, high = band
+    assert abs(low - 9_300 * 1.01) < 1e-6
+    assert abs(high - 11_250.0) < 1e-6  # (0.5×12,000 + 0.5×15,000 + 1.0×9,000) / (1.0 + 1.0)
+    assert derive_entry_band(_draft(stop_level=None)) is None  # 가격 스탑 없음 — 밴드 없음
+
+
+def test_reentry_policy_gates_and_half_size(tmp_path: Path) -> None:
+    """EXEC-8 재진입: 한도·기보유·하드스탑 청산·쿨다운 가드 + 2회차 체감 50%(운영자 결정)."""
+    from datetime import timedelta
+
+    from trading.contracts.position import PositionRecord, PositionStatus
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _FakeToss()
+    d = _ladder_draft().model_copy(update={"max_entries": 2})
+    r1 = execute_armed(d, price=10_000, store=store, policy=ExecPolicy(), mode="live",
+                       toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r1.action == "ordered" and "500주" in r1.detail
+    # 청산 미확정 — 재진입 보류
+    r2 = execute_armed(d, price=10_500, store=store, policy=ExecPolicy(), mode="live",
+                       toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r2.action == "skipped" and "청산 미확정" in r2.detail
+
+    def _pos_rec(status: PositionStatus, reason: str, closed_ago_min: int) -> PositionRecord:
+        return PositionRecord(
+            id="pos.20260714.005930", as_of=NOW - timedelta(minutes=closed_ago_min),
+            fetched_at=NOW, source="executor", symbol="005930", qty=500, avg_price=10_000.0,
+            source_ref=d.id, status=status, close_reason=reason)
+
+    # 하드 스탑 청산 — 재진입 금지(무효화 규율)
+    pos.append(_pos_rec(PositionStatus.CLOSED, "가격 스탑 이탈", 60))
+    r3 = execute_armed(d, price=10_500, store=store, policy=ExecPolicy(), mode="live",
+                       toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r3.action == "skipped" and "하드 스탑" in r3.detail
+    # 익절 청산 + 쿨다운 미경과 — 보류
+    pos.append(_pos_rec(PositionStatus.CLOSED, "익절1 부분 실현 후 잔량 본전 청산", 10))
+    r4 = execute_armed(d, price=10_500, store=store, policy=ExecPolicy(), mode="live",
+                       toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r4.action == "skipped" and "쿨다운" in r4.detail
+    # 익절 청산 + 쿨다운 경과 — 재진입, 체감 50%: 500만×0.5 / 10,500 = 238주
+    pos.append(_pos_rec(PositionStatus.CLOSED, "익절1 부분 실현 후 잔량 본전 청산", 40))
+    r5 = execute_armed(d, price=10_500, store=store, policy=ExecPolicy(), mode="live",
+                       toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r5.action == "ordered" and "238주" in r5.detail
+    # 한도(2회) 소진 — 3회차 없음
+    r6 = execute_armed(d, price=10_500, store=store, policy=ExecPolicy(), mode="live",
+                       toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r6.action == "skipped" and "한도 소진" in r6.detail
+    store.close(); pos.close()
+
+
+def test_reentry_blocked_while_holding_same_symbol(tmp_path: Path) -> None:
+    """EXEC-8: 동일 종목 기보유 시 재진입 금지(운영자 지정)."""
+    from trading.contracts.position import PositionRecord, PositionStatus
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _FakeToss()
+    d = _ladder_draft().model_copy(update={"max_entries": 2})
+    execute_armed(d, price=10_000, store=store, policy=ExecPolicy(), mode="live",
+                  toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    pos.append(PositionRecord(
+        id="pos.20260714.005930", as_of=NOW, fetched_at=NOW, source="executor",
+        symbol="005930", qty=500, avg_price=10_000.0, source_ref=d.id,
+        status=PositionStatus.OPEN))
+    r = execute_armed(d, price=10_500, store=store, policy=ExecPolicy(), mode="live",
+                      toss=toss, dispatcher=_Rec(), now=NOW, position_store=pos)  # type: ignore[arg-type]
+    assert r.action == "skipped" and "기보유" in r.detail
     store.close(); pos.close()

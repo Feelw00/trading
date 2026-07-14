@@ -27,6 +27,7 @@ from pydantic import ValidationError
 from trading.contracts.event import EventRecord
 from trading.contracts.factpack import FactPack
 from trading.contracts.order import (
+    EntryBand,
     ExitLevel,
     MarketState,
     OrderDraft,
@@ -36,6 +37,7 @@ from trading.contracts.order import (
     StopType,
     Tranche,
 )
+from trading.executor import derive_entry_band
 from trading.contracts.playbook import FLOW_VARIABLES, Playbook
 from trading.contracts.scenario import ScenarioAxis
 from trading.flowsnap import OBSERVABLE_FLOW_DESC, OBSERVABLE_FLOW_VARS
@@ -126,6 +128,8 @@ def build_prompt(
         '    "soft_stop": {"level": <경고 레벨 — stop_level보다 위>, "pct": <축소 비중%, 통상 50>},  // 선택 — 선제 감축\n'
         '    "targets": [{"level": <익절1 — 부분 실현>, "pct": 50}, {"level": <최종 타깃 — 잔량 전량>, "pct": 50}],  // 기본 2단 사다리, 오름차순·합=100\n'
         '    "confirmation_condition": "<관측 가능 흐름변수 키 1개만 — 조건식·연산자 금지. 필수(기본값 없음)>",\n'
+        '    "max_entries": <1|2 — 재진입 정책: 1=1회만(기본), 2=청산(익절·본전) 후 1회 재진입 허용>,\n'
+        '    "entry_band": {"low": <매수 유효 하한>, "high": <상한>},  // 선택 — 코드 산출 밴드를 좁힐 때만\n'
         '    "time_stop_days": <거래일 단위>,\n'
         '    "summary": "<저녁 결재 보고용 1줄>"\n'
         "  }]\n"
@@ -156,6 +160,10 @@ def build_prompt(
         "코드가 잔량 손절을 본전으로 자동 상향 → 최종 타깃에서 잔량 전량. 레벨 오름차순·pct 합=100, "
         "**마지막 레벨=전량 청산 라인**(pct는 잔량 전부로 집행된다). 다음 저항이 구조적으로 없어 "
         "사다리를 못 세울 때만 단일 타깃 허용. 손절·익절 자체가 불확실하면 생략하라(코드가 보수 기본값).\n"
+        "- max_entries=2(재진입 1회)는 재진입이 셋업 논리에 맞을 때만(예: 눌림 재매집형). "
+        "하드 스탑 청산 후 재진입은 코드가 금지하고, 2회차 사이즈는 자동 절반이다. 모르면 1.\n"
+        "- entry_band 는 코드가 손절·익절 레벨로 산출하는 매수 유효 범위를 **좁힐 때만** 지정"
+        "(넓히면 그 플레이북은 폐기된다). 근거 가격 컨텍스트가 없으면 생략하라 — 코드 밴드가 기본.\n"
         "- 역추세 플레이북은 '과도하다'는 논리가 아니라 소진의 물리 신호(volume_climax, "
         "new_low_renewal_fail) 확인 조건으로만.\n"
         "- direction=flat 논제, invalidation 이 관측 불가한 논제로는 플레이북을 만들지 마라.\n"
@@ -253,6 +261,10 @@ def _to_records(
     arm_d = {str(k): str(v) for k, v in arm.items()} if isinstance(arm, dict) else {}
     abort_d = {str(k): str(v) for k, v in abort.items()} if isinstance(abort, dict) else {}
 
+    # 재진입 정책(EXEC-8) — R5 명시, 1|2 외 값은 보수 기본(1)
+    raw_me = pb.get("max_entries")
+    max_entries = int(raw_me) if isinstance(raw_me, (int, float)) and int(raw_me) in (1, 2) else 1
+
     day = f"{now:%Y%m%d}"
     draft = OrderDraft(
         id=f"order.{day}.{srtn}.{side.value}",
@@ -265,7 +277,24 @@ def _to_records(
         created_when_market=MarketState.CLOSED,
         targets=sorted(targets, key=lambda t: t.level),  # 계약이 순증가·합≤100 재검증
         soft_stop=soft_stop,
+        max_entries=max_entries,
     )
+    # 진입 밴드 조임(EXEC-8) — R5는 코드 산출 밴드를 **좁힐 때만** 지정 가능(확장=폐기)
+    raw_band = pb.get("entry_band")
+    if isinstance(raw_band, dict):
+        try:
+            r5_low, r5_high = float(raw_band["low"]), float(raw_band["high"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("entry_band 형식 오류(low/high 숫자 필수) — 폐기") from None
+        code_band = derive_entry_band(draft)
+        if code_band is None:
+            raise ValueError("entry_band 지정 불가(가격 컨텍스트 부족) — 폐기")
+        c_low, c_high = code_band
+        if r5_low < c_low - 1e-9 or r5_high > c_high + 1e-9:
+            raise ValueError(
+                f"entry_band 확장 금지(코드 밴드 [{c_low:,.0f}, {c_high:,.0f}] 밖) — 폐기"
+            )
+        draft = draft.model_copy(update={"entry_band": EntryBand(low=r5_low, high=r5_high)})
     playbook = Playbook(
         id=f"pb.{day}.{srtn}.{side.value}",
         as_of=now, fetched_at=now, source=source,

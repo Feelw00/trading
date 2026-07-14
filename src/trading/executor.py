@@ -123,6 +123,57 @@ def _rr_ratio() -> float:
     return v if 0.5 <= v <= 5.0 else 1.5
 
 
+def _entry_gap_pct() -> float:
+    """진입 밴드 이격(EXEC_ENTRY_GAP_PCT, 기본 1%) — 손절·익절 라인과의 최소 거리(수수료·잡음 마진)."""
+    try:
+        v = float(os.environ.get("EXEC_ENTRY_GAP_PCT", ""))
+    except ValueError:
+        return 0.01
+    return v if 0.0 < v <= 0.1 else 0.01
+
+
+def _stop_floor_pct() -> float:
+    """손절 지정가 플로어(EXEC_STOP_FLOOR_PCT, 기본 1%) — 급락 관통 체결용 하한 폭.
+
+    지정가 매도는 '그 가격 밑으론 안 판다'이므로, 트리거보다 충분히 낮은 플로어가
+    급락을 관통해도 체결되게 한다(2틱 고정은 급락 방어에 너무 얇음 — 운영자 지적 2026-07-14)."""
+    try:
+        v = float(os.environ.get("EXEC_STOP_FLOOR_PCT", ""))
+    except ValueError:
+        return 0.01
+    return v if 0.0 < v <= 0.1 else 0.01
+
+
+def stop_order_price(trigger: int) -> int:
+    """손절 조건주문의 지정가 = 트리거 − max(2틱, 플로어%) — 틱 절사."""
+    floor = max(2 * tick_size(trigger), trigger * _stop_floor_pct())
+    return round_down_to_tick(trigger - floor)
+
+
+def derive_entry_band(draft: OrderDraft, *, min_rr: float | None = None) -> tuple[float, float] | None:
+    """진입 유효 가격 범위 산출(EXEC-8, 결정론) — 가격 스탑 없는 초안은 None.
+
+    - 하한 = max(하드 스탑, 경고 soft_stop) × (1 + 이격%) — 스탑 잡음·즉시 경고 축소 진입 차단.
+    - 상한 = min( (가중 익절합 + rr×스탑) / (가중치합 + rr),   ← 가중 보상/위험 ≥ rr (C4 해소)
+                 익절1 × (1 − 이격%) )                        ← 익절 근접·수수료 마진
+      (targets 없으면 R:R 폴백 공식이 자기충족이라 상한은 무한 — 하한만 적용.)
+    - 상한 ≤ 하한이면 밴드 공집합 = 그 초안은 구조적으로 진입 불가(호출측 스킵)."""
+    if not (draft.stop and draft.stop.level):
+        return None
+    gap = _entry_gap_pct()
+    s = float(draft.stop.level)
+    floor_ref = max(s, float(draft.soft_stop.level) if draft.soft_stop else s)
+    low = floor_ref * (1 + gap)
+    if not draft.targets:
+        return (low, float("inf"))
+    rr = min_rr if min_rr is not None else _min_rr()
+    w_sum = sum(t.pct for t in draft.targets) / 100.0
+    wt_sum = sum(t.pct / 100.0 * t.level for t in draft.targets)
+    e_max_rr = (wt_sum + rr * s) / (w_sum + rr) if (w_sum + rr) > 0 else low
+    e_max_tp = draft.targets[0].level * (1 - gap)
+    return (low, min(e_max_rr, e_max_tp))
+
+
 _DDL = """
 CREATE TABLE IF NOT EXISTS exec_log (
   row_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -226,6 +277,17 @@ class ExecStore:
         sql += ")"
         cur = self._conn.execute(sql, params)
         return [str(r[0]) for r in cur]
+
+    def entries_count(self, draft_id: str, *, mode: str | None = None) -> int:
+        """이 초안의 진입 횟수(order_intent/order_sent 행 수) — 재진입 판정(EXEC-8)."""
+        sql = ("SELECT COUNT(*) FROM exec_log WHERE draft_id=?"
+               " AND kind IN ('order_intent','order_sent')")
+        params: tuple[str, ...] = (draft_id,)
+        if mode:
+            sql += " AND mode=?"
+            params = (*params, mode)
+        row = self._conn.execute(sql, params).fetchone()
+        return int(row[0]) if row else 0
 
     def rotations_today(self, day: str, *, mode: str | None = None) -> int:
         """mode='live'면 live 교체만 계수 — dry-run 교체가 live 일1회 예산을 소모하면 안 된다(B3)."""
@@ -345,6 +407,7 @@ def execute_armed(
     pool_weight_total: float | None = None,
     regime: Regime = Regime.NORMAL,
     test_entry: bool = False,
+    position_store: PositionStore | None = None,
 ) -> ExecResult:
     """발동 초안 1건 집행 — 배분은 **풀 비례 공정 분할**(EXEC-5, 발동 순서 무관).
 
@@ -359,10 +422,27 @@ def execute_armed(
         return ExecResult("off", "EXEC_MODE=off 또는 KILL 파일")
     if draft.side.value != "buy":
         return ExecResult("skipped", "매수 초안만 자동 집행(현물)")
-    # live는 live 기록만 dedup — dry-run 흔적(intent)이 실진입을 막으면 안 된다(7/14 전환 사고)
-    if store.has(draft.id, ("order_intent", "order_sent"),
-                 mode="live" if mode == "live" else None):
-        return ExecResult("skipped", "이미 집행됨(초안당 1회)")
+    # 진입 한도(EXEC-8): max_entries(기본 1 — 재진입 불허)까지만. live는 live 기록만 계수
+    # (dry-run 흔적이 실진입을 막으면 안 된다 — 7/14 전환 사고)
+    entries_used = store.entries_count(draft.id, mode="live" if mode == "live" else None)
+    if entries_used >= max(draft.max_entries, 1):
+        return ExecResult("skipped", "이미 집행됨(진입 한도 소진)")
+    reentry = entries_used >= 1
+    if reentry:
+        # 재진입 가드(EXEC-8, 운영자 결정 2026-07-14) — 전부 비저널(매 패스 반복 무해):
+        # 기보유 금지 · 1차 청산 확정 필수 · 하드 스탑 청산 후 금지(무효화) · 쿨다운 30분
+        if position_store is None:
+            return ExecResult("skipped", "재진입 보류(포지션 장부 미제공)")
+        if any(p.symbol == draft.symbol for p in position_store.open_positions()):
+            return ExecResult("skipped", "재진입 보류(동일 종목 기보유)")
+        last = position_store.latest_for_source(draft.id)
+        if last is None or last.status is not PositionStatus.CLOSED:
+            return ExecResult("skipped", "재진입 보류(1차 진입 청산 미확정)")
+        why = (last.close_reason or "").lower()
+        if "스탑" in why or "손절" in why or "stop" in why:
+            return ExecResult("skipped", "재진입 금지(하드 스탑 청산 — 무효화 규율)")
+        if (resolved - last.as_of.astimezone(KST)).total_seconds() < 30 * 60:
+            return ExecResult("skipped", "재진입 보류(청산 후 쿨다운 30분)")
 
     def _skip(reason: str) -> ExecResult:
         store.log(day=day, draft_id=draft.id, symbol=draft.symbol, kind="skip",
@@ -403,29 +483,29 @@ def execute_armed(
             f"주당 가격 상한 초과({limit_price:,} > {policy.max_price_krw:,}) — "
             "계단 청산 불가 종목 배제(EXEC-4)"
         )
-    # 셋업 붕괴 가드: 현재가가 이미 손절 레벨 이하 — 사자마자 스탑 트리거되는 진입 차단
-    # (R5는 T-1 EOD 기준 계획 — 익일 급락 시 계획 전제가 깨진 상태)
-    if draft.stop and draft.stop.level and limit_price <= draft.stop.level:
-        return _skip(
-            f"셋업 붕괴(현재가 {limit_price:,} ≤ 손절 {draft.stop.level:,.0f}) — 진입 금지"
-        )
-    # 셋업 소진 가드(2026-07-13 폭락일 실사례: 한국콜마 현재가 > 익절 레벨): 이미 1차
-    # 익절 레벨 이상이면 계획된 상승분이 소진된 것 — 사자마자 익절 트리거·기대 소멸 차단
-    if draft.targets and limit_price >= draft.targets[0].level:
-        return _skip(
-            f"셋업 소진(현재가 {limit_price:,} ≥ 익절1 {draft.targets[0].level:,.0f}) — 진입 금지"
-        )
-    # 잔여 R:R 가드(운영자 지적 2026-07-14: "9,999에 사서 10,000에 파는" 진입 차단):
-    # 소진 가드는 이진 판정이라 익절 직전 진입을 못 막는다 — 진입가 기준 최종 타깃까지의
-    # 보상이 손절까지의 위험 대비 EXEC_MIN_RR(기본 1.0) 미만이면 스킵
-    if draft.stop and draft.stop.level and limit_price > draft.stop.level:
-        up = planned_upside_pct(draft, float(limit_price))
-        dn = (limit_price - draft.stop.level) / limit_price
-        if dn > 0 and up / dn < _min_rr():
+    # 진입 밴드(EXEC-8, 운영자 결정 2026-07-14) — 붕괴·소진·R:R 가드 3종을 밴드 1개로 통합:
+    # 하한=손절·경고 이격(스탑 잡음 진입 차단), 상한=가중 보상 R:R+익절1 이격(익절 근접 차단).
+    # 코드 산출 밴드 ∩ R5 조임(entry_band 계약 필드 — R5 확장은 계약단에서 폐기됨)
+    band = derive_entry_band(draft)
+    if band is not None:
+        b_low, b_high = band
+        if draft.entry_band is not None:
+            b_low = max(b_low, draft.entry_band.low)
+            b_high = min(b_high, draft.entry_band.high)
+        if b_high <= b_low:
             return _skip(
-                f"잔여 R:R 부족({up / dn:.2f} < {_min_rr():g}) — "
-                f"익절 근접 진입 차단(현재가 {limit_price:,})"
+                f"진입 밴드 공집합(하한 {b_low:,.0f} ≥ 상한 {b_high:,.0f}) — 구조적 진입 불가"
             )
+        if limit_price < b_low:
+            return _skip(
+                f"진입 밴드 하한 미달(현재가 {limit_price:,} < {b_low:,.0f}) — 손절·경고 근접"
+            )
+        if limit_price > b_high:
+            return _skip(
+                f"진입 밴드 상한 초과(현재가 {limit_price:,} > {b_high:,.0f}) — 잔여 보상 부족"
+            )
+    if reentry:
+        budget *= 0.5  # 재진입 체감 50%(운영자) — 같은 셋업 2회차는 신뢰도 하향
     qty = floor(budget / limit_price)
     if qty < 1 and limit_price <= available:
         qty = 1  # 최소 1주 보장 — 상한 이내 고가 종목이 계수 때문에 못 사지는 상황 방지
@@ -458,6 +538,8 @@ def execute_armed(
     detail_tag = "테스트 진입(D1 계측 — 최소 수량)" if test_entry else (
         f"즉시 트랜치 {_immediate_pct(draft)}% (확인 트랜치는 v1 미집행)"
     )
+    if reentry:
+        detail_tag = f"재진입 2회차(체감 50%, EXEC-8) · {detail_tag}"
     store.log(day=day, draft_id=draft.id, symbol=draft.symbol, kind=kind, mode=mode,
               qty=qty, price=limit_price, order_id=order_id, at=resolved.isoformat(),
               detail=detail_tag)
@@ -572,7 +654,7 @@ def reconcile(
         target_txt = ""
         if stop_level:
             trigger = round_down_to_tick(stop_level)
-            order_price = round_down_to_tick(trigger - 2 * tick_size(trigger))  # 체결 확률용 2틱 아래
+            order_price = stop_order_price(trigger)  # 플로어 = max(2틱, 1%) — 급락 관통 체결(EXEC-8)
             expiry = cal.add_trading_days(resolved.date(), draft.time_stop_days or 20)
             # 브래킷 상단(EXEC-2): R5가 targets를 지정했으면 **최종 타깃**(부분 레그는 감시
             # 루프의 manage_exits 몫), 없으면 R:R 비율(EXEC_RR, 기본 1.5) 폴백.
@@ -891,7 +973,7 @@ def _place_bracket(
     final_target: int, expire_date: str, client_order_id: str,
 ) -> str:
     """보호 브래킷 등록(OCO 또는 손절 단독) — 반환=조건주문 id."""
-    order_price = round_down_to_tick(stop_trigger - 2 * tick_size(stop_trigger))
+    order_price = stop_order_price(stop_trigger)  # 플로어 = max(2틱, 1%) — 급락 관통 체결(EXEC-8)
     if final_target > stop_trigger:
         res = toss.place_oco_sell(
             symbol, qty, stop_trigger=stop_trigger, stop_price=order_price,
@@ -1196,7 +1278,7 @@ def manage_exits(
 
 __all__ = [
     "BracketGapError", "DEFAULT_DB", "KILL_FILE", "ExecPolicy", "ExecResult", "ExecStore",
-    "cap_fraction", "consider_rotation", "exec_mode", "execute_armed",
+    "cap_fraction", "consider_rotation", "derive_entry_band", "exec_mode", "execute_armed",
     "manage_exits", "planned_upside_pct", "reconcile",
-    "round_down_to_tick", "sync_brackets", "tick_size", "trim_for_shortfall",
+    "round_down_to_tick", "stop_order_price", "sync_brackets", "tick_size", "trim_for_shortfall",
 ]

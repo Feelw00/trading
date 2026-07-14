@@ -245,3 +245,22 @@ def test_graded_recovery_is_flow_variable() -> None:
     assert res.rejected == 0
     [pb] = res.playbooks
     assert pb.arm_conditions["prev_day_high_recovery"] == ">=0.97"
+
+
+def test_max_entries_parsed_and_defaults_conservative() -> None:
+    # EXEC-8: 재진입 정책은 R5가 명시 — 1|2 외 값은 보수 기본(1)
+    res = _run({"playbooks": [_proposal(max_entries=2)]})
+    assert res.drafts[0].max_entries == 2
+    res2 = _run({"playbooks": [_proposal(max_entries=7)]})
+    assert res2.drafts[0].max_entries == 1
+
+
+def test_entry_band_tighten_only() -> None:
+    # EXEC-8: R5 밴드는 코드 산출 밴드를 좁힐 때만 — 확장은 폐기
+    # _proposal: stop 5000, targets 없음 → 코드 밴드 = [5050, ∞)
+    widen = _run({"playbooks": [_proposal(entry_band={"low": 4_000, "high": 9_000})]})
+    assert widen.rejected == 1 and "확장 금지" in widen.rejected_reasons[0]
+    tight = _run({"playbooks": [_proposal(entry_band={"low": 5_200, "high": 6_000})]})
+    assert tight.rejected == 0
+    band = tight.drafts[0].entry_band
+    assert band is not None and band.low == 5_200 and band.high == 6_000

@@ -150,8 +150,12 @@ def run_pass(
         # armed 발화 dedup을 모드별로 분리(B5) — dry-run 발화 흔적이 live 재발동을 막으면 안 된다
         # (2026-07-14 실증: 09:54 dry-run armed가 live 세션의 뉴파워 재발동을 차단)
         armed_kind = f"armed@{_exec.exec_mode()}"
+        rearm: list[str] = []  # 이미 발화된 활성 초안 — 재진입 판정 채널(EXEC-8, 알림 없음)
         for it in res.items:  # 활성 approved 풀만
-            if not it.active or st.fired(day, it.draft_id, armed_kind):
+            if not it.active:
+                continue
+            if st.fired(day, it.draft_id, armed_kind):
+                rearm.append(f"rearm:{it.draft_id}")
                 continue
             met = " / ".join(c.cond_ko for c in it.conditions if c.met) or "(조건 상세 없음)"
             d.notify(
@@ -187,7 +191,9 @@ def run_pass(
         # 자동 집행(EXEC-1) — 발동분 주문 + 미체결 추적. 실패해도 감시 루프는 계속.
         if executor_pass is not None:
             try:
-                executor_pass([f for f in fired if f.startswith("armed:")], d, resolved)
+                executor_pass(
+                    [f for f in fired if f.startswith("armed:")] + rearm, d, resolved
+                )
             except Exception as exc:  # noqa: BLE001 — 집행 오류가 감시를 죽이면 안 된다
                 notes.append(f"집행 패스 오류(감시는 계속): {exc}")
     finally:
@@ -262,9 +268,20 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
                 action="개입 불필요 — 청산 관리는 계속, 신규 진입만 보수화",
                 deadline="당일", created_at=now,
             ))
-        # 발동분 + 오늘 잔고 부족으로 밀린 초안 재시도(EXEC-4 — 교체·청산으로 잔고가 생겼을 수 있음)
+        # 발동분 + 재진입 후보(EXEC-8) + 오늘 잔고 부족으로 밀린 초안 재시도(EXEC-4)
         # 재시도는 같은 모드의 skip만(B2) — dry-run skip이 live 재시도를 만들면 안 된다
-        attempt_ids = [k.split(":", 1)[1] for k in fired_keys]
+        live_only = "live" if mode == "live" else None
+        attempt_ids = []
+        for k in fired_keys:
+            tag, _, did = k.partition(":")
+            if tag == "armed":
+                attempt_ids.append(did)
+            elif tag == "rearm":
+                dr = drafts.get(did)
+                # 재진입 자격 사전 필터(저널 소음 방지) — 세부 가드는 execute_armed가 강제
+                if (dr is not None and dr.max_entries > 1
+                        and store.entries_count(did, mode=live_only) == 1):
+                    attempt_ids.append(did)
         attempt_ids += [i for i in store.cash_skips_today(day, mode=mode) if i not in attempt_ids]
         active_ids = {dr.id for _, dr, _ in active}
 
@@ -289,7 +306,7 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
             r = _exec.execute_armed(
                 draft, price=price, store=store, policy=policy, mode=mode, toss=toss,
                 dispatcher=dispatcher, now=now, pool_weight_total=_pool_weight(),
-                regime=reg.regime,
+                regime=reg.regime, position_store=pos,
             )
             print(f"  집행[{mode}]: {draft.symbol} {r.action} — {r.detail}")
             # 잔고 부족 → 회수 사다리(EXEC-4/6): ①갈아타기(전량 교체) ②부분 트림 → 재시도 1회
@@ -316,6 +333,7 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
                         draft, price=price, store=store, policy=policy, mode=mode,
                         toss=toss, dispatcher=dispatcher, now=now,
                         pool_weight_total=_pool_weight(), regime=reg.regime,
+                        position_store=pos,
                     )
                     print(f"  회수 후 재집행[{mode}]: {draft.symbol} {r2.action} — {r2.detail}")
         # 테스트 진입(D1 계측, env 게이트·dry-run 전용): 11:00까지 자연 발동 0이면
@@ -350,7 +368,7 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
                     rt = _exec.execute_armed(
                         draft, price=p_, store=store, policy=policy, mode=mode, toss=toss,
                         dispatcher=dispatcher, now=now, pool_weight_total=_pool_weight(),
-                        regime=reg.regime, test_entry=True,
+                        regime=reg.regime, test_entry=True, position_store=pos,
                     )
                     print(f"  테스트 진입[D1]: {draft.symbol} {rt.action} — {rt.detail}")
         done = _exec.reconcile(
