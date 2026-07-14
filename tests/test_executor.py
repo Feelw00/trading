@@ -518,3 +518,42 @@ def test_test_entry_forces_min_qty(tmp_path: Path) -> None:
                       toss=None, dispatcher=_Rec(), now=NOW, test_entry=True)  # type: ignore[arg-type]
     assert r.action == "ordered" and "1주" in r.detail
     store.close()
+
+
+def test_live_ignores_dry_run_records_for_dedup_and_daily_cap(tmp_path: Path) -> None:
+    """7/14 전환 사고: dry-run order_intent가 live 재진입·일일 카운트를 오염시키면 안 된다."""
+    store = ExecStore(tmp_path / "e.sqlite")
+    store.log(day="20260714", draft_id="order.20260713.144960.buy", symbol="144960",
+              kind="order_intent", mode="dry-run", qty=50, price=9960,
+              at="2026-07-14T09:54:10+09:00")
+    # 모드 무관(구동작) — 걸린다 / live 필터 — 안 걸린다
+    assert store.has("order.20260713.144960.buy", ("order_intent", "order_sent"))
+    assert not store.has("order.20260713.144960.buy", ("order_intent", "order_sent"), mode="live")
+    assert store.new_orders_today("20260714") == 1
+    assert store.new_orders_today("20260714", mode="live") == 0
+    # live 기록은 live 필터에도 걸린다
+    store.log(day="20260714", draft_id="order.20260713.144960.buy", symbol="144960",
+              kind="order_sent", mode="live", qty=35, price=9990,
+              at="2026-07-14T10:40:00+09:00")
+    assert store.has("order.20260713.144960.buy", ("order_intent", "order_sent"), mode="live")
+    assert store.new_orders_today("20260714", mode="live") == 1
+
+
+def test_min_rr_guard_blocks_entry_near_target(tmp_path: Path) -> None:
+    """운영자 지적(7/14): '9,999에 사서 10,000에 파는' 진입 — 잔여 R:R < EXEC_MIN_RR(기본 1.0) 차단."""
+    from trading.contracts.order import ExitLevel
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    rec = _Rec()
+    d = _draft("order.20260713.144960.buy", "144960", stop_level=9_000.0).model_copy(
+        update={"targets": [ExitLevel(level=10_000.0, pct=100)]}
+    )
+    # 익절 직전(9,990): 보상 10원 vs 위험 990원 → 스킵
+    r = execute_armed(d, price=9_995, store=store, policy=ExecPolicy(), mode="dry-run",
+                      toss=None, dispatcher=rec, now=NOW)  # type: ignore[arg-type]
+    assert r.action == "skipped" and "잔여 R:R 부족" in r.detail
+    # 계획 구간(9,400): R:R 1.5 → 진입
+    r2 = execute_armed(d, price=9_400, store=store, policy=ExecPolicy(), mode="dry-run",
+                       toss=None, dispatcher=rec, now=NOW)  # type: ignore[arg-type]
+    assert r2.action == "ordered"
+    store.close()

@@ -105,6 +105,15 @@ def exec_mode(*, kill_file: Path = KILL_FILE) -> str:
     return mode if mode in ("off", "dry-run", "live") else "dry-run"
 
 
+def _min_rr() -> float:
+    """진입 최소 잔여 R:R(EXEC_MIN_RR, 기본 1.0) — 보상이 위험 이상일 때만 신규 진입."""
+    try:
+        v = float(os.environ.get("EXEC_MIN_RR", ""))
+    except ValueError:
+        return 1.0
+    return v if 0.0 <= v <= 5.0 else 1.0
+
+
 def _rr_ratio() -> float:
     """익절 R:R 비율(EXEC_RR, 기본 1.5) — 익절가 = 체결가 + R:R × (체결가 − 손절 트리거)."""
     try:
@@ -147,19 +156,28 @@ class ExecStore:
         )
         self._conn.commit()
 
-    def has(self, draft_id: str, kinds: tuple[str, ...]) -> bool:
+    def has(self, draft_id: str, kinds: tuple[str, ...], *, mode: str | None = None) -> bool:
+        """mode='live'면 live 행만 본다 — dry-run 잔재가 live 판단(dedup 등)을 오염시키지 않게
+        (2026-07-14 전환 사고: dry-run order_intent가 live 재진입을 차단)."""
         q = ",".join("?" for _ in kinds)
-        row = self._conn.execute(
-            f"SELECT 1 FROM exec_log WHERE draft_id=? AND kind IN ({q}) LIMIT 1",
-            (draft_id, *kinds),
-        ).fetchone()
+        sql = f"SELECT 1 FROM exec_log WHERE draft_id=? AND kind IN ({q})"
+        params: tuple[str, ...] = (draft_id, *kinds)
+        if mode:
+            sql += " AND mode=?"
+            params = (*params, mode)
+        row = self._conn.execute(sql + " LIMIT 1", params).fetchone()
         return row is not None
 
-    def new_orders_today(self, day: str) -> int:
-        row = self._conn.execute(
-            "SELECT COUNT(DISTINCT draft_id) FROM exec_log WHERE day=? AND kind IN ('order_intent','order_sent')",
-            (day,),
-        ).fetchone()
+    def new_orders_today(self, day: str, *, mode: str | None = None) -> int:
+        sql = (
+            "SELECT COUNT(DISTINCT draft_id) FROM exec_log"
+            " WHERE day=? AND kind IN ('order_intent','order_sent')"
+        )
+        params: tuple[str, ...] = (day,)
+        if mode:
+            sql += " AND mode=?"
+            params = (day, mode)
+        row = self._conn.execute(sql, params).fetchone()
         return int(row[0]) if row else 0
 
     def committed_krw(self) -> int:
@@ -291,7 +309,9 @@ def execute_armed(
         return ExecResult("off", "EXEC_MODE=off 또는 KILL 파일")
     if draft.side.value != "buy":
         return ExecResult("skipped", "매수 초안만 자동 집행(현물)")
-    if store.has(draft.id, ("order_intent", "order_sent")):
+    # live는 live 기록만 dedup — dry-run 흔적(intent)이 실진입을 막으면 안 된다(7/14 전환 사고)
+    if store.has(draft.id, ("order_intent", "order_sent"),
+                 mode="live" if mode == "live" else None):
         return ExecResult("skipped", "이미 집행됨(초안당 1회)")
 
     def _skip(reason: str) -> ExecResult:
@@ -299,7 +319,7 @@ def execute_armed(
                   mode=mode, detail=reason, at=resolved.isoformat())
         return ExecResult("skipped", reason)
 
-    if store.new_orders_today(day) >= policy.max_new_per_day:
+    if store.new_orders_today(day, mode="live" if mode == "live" else None) >= policy.max_new_per_day:
         return _skip(f"일일 신규 상한({policy.max_new_per_day}건) — 폭주 가드")
     # 레짐 게이트(EXEC-7): 지수 급락일 신규 진입 보수화 — 청산 관리는 이 함수 밖에서 계속
     if regime is Regime.RISK_OFF:
@@ -342,6 +362,17 @@ def execute_armed(
         return _skip(
             f"셋업 소진(현재가 {limit_price:,} ≥ 익절1 {draft.targets[0].level:,.0f}) — 진입 금지"
         )
+    # 잔여 R:R 가드(운영자 지적 2026-07-14: "9,999에 사서 10,000에 파는" 진입 차단):
+    # 소진 가드는 이진 판정이라 익절 직전 진입을 못 막는다 — 진입가 기준 최종 타깃까지의
+    # 보상이 손절까지의 위험 대비 EXEC_MIN_RR(기본 1.0) 미만이면 스킵
+    if draft.stop and draft.stop.level and limit_price > draft.stop.level:
+        up = planned_upside_pct(draft, float(limit_price))
+        dn = (limit_price - draft.stop.level) / limit_price
+        if dn > 0 and up / dn < _min_rr():
+            return _skip(
+                f"잔여 R:R 부족({up / dn:.2f} < {_min_rr():g}) — "
+                f"익절 근접 진입 차단(현재가 {limit_price:,})"
+            )
     qty = floor(budget / limit_price)
     if qty < 1 and limit_price <= available:
         qty = 1  # 최소 1주 보장 — 상한 이내 고가 종목이 계수 때문에 못 사지는 상황 방지

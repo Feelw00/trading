@@ -266,7 +266,9 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
             return sum(
                 _exec.cap_fraction(drafts[i].total_size_cap)
                 for i in active_ids
-                if i in drafts and not store.has(i, ("order_intent", "order_sent"))
+                if i in drafts
+                and not store.has(i, ("order_intent", "order_sent"),
+                                  mode="live" if mode == "live" else None)
             )
 
         for did in attempt_ids:
