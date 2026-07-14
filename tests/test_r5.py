@@ -256,10 +256,14 @@ def test_max_entries_parsed_and_defaults_conservative() -> None:
 
 
 def test_entry_band_tighten_only() -> None:
-    # EXEC-8: R5 밴드는 코드 산출 밴드를 좁힐 때만 — 확장은 폐기
+    # EXEC-8: R5 밴드는 코드 밴드와 교집합 — 확장 시도는 절삭, 교집합 공백만 폐기
     # _proposal: stop 5000, targets 없음 → 코드 밴드 = [5050, ∞)
     widen = _run({"playbooks": [_proposal(entry_band={"low": 4_000, "high": 9_000})]})
-    assert widen.rejected == 1 and "확장 금지" in widen.rejected_reasons[0]
+    assert widen.rejected == 0
+    clamped = widen.drafts[0].entry_band
+    assert clamped is not None and clamped.low == 5_050.0 and clamped.high == 9_000  # 하한 절삭
+    disjoint = _run({"playbooks": [_proposal(entry_band={"low": 1_000, "high": 2_000})]})
+    assert disjoint.rejected == 1 and "교집합 공백" in disjoint.rejected_reasons[0]
     tight = _run({"playbooks": [_proposal(entry_band={"low": 5_200, "high": 6_000})]})
     assert tight.rejected == 0
     band = tight.drafts[0].entry_band

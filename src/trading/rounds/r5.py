@@ -171,8 +171,8 @@ def build_prompt(
         "사다리를 못 세울 때만 단일 타깃 허용. 손절·익절 자체가 불확실하면 생략하라(코드가 보수 기본값).\n"
         "- max_entries=2(재진입 1회)는 재진입이 셋업 논리에 맞을 때만(예: 눌림 재매집형). "
         "하드 스탑 청산 후 재진입은 코드가 금지하고, 2회차 사이즈는 자동 절반이다. 모르면 1.\n"
-        "- entry_band 는 코드가 손절·익절 레벨로 산출하는 매수 유효 범위를 **좁힐 때만** 지정"
-        "(넓히면 그 플레이북은 폐기된다). 근거 가격 컨텍스트가 없으면 생략하라 — 코드 밴드가 기본.\n"
+        "- entry_band 는 코드가 손절·익절 레벨로 산출하는 매수 유효 범위와 **교집합**으로 적용된다 "
+        "— 넓힐 수 없고, 좁힐 의도가 있을 때만 지정하라. 모르면 생략(코드 밴드가 기본).\n"
         "- 역추세 플레이북은 '과도하다'는 논리가 아니라 소진의 물리 신호(volume_climax, "
         "new_low_renewal_fail) 확인 조건으로만.\n"
         "- direction=flat 논제, invalidation 이 관측 불가한 논제로는 플레이북을 만들지 마라.\n"
@@ -304,11 +304,15 @@ def _to_records(
         if code_band is None:
             raise ValueError("entry_band 지정 불가(가격 컨텍스트 부족) — 폐기")
         c_low, c_high = code_band
-        if r5_low < c_low - 1e-9 or r5_high > c_high + 1e-9:
+        # 조임만 유효 — 코드 밴드와 **교집합**(확장 시도는 절삭: R5는 코드 밴드 값을 모른다 —
+        # 21:05 2차 산출에서 폐기 3건 발생해 절삭으로 완화, 운영자 재산출 지시 중 교정).
+        # 교집합이 비면 계획이 코드 밴드와 구조적으로 모순 — 그것만 폐기.
+        n_low, n_high = max(r5_low, c_low), min(r5_high, c_high)
+        if n_high <= n_low:
             raise ValueError(
-                f"entry_band 확장 금지(코드 밴드 [{c_low:,.0f}, {c_high:,.0f}] 밖) — 폐기"
+                f"entry_band 교집합 공백(코드 밴드 [{c_low:,.0f}, {c_high:,.0f}]와 모순) — 폐기"
             )
-        draft = draft.model_copy(update={"entry_band": EntryBand(low=r5_low, high=r5_high)})
+        draft = draft.model_copy(update={"entry_band": EntryBand(low=n_low, high=n_high)})
     playbook = Playbook(
         id=f"pb.{day}.{srtn}.{side.value}",
         as_of=now, fetched_at=now, source=source,
