@@ -1100,8 +1100,10 @@ def sync_brackets(
 TIME_STOP_WINDOW: tuple[dt_time, dt_time] = (dt_time(14, 30), dt_time(14, 50))
 
 # 운영자 지시 청산 큐(EXEC-1 잔여 '임의 청산 자동화 없음' 해소, 2026-07-14 밤) —
-# CLI(python -m trading.liquidate)로 등록하면 감시기가 세션 창(09:00~20:00)에서 처리.
+# CLI(python -m trading.liquidate)로 등록하면 감시기가 세션 창에서 처리.
+# 처리 시작은 09:30부터(운영자: "9시에 바로 던지면 변수가 너무 크다" — 시초 변동성 회피).
 LIQUIDATE_QUEUE = Path(".runtime") / "exec" / "liquidate.queue"
+LIQUIDATE_FROM: dt_time = dt_time(9, 30)
 
 
 def queue_liquidation(
@@ -1142,6 +1144,8 @@ def process_liquidation_queue(
     acted: list[str] = []
     if mode == "off" or position_store is None or not queue_file.exists():
         return acted
+    if resolved.time() < LIQUIDATE_FROM:
+        return acted  # 시초 변동성 회피(운영자) — 09:30부터 처리
     ids = [ln.strip() for ln in queue_file.read_text().splitlines() if ln.strip()]
     if not ids:
         return acted
