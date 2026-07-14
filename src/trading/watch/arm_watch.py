@@ -399,6 +399,13 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
             position_store=pos, dispatcher=dispatcher, now=now,
         ):
             print(f"  시간손절 집행[{mode}]: {did}")
+        # 운영자 지시 청산 큐(python -m trading.liquidate 등록분) — 세션 창에서 전량 매도
+        for did in _exec.process_liquidation_queue(
+            store=store, mode=mode, toss=toss,
+            price_fn=lambda s: _live_price(s, toss),
+            position_store=pos, dispatcher=dispatcher, now=now,
+        ):
+            print(f"  지시 청산[{mode}]: {did}")
     finally:
         ps.close()
         store.close()

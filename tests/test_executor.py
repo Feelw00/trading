@@ -872,3 +872,58 @@ def test_time_stop_cancel_failure_keeps_protection(tmp_path: Path) -> None:
     assert not store.has(d.id, ("leg_timestop",), mode="live")
     assert pos.open_positions() != []  # 포지션 유지
     store.close(); pos.close()
+
+
+def test_liquidation_queue_sells_and_cleans(tmp_path: Path) -> None:
+    """지시 청산 큐: 브래킷 취소→전량 매도→포지션 마감→큐 제거. 보유 없음은 큐만 정리."""
+    from trading.executor import process_liquidation_queue, queue_liquidation
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _FakeToss()
+    d = _fill_ladder(store, pos, toss, "live")
+    q = tmp_path / "liq.queue"
+    assert queue_liquidation([d.id, "order.ghost.buy"], queue_file=q) == [d.id, "order.ghost.buy"]
+    assert queue_liquidation([d.id], queue_file=q) == []  # 중복 등록 무시
+    rec = _Rec()
+    acted = process_liquidation_queue(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                                      price_fn=lambda s: 10_050.0, position_store=pos,
+                                      dispatcher=rec, queue_file=q, now=NOW)  # type: ignore[arg-type]
+    assert acted == [d.id]
+    assert toss.cancels == ["oco-9"]                       # 브래킷 해제
+    sells = [o for o in toss.orders if o["side"] == "SELL"]
+    assert sells and sells[-1]["qty"] == 500 and sells[-1]["price"] == 10_050
+    assert pos.open_positions() == []
+    last = pos.latest_for_source(d.id)
+    assert last is not None and "지시 청산" in last.close_reason
+    assert q.read_text().strip() == ""                     # 성공+보유없음 모두 큐에서 제거
+    assert any("지시 청산 매도" in a.what for a in rec.alerts)
+    # 재처리 없음
+    assert process_liquidation_queue(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                                     price_fn=lambda s: 10_050.0, position_store=pos,
+                                     dispatcher=_Rec(), queue_file=q, now=NOW) == []  # type: ignore[arg-type]
+    store.close(); pos.close()
+
+
+def test_liquidation_queue_keeps_entry_on_cancel_failure(tmp_path: Path) -> None:
+    """지시 청산 + A1: 브래킷 취소 실패 시 매도 없음·큐 잔류(보호 유지, 다음 패스 재시도)."""
+    from trading.executor import process_liquidation_queue, queue_liquidation
+
+    class _CancelFailToss(_FakeToss):
+        def cancel_conditional(self, conditional_order_id: str) -> None:
+            raise RuntimeError("cancel boom")
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    toss = _CancelFailToss()
+    d = _fill_ladder(store, pos, toss, "live")
+    q = tmp_path / "liq.queue"
+    queue_liquidation([d.id], queue_file=q)
+    n_orders = len(toss.orders)
+    acted = process_liquidation_queue(store=store, mode="live", toss=toss,  # type: ignore[arg-type]
+                                      price_fn=lambda s: 10_050.0, position_store=pos,
+                                      dispatcher=_Rec(), queue_file=q, now=NOW)  # type: ignore[arg-type]
+    assert acted == [] and len(toss.orders) == n_orders
+    assert q.read_text().strip() == d.id                   # 큐 잔류 — 재시도 대상
+    assert pos.open_positions() != []
+    store.close(); pos.close()
