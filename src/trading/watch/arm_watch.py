@@ -46,10 +46,14 @@ GUARD_SKIP_RC = 3  # trading.run 규약과 동일 — 세션 밖 정상 스킵
 @dataclass(frozen=True)
 class WatchConfig:
     session_start: time = time(9, 0)
+    entry_start: time = time(9, 10)    # **진입 평가 시작**(운영자 2026-07-15) — 개장 직후
+                                       # 지표(체결강도 등)가 무의미한 구간 회피. 그 전엔 청산·추적만
     session_end: time = time(15, 0)    # **진입(발동) 창** 상한 — 신규 매수는 여기까지
     exit_end: time = time(20, 0)       # **청산 전용 감시** 상한(EXEC-3: 정규 잔여+NXT 애프터)
     closeout_from: time = time(14, 40)  # 마감 전 정리 리마인더 창 시작
     poll_seconds: int = 90              # KIS 폴링 간격(초안 수 × TR 콜 고려한 보수값)
+    fast_poll_seconds: int = 60         # 아침 변동 구간(09:00~10:00) 폴링(운영자 2026-07-15)
+    fast_poll_until: time = time(10, 0)
     heartbeat_stale_s: int = 300        # 이 이내 하트비트가 있으면 중복 기동으로 보고 종료
 
 
@@ -151,7 +155,10 @@ def run_pass(
         # (2026-07-14 실증: 09:54 dry-run armed가 live 세션의 뉴파워 재발동을 차단)
         armed_kind = f"armed@{_exec.exec_mode()}"
         rearm: list[str] = []  # 이미 발화된 활성 초안 — 재진입 판정 채널(EXEC-8, 알림 없음)
-        for it in res.items:  # 활성 approved 풀만
+        # 진입 평가는 entry_start(기본 09:10)부터(운영자 2026-07-15) — 개장 직후 지표 왜곡 회피.
+        # 그 전 패스는 발동·재진입을 평가하지 않고 청산·체결 추적만 잇는다.
+        entries_open = resolved.time() >= cfg.entry_start
+        for it in res.items if entries_open else []:  # 활성 approved 풀만
             if not it.active:
                 continue
             if st.fired(day, it.draft_id, armed_kind):
@@ -227,6 +234,30 @@ def _live_price(symbol: str, toss: object) -> float | None:
         return None
 
 
+def _daily_momentum(symbol: str) -> tuple[float, float] | None:
+    """당일 (현재 등락률%, 저점 등락률%) — 전일 종가 기준(KIS 일자별 실측). 실패=None(보수)."""
+    from trading.collectors.kis import client_from_env as kis_from_env
+
+    kis = kis_from_env()
+    if kis is None:
+        return None
+    try:
+        rows = kis.daily_prices(symbol)
+    except Exception:  # noqa: BLE001
+        return None
+    if len(rows) < 2:
+        return None
+    try:
+        cur = float(str(rows[0].get("stck_clpr") or 0))
+        low = float(str(rows[0].get("stck_lwpr") or 0))
+        prev = float(str(rows[1].get("stck_clpr") or 0))
+    except (TypeError, ValueError):
+        return None
+    if min(cur, low, prev) <= 0:
+        return None
+    return ((cur / prev - 1) * 100, (low / prev - 1) * 100)
+
+
 def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: datetime) -> None:
     """발동분 자동 집행 + 미체결 추적(EXEC-1). 운영 루프 전용 — 모드·캡은 executor가 강제."""
     mode = _exec.exec_mode()
@@ -282,8 +313,17 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
                 if (dr is not None and dr.max_entries > 1
                         and store.entries_count(did, mode=live_only) == 1):
                     attempt_ids.append(did)
-        attempt_ids += [i for i in store.cash_skips_today(day, mode=mode) if i not in attempt_ids]
+        attempt_ids += [i for i in store.retryable_skips_today(day, mode=mode) if i not in attempt_ids]
         active_ids = {dr.id for _, dr, _ in active}
+
+        def _pool_count() -> int:
+            """미집행 활성 초안 수 — 최소 배분 하한(EXEC-10) 분모."""
+            return sum(
+                1 for i in active_ids
+                if i in drafts
+                and not store.has(i, ("order_intent", "order_sent"),
+                                  mode="live" if mode == "live" else None)
+            )
 
         def _pool_weight() -> float:
             """**미집행 잔여** 활성 풀의 계수 합 — 동적 분모(EXEC-5 개정): 잔여가 줄면 몫 증가."""
@@ -307,6 +347,7 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
                 draft, price=price, store=store, policy=policy, mode=mode, toss=toss,
                 dispatcher=dispatcher, now=now, pool_weight_total=_pool_weight(),
                 regime=reg.regime, position_store=pos,
+                momentum_fn=_daily_momentum, pool_unfilled_count=_pool_count(),
             )
             print(f"  집행[{mode}]: {draft.symbol} {r.action} — {r.detail}")
             # 잔고 부족 → 회수 사다리(EXEC-4/6): ①갈아타기(전량 교체) ②부분 트림 → 재시도 1회
@@ -334,6 +375,7 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
                         toss=toss, dispatcher=dispatcher, now=now,
                         pool_weight_total=_pool_weight(), regime=reg.regime,
                         position_store=pos,
+                        momentum_fn=_daily_momentum, pool_unfilled_count=_pool_count(),
                     )
                     print(f"  회수 후 재집행[{mode}]: {draft.symbol} {r2.action} — {r2.detail}")
         # 테스트 진입(D1 계측, env 게이트·dry-run 전용): 11:00까지 자연 발동 0이면
@@ -447,7 +489,9 @@ def run_loop(
     heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
     heartbeat_path.touch()
     while max_passes is None or passes < max_passes:
-        sleep_fn(cfg.poll_seconds)
+        t_now = now_kst().astimezone(KST).time()
+        fast = cfg.session_start <= t_now < cfg.fast_poll_until
+        sleep_fn(cfg.fast_poll_seconds if fast else cfg.poll_seconds)
         heartbeat_path.touch()
         r = run_pass(config=cfg, executor_pass=execution_pass)
         passes += 1

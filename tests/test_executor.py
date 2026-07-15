@@ -933,3 +933,57 @@ def test_liquidation_queue_keeps_entry_on_cancel_failure(tmp_path: Path) -> None
     assert q.read_text().strip() == d.id                   # 큐 잔류 — 재시도 대상
     assert pos.open_positions() != []
     store.close(); pos.close()
+
+
+def test_momentum_guard_surge_plunge_and_recovery(tmp_path: Path) -> None:
+    """EXEC-10(운영자 2026-07-15): 급등 +5%↑ 진입 금지 · 급락(-5%↓)은 저점 낙폭 40% 회복 후 진입."""
+    store = ExecStore(tmp_path / "e.sqlite")
+    d = _ladder_draft()
+    # 급등 +6% → 보류(재시도 대상 skip)
+    r = execute_armed(d, price=10_000, store=store, policy=ExecPolicy(), mode="dry-run",
+                      toss=None, dispatcher=_Rec(), now=NOW,  # type: ignore[arg-type]
+                      momentum_fn=lambda s: (6.0, 1.0))
+    assert r.action == "skipped" and "급등 추격 금지" in r.detail
+    assert store.retryable_skips_today("20260714") == [d.id]
+    # 급락 저점 -10% · 현재 -6.5% (< 기준 -6.0%) → 회복 미확인 보류
+    r2 = execute_armed(d, price=10_000, store=store, policy=ExecPolicy(), mode="dry-run",
+                       toss=None, dispatcher=_Rec(), now=NOW,  # type: ignore[arg-type]
+                       momentum_fn=lambda s: (-6.5, -10.0))
+    assert r2.action == "skipped" and "급락 회복 미확인" in r2.detail
+    # 급락 저점 -10% · 현재 -5.5% (≥ -6.0%) → 회복 확인, 진입
+    r3 = execute_armed(d, price=10_000, store=store, policy=ExecPolicy(), mode="dry-run",
+                       toss=None, dispatcher=_Rec(), now=NOW,  # type: ignore[arg-type]
+                       momentum_fn=lambda s: (-5.5, -10.0))
+    assert r3.action == "ordered"
+    assert store.retryable_skips_today("20260714") == []  # 집행됨 — 재시도 목록에서 제외
+    # 관측 불가 → 보수 보류
+    store2 = ExecStore(tmp_path / "e2.sqlite")
+    r4 = execute_armed(d, price=10_000, store=store2, policy=ExecPolicy(), mode="dry-run",
+                       toss=None, dispatcher=_Rec(), now=NOW,  # type: ignore[arg-type]
+                       momentum_fn=lambda s: None)
+    assert r4.action == "skipped" and "관측 불가" in r4.detail
+    store.close(); store2.close()
+
+
+def test_min_alloc_floor_prevents_dust_entries(tmp_path: Path) -> None:
+    """EXEC-10(운영자 2026-07-15): 최소 배분 = min(25%, max(15%, 50%/종목수)) — 1주 진입 방지."""
+    from trading.executor import min_alloc_fraction
+
+    assert min_alloc_fraction(1) == 0.25 and min_alloc_fraction(2) == 0.25
+    assert abs(min_alloc_fraction(3) - 0.5 / 3) < 1e-9
+    assert min_alloc_fraction(4) == 0.15 and min_alloc_fraction(8) == 0.15
+    store = ExecStore(tmp_path / "e.sqlite")
+    d = _ladder_draft()
+    # 풀 8종목 비례로는 가용 300만×(1/8)=37.5만 → 하한 15%(45만)로 상향 → ×70%... 즉시 100% 트랜치
+    # _ladder_draft 즉시 100%: 45만/10,000 = 45주 (비례만이면 37주)
+    r = execute_armed(d, price=10_000, store=store, policy=ExecPolicy(account_krw=3_000_000),
+                      mode="dry-run", toss=None, dispatcher=_Rec(), now=NOW,  # type: ignore[arg-type]
+                      pool_weight_total=8.0, pool_unfilled_count=8)
+    assert r.action == "ordered" and "45주" in r.detail
+    # 남은 감시 2종목이면 25% 하한 → 75만 → 75주(비례 37.5만을 하한이 끌어올림)
+    store2 = ExecStore(tmp_path / "e2.sqlite")
+    r2 = execute_armed(d, price=10_000, store=store2, policy=ExecPolicy(account_krw=3_000_000),
+                       mode="dry-run", toss=None, dispatcher=_Rec(), now=NOW,  # type: ignore[arg-type]
+                       pool_weight_total=8.0, pool_unfilled_count=2)
+    assert r2.action == "ordered" and "75주" in r2.detail
+    store.close(); store2.close()

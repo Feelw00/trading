@@ -132,6 +132,31 @@ def _entry_gap_pct() -> float:
     return v if 0.0 < v <= 0.1 else 0.01
 
 
+def _surge_max_pct() -> float:
+    """급등 추격 금지 기준(EXEC_SURGE_MAX_PCT, 기본 +5%) — 당일 등락률이 이 이상이면 진입 금지
+    (운영자 2026-07-15: 'N% 이상 급증하면 수익을 보기 어렵다')."""
+    try:
+        v = float(os.environ.get("EXEC_SURGE_MAX_PCT", ""))
+    except ValueError:
+        return 5.0
+    return v if 0.5 <= v <= 29.0 else 5.0
+
+
+# 급락 회복 공식(운영자 2026-07-15): 당일 저점 등락률 ≤ -5%면 급락 — 저점 낙폭의 40%를
+# 회복해야 진입(기준 = 저점 등락률 × 0.6). 예: 저점 -5% → -3%부터, -10% → -6%부터.
+PLUNGE_TRIGGER_PCT = -5.0
+PLUNGE_RECOVERY_FACTOR = 0.6
+
+
+def min_alloc_fraction(pool_unfilled_count: int) -> float:
+    """진입당 최소 배분 비율(EXEC-10, 운영자 2026-07-15) — '1주씩만 사는' 초소액 배분 방지.
+
+    기본 15%, 감시 종목이 적으면 상향: min(25%, max(15%, 50%/종목수)) —
+    2종목 이하면 종목당 25%(잔고 최소 50% 사용 보장), 3종목 16.7%, 4종목 이상 15%."""
+    n = max(pool_unfilled_count, 1)
+    return min(0.25, max(0.15, 0.5 / n))
+
+
 def _stop_floor_pct() -> float:
     """손절 지정가 플로어(EXEC_STOP_FLOOR_PCT, 기본 1%) — 급락 관통 체결용 하한 폭.
 
@@ -278,6 +303,30 @@ class ExecStore:
         cur = self._conn.execute(sql, params)
         return [str(r[0]) for r in cur]
 
+    def retryable_skips_today(self, day: str, *, mode: str | None = None) -> list[str]:
+        """매 패스 재시도 대상 skip — 잔고 부족(EXEC-4)·모멘텀 보류(EXEC-10). 미집행 초안만.
+
+        모멘텀 보류는 급등 진정·급락 회복이 확인되는 패스에 진입해야 하므로 armed 1회
+        소비 후에도 계속 재평가한다(운영자 2026-07-15)."""
+        sql = (
+            "SELECT DISTINCT draft_id FROM exec_log e WHERE day=? AND kind='skip'"
+            " AND (detail LIKE '잔고 부족%' OR detail LIKE '모멘텀 보류%')"
+        )
+        params: tuple[str, ...] = (day,)
+        if mode:
+            sql += " AND mode=?"
+            params = (*params, mode)
+        sql += (
+            " AND NOT EXISTS (SELECT 1 FROM exec_log o WHERE o.draft_id=e.draft_id"
+            "                 AND o.kind IN ('order_intent','order_sent')"
+        )
+        if mode:
+            sql += " AND o.mode=?"
+            params = (*params, mode)
+        sql += ")"
+        cur = self._conn.execute(sql, params)
+        return [str(r[0]) for r in cur]
+
     def entries_count(self, draft_id: str, *, mode: str | None = None) -> int:
         """이 초안의 진입 횟수(order_intent/order_sent 행 수) — 재진입 판정(EXEC-8)."""
         sql = ("SELECT COUNT(*) FROM exec_log WHERE draft_id=?"
@@ -408,6 +457,8 @@ def execute_armed(
     regime: Regime = Regime.NORMAL,
     test_entry: bool = False,
     position_store: PositionStore | None = None,
+    momentum_fn: Callable[[str], tuple[float, float] | None] | None = None,
+    pool_unfilled_count: int | None = None,
 ) -> ExecResult:
     """발동 초안 1건 집행 — 배분은 **풀 비례 공정 분할**(EXEC-5, 발동 순서 무관).
 
@@ -471,6 +522,10 @@ def execute_armed(
         alloc = available * (w / pool_weight_total)
     else:
         alloc = available * w  # 폴백(풀 정보 없음 — 단독 호출·구식 경로)
+    # 최소 배분 하한(EXEC-10, 운영자 2026-07-15): 소액 계좌+큰 풀에서 배분이 초소액으로
+    # 쪼개져 '1주씩만 사는' 문제 방지 — min(25%, max(15%, 50%/감시종목수)) × 가용액.
+    if pool_unfilled_count is not None and pool_unfilled_count > 0:
+        alloc = max(alloc, available * min_alloc_fraction(pool_unfilled_count))
     alloc = min(alloc, available)
     if regime in (Regime.CAUTION, Regime.UNKNOWN):
         alloc *= 0.5  # 급락 경계·관측 불가 — 배분 절반(보수)
@@ -503,6 +558,22 @@ def execute_armed(
         if limit_price > b_high:
             return _skip(
                 f"진입 밴드 상한 초과(현재가 {limit_price:,} > {b_high:,.0f}) — 잔여 보상 부족"
+            )
+    # 모멘텀 가드(운영자 2026-07-15): 급등 추격·떨어지는 칼 진입 차단. '모멘텀 보류' skip은
+    # 매 패스 재시도 대상(retryable) — 회복이 확인되는 순간 진입한다.
+    if momentum_fn is not None:
+        m = momentum_fn(draft.symbol)
+        if m is None:
+            return _skip("모멘텀 보류(관측 불가) — 급등·급락 판정 전 보수 대기")
+        cur_pct, low_pct = m
+        if cur_pct >= _surge_max_pct():
+            return _skip(
+                f"모멘텀 보류(급등 추격 금지 — 당일 {cur_pct:+.1f}% ≥ +{_surge_max_pct():g}%)"
+            )
+        if low_pct <= PLUNGE_TRIGGER_PCT and cur_pct < low_pct * PLUNGE_RECOVERY_FACTOR:
+            return _skip(
+                f"모멘텀 보류(급락 회복 미확인 — 저점 {low_pct:+.1f}%, "
+                f"현재 {cur_pct:+.1f}% < 기준 {low_pct * PLUNGE_RECOVERY_FACTOR:+.1f}%)"
             )
     if reentry:
         budget *= 0.5  # 재진입 체감 50%(운영자) — 같은 셋업 2회차는 신뢰도 하향
