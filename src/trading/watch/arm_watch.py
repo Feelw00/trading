@@ -317,13 +317,18 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
         active_ids = {dr.id for _, dr, _ in active}
 
         def _pool_count() -> int:
-            """미집행 활성 초안 수 — 최소 배분 하한(EXEC-10) 분모."""
-            return sum(
-                1 for i in active_ids
+            """**감시(미집행 활성 초안) + 보유** 종목 수(중복 심볼 제거) — 최소 배분 하한 분모.
+
+            운영자 교정(2026-07-15): 감시만 세면 기보유가 많아도 신규 1종목에 25%가
+            들어가 과집중된다 — 포트폴리오 전체 종목 수 기준이 맞다."""
+            syms = {
+                drafts[i].symbol for i in active_ids
                 if i in drafts
                 and not store.has(i, ("order_intent", "order_sent"),
                                   mode="live" if mode == "live" else None)
-            )
+            }
+            syms |= {p.symbol for p in pos.open_positions()}
+            return len(syms)
 
         def _pool_weight() -> float:
             """**미집행 잔여** 활성 풀의 계수 합 — 동적 분모(EXEC-5 개정): 잔여가 줄면 몫 증가."""
