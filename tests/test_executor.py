@@ -987,3 +987,54 @@ def test_min_alloc_floor_prevents_dust_entries(tmp_path: Path) -> None:
                        pool_weight_total=8.0, pool_unfilled_count=2)
     assert r2.action == "ordered" and "75주" in r2.detail
     store.close(); store2.close()
+
+
+def test_weighted_remaining_upside_and_rotation_reject(tmp_path: Path) -> None:
+    """EXEC-11(운영자 2026-07-15): 가중 잔여 수익률 비교, Δ<1.5%p면 당일 폐기(재시도·트림 제외)."""
+    from trading.contracts.order import ExitLevel
+    from trading.executor import consider_rotation, weighted_remaining_upside
+
+    d = _ladder_draft()  # 12,000(50)/15,000(50)
+    assert abs(weighted_remaining_upside(d, 10_000.0) - 0.35) < 1e-9
+    assert abs(weighted_remaining_upside(d, 13_000.0) - 0.5 * 2_000 / 13_000) < 1e-9  # 지난 타깃 0
+
+    store = ExecStore(tmp_path / "e.sqlite")
+    pos = PositionStore(tmp_path / "p.sqlite")
+    old = _fill_ladder(store, pos, None, "dry-run")
+    # 보유 잔여(현재가 14,000): 0.5×(1,000/14,000) ≈ +3.57% · 신규 +4.5% → Δ 0.93%p < 1.5%p
+    new = OrderDraft(
+        id="order.20260715.000003.buy", as_of=NOW, fetched_at=NOW, source="r5:test",
+        symbol="000003", side=Side.BUY,
+        tranches=[Tranche(label="impatience_fee", pct_of_plan=100, order_type=OrderType.LIMIT)],
+        total_size_cap="1.0 * normal_unit",
+        stop=Stop(type=StopType.CONDITIONAL_ORDER_AT_BROKER, level=9_000.0),
+        targets=[ExitLevel(level=10_450.0, pct=100)],
+        time_stop_days=7, created_when_market=MarketState.CLOSED, status=OrderStatus.APPROVED,
+    )
+    ok = consider_rotation(new, 10_000.0, store=store, mode="dry-run", toss=None,
+                           drafts_by_id={old.id: old, new.id: new},
+                           price_fn=lambda s: 14_000.0, position_store=pos,
+                           dispatcher=_Rec(), now=NOW)  # type: ignore[arg-type]
+    assert ok is False
+    assert store.has(new.id, ("rotation_reject",), day=NOW.strftime("%Y%m%d"))
+    assert pos.open_positions() != []  # 보유 유지(매도 없음)
+    # 당일 폐기 — 잔고 부족 skip이 있어도 재시도 목록에서 제외
+    store.log(day=NOW.strftime("%Y%m%d"), draft_id=new.id, symbol="000003", kind="skip",
+              mode="dry-run", detail="잔고 부족(가용 0원)", at=NOW.isoformat())
+    assert new.id not in store.retryable_skips_today(NOW.strftime("%Y%m%d"))
+    store.close(); pos.close()
+
+
+def test_low_cash_mode_caps_alloc_at_15pct_of_account(tmp_path: Path) -> None:
+    """EXEC-11(운영자 2026-07-15): 가용액 < 계좌 30% → 배분 = 계좌 15%(잔여 여력 보존)."""
+    store = ExecStore(tmp_path / "e.sqlite")
+    # 기집행 240만 박제 → dry-run 가용 = 300만−240만 = 60만 (< 90만 = 30%)
+    store.log(day="20260714", draft_id="d.prev", symbol="000009", kind="order_intent",
+              mode="dry-run", qty=240, price=10_000, at=NOW.isoformat())
+    d = _ladder_draft()
+    r = execute_armed(d, price=10_000, store=store, policy=ExecPolicy(account_krw=3_000_000),
+                      mode="dry-run", toss=None, dispatcher=_Rec(), now=NOW,  # type: ignore[arg-type]
+                      pool_weight_total=2.0, pool_unfilled_count=2)
+    # 하한 공식(25% → 75만)이 아니라 저잔고 모드(계좌 15% = 45만) → 45주
+    assert r.action == "ordered" and "45주" in r.detail
+    store.close()

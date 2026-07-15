@@ -326,6 +326,16 @@ class ExecStore:
             sql += " AND o.mode=?"
             params = (*params, mode)
         sql += ")"
+        # 당일 교체 폐기(EXEC-11) — 그날은 재시도하지 않는다(다음 날 부활)
+        sql += (
+            " AND NOT EXISTS (SELECT 1 FROM exec_log rj WHERE rj.draft_id=e.draft_id"
+            "                 AND rj.kind='rotation_reject' AND rj.day=?"
+        )
+        params = (*params, day)
+        if mode:
+            sql += " AND rj.mode=?"
+            params = (*params, mode)
+        sql += ")"
         cur = self._conn.execute(sql, params)
         return [str(r[0]) for r in cur]
 
@@ -528,6 +538,10 @@ def execute_armed(
     # 쪼개져 '1주씩만 사는' 문제 방지 — min(25%, max(15%, 50%/감시종목수)) × 가용액.
     if pool_unfilled_count is not None and pool_unfilled_count > 0:
         alloc = max(alloc, available * min_alloc_fraction(pool_unfilled_count))
+    # 저잔고 모드(EXEC-11, 운영자 2026-07-15): 가용액이 계좌 기준액의 30% 미만이면
+    # 배분 = 계좌 기준액의 15% — 마지막 현금을 한 종목에 몰지 않고 ~2회 여력 보존(하한 공식 대체)
+    if available < policy.account_krw * 0.30:
+        alloc = policy.account_krw * 0.15
     alloc = min(alloc, available)
     if regime in (Regime.CAUTION, Regime.UNKNOWN):
         alloc *= 0.5  # 급락 경계·관측 불가 — 배분 절반(보수)
@@ -796,6 +810,30 @@ def reconcile(
     return done
 
 
+def _rotate_margin() -> float:
+    """교체 문턱 Δ(EXEC_ROTATE_MARGIN, 기본 1.5%p — 운영자 지시 1%p + 왕복 실비 0.5%p 가산,
+    2026-07-15). 신규 가중 수익률 − 보유 잔여 가중 수익률이 이 미만이면 트리거 당일 폐기."""
+    try:
+        v = float(os.environ.get("EXEC_ROTATE_MARGIN", ""))
+    except ValueError:
+        return 0.015
+    return v if 0.0 < v <= 0.10 else 0.015
+
+
+def weighted_remaining_upside(draft: OrderDraft, price: float) -> float:
+    """사다리 가중 잔여 수익률 — Σ pct/100 × max(타깃−현재가, 0)/현재가.
+
+    최종 타깃 단독(planned_upside_pct)은 먼 타깃이 수익률을 부풀린다(EXEC-8 C4와 동일 결함)
+    — 교체 비교(EXEC-11)는 양쪽 모두 이 가중치로 잰다. 타깃 없으면 기존 폴백."""
+    if price <= 0:
+        return 0.0
+    if not draft.targets:
+        return planned_upside_pct(draft, price)
+    return sum(
+        t.pct / 100.0 * max(t.level - price, 0.0) / price for t in draft.targets
+    )
+
+
 def planned_upside_pct(draft: OrderDraft, entry_price: float) -> float:
     """계획 상승여력(결정론) — 최종 타깃 기준. 타깃 없으면 R:R 폴백으로 산출."""
     if entry_price <= 0:
@@ -838,7 +876,7 @@ def consider_rotation(
     live_only = "live" if mode == "live" else None
     if position_store is None or store.rotations_today(day, mode=live_only) >= 1:
         return False
-    new_up = planned_upside_pct(new_draft, new_price)
+    new_up = weighted_remaining_upside(new_draft, new_price)
     if new_up <= 0.0:
         return False
     scored: list[tuple[float, Any, OrderDraft, float]] = []
@@ -853,8 +891,7 @@ def consider_rotation(
         cur = price_fn(pos.symbol)
         if cur is None:
             continue
-        final = old.targets[-1].level if old.targets else None
-        rem_up = max((final - cur) / cur, 0.0) if final else 0.0
+        rem_up = weighted_remaining_upside(old, cur)  # 가중(EXEC-11) — 최종 단독 부풀림 제거
         stop_lvl = old.stop.level if old.stop else None
         if stop_lvl is not None and cur <= stop_lvl * 1.02:
             rem_up = 0.0  # 손절 근접 — 잔여 가치 0(운영자 기준)
@@ -862,8 +899,14 @@ def consider_rotation(
     if not scored:
         return False
     rem_up, pos, old, cur = min(scored, key=lambda x: x[0])
-    if new_up < max(rem_up * 2.0, 0.02):
-        return False  # 교체 마진 미달 — 유지
+    if new_up - rem_up < _rotate_margin():
+        # Δ 미달 — 트리거 **당일 폐기**(운영자 2026-07-15): 재시도·부분 트림 없이 그날은 접는다.
+        # 다음 날 조건 재충족 시 부활(veto 아님).
+        store.log(day=day, draft_id=new_draft.id, symbol=new_draft.symbol,
+                  kind="rotation_reject", mode=mode, at=resolved.isoformat(),
+                  detail=(f"교체 폐기(Δ {new_up - rem_up:+.2%} < {_rotate_margin():.2%}) — "
+                          f"보유 잔여 {rem_up:.2%} vs 신규 {new_up:.2%}"))
+        return False
     sell_price = round_down_to_tick(cur)
     bracket = store.latest_bracket(old.id, mode=mode)
     if mode == "live" and toss is not None:

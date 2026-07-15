@@ -362,6 +362,9 @@ def execution_pass(fired_keys: list[str], dispatcher: AlertDispatcher, now: date
                     drafts_by_id=drafts, price_fn=lambda s: _live_price(s, toss),
                     position_store=pos, dispatcher=dispatcher, now=now,
                 )
+                if not funded and store.has(
+                        draft.id, ("rotation_reject",), mode=live_only, day=day):
+                    continue  # Δ 미달 당일 폐기(EXEC-11) — 부분 트림도 생략
                 if not funded:
                     w = _exec.cap_fraction(draft.total_size_cap)
                     w_all = max(sum(
