@@ -1,20 +1,25 @@
 # 현재 작업 (CURRENT)
 
 > 슬림 유지. 완료된 작업은 `archive/YYYY-MM-DD-<slug>.md`로 떨구고 여기엔 한 줄 + 링크만.
-> 최종 갱신: 2026-07-14 (KST)
+> 최종 갱신: 2026-07-15 (KST)
 
 ## 진행 중
 - _(없음 — 다음 세션 진입 시 채움)_
 
 ## 운영 상태 (상시 확인)
-- **⚡ EXEC_MODE=live (2026-07-14 10:05, 운영자 "dry run 다 빼")** — dry-run 검증창 없이 실집행 가동.
-  배경·재발 방지 규칙은 OPEN_QUESTIONS EXEC-1의 2026-07-14 항목. **live 첫 주(7/14~7/21)=운영 겸 검증**:
-  첫 실주문·체결·브래킷(OCO)·사다리·회수 경로를 exec.sqlite 기록으로 밀착 확인. 킬 스위치 `.runtime/exec/KILL`.
+- **⚡ EXEC_MODE=live · 계좌 기준액 300만(7/15 하향)** — live 첫 주(7/14~7/21)=운영 겸 검증.
+  첫 사이클 완주: 테스트 매수→**첫 자동 익절(뉴파워 +3.6%)**→청산 큐. 보유: 피에스케이 5주·
+  S-Oil 4주(수동 증량 편입, 브래킷 WATCHING). 킬 스위치 `.runtime/exec/KILL`.
+- **진입 규율(EXEC-10/11)**: 진입 평가 09:10~ · 09~10시 60초 폴링 · 급등 +5% 차단 ·
+  급락 낙폭 40% 회복 후 진입 · 최소 배분 min(25%,max(15%,50%/감시+보유)) · 저잔고(<30%) 시
+  계좌 15% · 교체 Δ≥1.5%p 미달=당일 폐기. 시간손절 14:30~14:50 자동 집행(EXEC-9).
+  임의 청산은 `python -m trading.liquidate <초안id>` 큐(09:30~).
   ⚠️ **.env 변경 시 게이트웨이 재기동 필수**(env는 tmux 기동 시점 스냅샷 — 7/14 오전 사고 원인).
 - **cron 16슬롯 자동 가동 중** (6/10 저녁~, 6/11 macro-am/pm 슬롯 제거 — 거시 수집은 report-am/pm 라운드에 내장): fire-and-forget(setsid)+로컬 트리거(qwen2.5:3b)+잡별 로그(`.runtime/logs/cron/`). 보고·알림은 Telegram HTML.
 - 세션 진입 시 점검: `poetry run python ops/openclaw/drill.py --audit` (전일 사이클 PASS/WARN/FAIL) + 라운드 실패 P1 알림 수신 여부.
 
 ## 최근 완료
+- 2026-07-14~15 — **가드 전면 보수 + live 첫 실사이클: 감사(A/B묶음 수정)·SEL-4(reclaim 폐지·이격 주입)·EXEC-8(밴드·재진입)·EXEC-9(시간손절 14:30)·EXEC-10(아침 규율·모멘텀)·EXEC-11(저잔고·교체 Δ1.5%p)·청산 큐·토스 실측 3건(OCO 순서·status·빈 본문). 첫 자동 익절(뉴파워 +3.6%). 잔여: A5·C2·C3·D1** → [archive](archive/2026-07-15-guard-overhaul-live-cycle.md)
 - 2026-07-14 — **부팅 재구조화: work-boot를 읽기 전용 요약으로(신선도 자동 수집·drill --audit 제거 — 갭은 수동 /collect), session.md 동기화. 유령 중복 `.claude/commands/collect.md` 발견(삭제 미결)** → [archive](archive/2026-07-14-boot-readonly-summary.md)
 - 2026-07-14 — **live 전환 사고 대응: 7/13 지시("소액 진입") dry-run 격하 인코딩 사고 + 게이트웨이 env 스냅샷 사고 → 운영자 "dry run 다 빼"로 live 전환(10:05). 유령 포지션 정리·dedup mode 분리·잔여 R:R 가드(EXEC_MIN_RR)·R5 2단 사다리 기본 강제·/end 스킬 신설** → [archive](archive/2026-07-14-live-transition.md)
 - 2026-07-14 — **boot 실시간 싱크(운영자 지적): 부팅 백드롭이 폭락 미반영 7/10 EOD로 나감 → `trading.regime` CLI·`approve --pool` 신설, boot/collect-macro/work-boot 스킬에 실시간 오버레이·감시 풀 우선·stale 라벨 배선** → [archive](archive/2026-07-14-boot-live-sync.md)
@@ -54,8 +59,9 @@
 마일스톤 큰 줄기는 `docs/PROGRESS.md` "미해결 / 다음" 참조. 작업 단위 후보:
 
 **다음 세션 첫 작업**
-1. **live 첫 실주문 확인** — exec.sqlite에서 주문→체결→OCO 브래킷→사다리 경로 검증 + 오늘 밤 R5 산출이 2단 사다리로 나왔는지 확인. 잔여 정리 목록은 [live-transition archive](archive/2026-07-14-live-transition.md) "잔여" 절.
-2. `drill.py --audit` — 게이트웨이 2회 재기동(7/14) 이후 무인 사이클 + 21:05 synth가 live env로 돌았는지(P0 다이제스트 헤더).
+1. **가드 감사 잔여 4건** — A5(armed↔집행 비원자성)·C2(분모의 차단 초안 오염)·C3(단일 타깃 pct 무시)·D1(UNKNOWN 레짐 진입 정책 결정). 목록·맥락은 [7/15 archive](archive/2026-07-15-guard-overhaul-live-cycle.md) "잔여" 절.
+2. **수동 매수 자동 편입**(PROPOSALS P-13) — A6가 보유↔브래킷 수량 불일치 감지 시 자동 확장(7/15 수동 편입 2회 패턴 정식화).
+3. `drill.py --audit` — 이틀간 감시기 다수 재기동 후 무인 사이클 점검 + 분할 OCO 실측(보유 중 동일 종목 복수 조건주문 허용 여부 — EXEC-8 게이트).
 2. ~~P-2~~ ~~P-9 1·2·3단계~~ → **전부 07-11 완료** (트리거→논제→플레이북→결재 루프 완결).
    P-9 후속(급하지 않음): 7/13(월) 저녁 체인 첫 실전 관찰(스윙 승격 5종 R3 소요·품질) ·
    7/18 eval-sat 첫 스윙 채점 결과 확인 후 MDD 컷(-40%)·점화 임계(0.80) 조정 판단.
