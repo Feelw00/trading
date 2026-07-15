@@ -145,6 +145,11 @@ class TossClient:
                 last = exc
         if raw is None:
             raise CollectError(f"토스 호출 실패: {method} {path}") from last
+        if not raw.strip():
+            # DELETE(조건주문 취소) 등은 빈 본문 — 2026-07-15 실호출 관측. 파싱 크래시 금지:
+            # HTTP 성공 후 여기서 죽으면 호출측이 '취소 실패(보호 잔존)'로 오판하는데
+            # 실제론 취소돼 무방비가 된다(A1 역전 — PSK 5주 실사고로 적발).
+            return None
         parsed: Any = json.loads(raw)
         if isinstance(parsed, dict) and "result" in parsed:
             return parsed["result"]
