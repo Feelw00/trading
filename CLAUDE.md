@@ -87,7 +87,8 @@ docs/               # trading-system-design(v0.3), OPEN_QUESTIONS, SECRETS, clau
   주간 토·월간·분기, 설계서 §5)으로 재작성 후에만 등록한다.
 
 ## 작업 방식
-- 마일스톤 프롬프트(`docs/claude-code-prompts.md` §2)의 수용 기준(AC)을 충족하기 전에 다음 작업으로 넘어가지 마라.
+- 작업 단위는 설계서 §10 로드맵(Phase 0~4) — 각 Phase의 AC를 충족하기 전에 다음 Phase로
+  넘어가지 마라. (구 `docs/claude-code-prompts.md` M1~M4는 v0.2 유산 — 투입 금지.)
 - **이력 분리 — 두 층위 유지**:
   - `docs/PROGRESS.md` = **마일스톤 원장(coarse)**. M1/M2/M3 단위 요약 + 통과 AC + 미해결. 검증 디테일·세션 로그 누적 금지(점점 무거워짐).
   - `history/work/archive/YYYY-MM-DD-<slug>.md` = **세션 단위 디테일**. 산출·메커니즘·검증 결과·발견된 후속 작업. PROGRESS는 이 파일을 링크로만 참조.
