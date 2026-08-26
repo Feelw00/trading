@@ -80,6 +80,9 @@ class FinSnapshot:
     op_income_prev: float | None
     liabilities: float | None
     equity: float | None
+    # v0.3(P-14): 밸류에이션(PER/ROE)용 — 실관측 계정명 "당기순이익(손실)"(startswith 매칭)
+    net_income: float | None = None
+    net_income_prev: float | None = None
 
     @property
     def rev_yoy(self) -> float | None:
@@ -151,10 +154,15 @@ class FinStore:
         self._conn.commit()
         return self._conn.total_changes - before
 
-    def snapshot_for(self, srtn_cd: str) -> FinSnapshot | None:
-        """저장분 중 최신 보고서(연도 desc → 3Q>반기>1Q>연간) 스냅샷. CFS 우선."""
+    def snapshot_for(self, srtn_cd: str, *, annual_only: bool = False) -> FinSnapshot | None:
+        """저장분 중 최신 보고서(연도 desc → 3Q>반기>1Q>연간) 스냅샷. CFS 우선.
+
+        ``annual_only=True``: 사업보고서(11011)만 — PER/PSR/ROE는 연간 IS 기준으로만
+        산출한다(분기 연환산 추측 금지, 설계서 v0.3 §3 R2).
+        """
+        cond = " AND reprt_code='11011'" if annual_only else ""
         row = self._conn.execute(
-            "SELECT bsns_year, reprt_code FROM fin_facts WHERE srtn_cd=? "
+            f"SELECT bsns_year, reprt_code FROM fin_facts WHERE srtn_cd=?{cond} "
             "ORDER BY bsns_year DESC, "
             "CASE reprt_code WHEN '11014' THEN 3 WHEN '11012' THEN 2 WHEN '11013' THEN 1 ELSE 0 END DESC "
             "LIMIT 1",
@@ -175,11 +183,52 @@ class FinStore:
         def _get(nm: str) -> tuple[float | None, float | None]:
             return acc.get((fs_div, nm), (None, None))
 
+        def _get_prefix(prefix: str) -> tuple[float | None, float | None]:
+            # 계정명 변형 흡수("당기순이익(손실)" 실관측) — fs_div 일치 + prefix 첫 행
+            for (fs, nm), v in acc.items():
+                if fs == fs_div and nm.startswith(prefix):
+                    return v
+            return (None, None)
+
         rev, rev_p = _get("매출액")
         op, op_p = _get("영업이익")
         liab, _ = _get("부채총계")
         eq, _ = _get("자본총계")
-        return FinSnapshot(srtn_cd, year, reprt, fs_div, rev, rev_p, op, op_p, liab, eq)
+        ni, ni_p = _get_prefix("당기순이익")
+        return FinSnapshot(srtn_cd, year, reprt, fs_div, rev, rev_p, op, op_p, liab, eq, ni, ni_p)
+
+    def symbols(self) -> list[str]:
+        """재무가 1건 이상 적재된 종목코드 목록."""
+        return [str(r[0]) for r in self._conn.execute("SELECT DISTINCT srtn_cd FROM fin_facts")]
+
+    def annual_net_incomes(self, srtn_cd: str) -> list[tuple[str, float | None]]:
+        """연간(11011) 당기순이익 시계열 (연도 desc). 흑자 유지력(loss_years) 원료.
+
+        CFS 우선, 계정명 prefix 매칭. 해당 연도에 순이익 계정이 없으면 (연도, None).
+        """
+        out: list[tuple[str, float | None]] = []
+        years = [
+            str(r[0])
+            for r in self._conn.execute(
+                "SELECT DISTINCT bsns_year FROM fin_facts WHERE srtn_cd=? AND reprt_code='11011' "
+                "ORDER BY bsns_year DESC",
+                (srtn_cd,),
+            )
+        ]
+        for year in years:
+            rows = self._conn.execute(
+                "SELECT fs_div, account_nm, thstrm_amount FROM fin_facts "
+                "WHERE srtn_cd=? AND bsns_year=? AND reprt_code='11011'",
+                (srtn_cd, year),
+            ).fetchall()
+            fs_div = "CFS" if any(str(r[0]) == "CFS" for r in rows) else "OFS"
+            ni: float | None = None
+            for fs, nm, th in rows:
+                if str(fs) == fs_div and str(nm).startswith("당기순이익"):
+                    ni = th
+                    break
+            out.append((year, ni))
+        return out
 
     def count(self) -> int:
         row = self._conn.execute("SELECT COUNT(DISTINCT srtn_cd) FROM fin_facts").fetchone()
@@ -237,6 +286,50 @@ def collect_fins(
     return loaded, skipped, errors
 
 
+def backfill_annuals(
+    dart: DartClient,
+    store: FinStore,
+    corp_map: dict[str, tuple[str, str]],
+    stocks: list[tuple[str, str]],
+    *,
+    years: int,
+    now: datetime | None = None,
+) -> tuple[int, int, list[str]]:
+    """연간(11011) 보고서를 과거로 소급 수집 — v0.3 Phase 1 장기 백필.
+
+    대상 연도: [작년-years+1 .. 작년] (당해 사업보고서는 미공시라 제외).
+    attempts 테이블을 재사용해 재실행 시 기수집·무자료 연도를 건너뛴다(멱등).
+    반환: (적재 시도 성공 건수, 스킵 건수, 오류).
+    """
+    year_now = (now or now_kst()).year
+    target_years = [str(y) for y in range(year_now - 1, year_now - 1 - years, -1)]
+    loaded = skipped = 0
+    errors: list[str] = []
+    for srtn_cd, name in stocks:
+        ent = corp_map.get(srtn_cd)
+        if not ent or not ent[0]:
+            skipped += 1
+            continue
+        for year in target_years:
+            prev = store.attempted(srtn_cd, year, "11011")
+            if prev is not None:
+                skipped += 1
+                continue
+            try:
+                rows = dart.financials(ent[0], year, "11011")
+            except CollectError as e:
+                errors.append(f"{name}({srtn_cd}) {year}/11011: {e}")
+                break  # 한도초과 등 — 이 종목 중단, 시도 기록 없음(재시도 가능)
+            if rows:
+                store.upsert(srtn_cd, year, "11011", rows)
+                store.record_attempt(srtn_cd, year, "11011", "ok")
+                loaded += 1
+            else:
+                store.record_attempt(srtn_cd, year, "11011", "empty")
+                skipped += 1
+    return loaded, skipped, errors
+
+
 def main() -> int:
     from trading.collectors.market import MarketStore
     from trading.screener import ScreenConfig, screen
@@ -248,6 +341,9 @@ def main() -> int:
     limit = 0
     if "--limit" in sys.argv:
         limit = int(sys.argv[sys.argv.index("--limit") + 1])
+    backfill_years = 0
+    if "--backfill-years" in sys.argv:
+        backfill_years = int(sys.argv[sys.argv.index("--backfill-years") + 1])
 
     mstore = MarketStore()
     res = screen(mstore, ScreenConfig(top_n=1_000_000))
@@ -260,16 +356,24 @@ def main() -> int:
         return 0
     dart = DartClient(key)
     store = FinStore()
-    loaded, skipped, errors = collect_fins(dart, store, dart.corp_code_map(), stocks)
+    corp_map = dart.corp_code_map()
+    loaded, skipped, errors = collect_fins(dart, store, corp_map, stocks)
+    print(f"재무 수집: 대상 {len(stocks)} · 확보 {loaded} · 미확보 {skipped}")
+    if backfill_years:
+        b_loaded, b_skipped, b_errors = backfill_annuals(
+            dart, store, corp_map, stocks, years=backfill_years
+        )
+        errors.extend(b_errors)
+        print(f"연간 백필({backfill_years}년): 적재 {b_loaded} · 스킵 {b_skipped}")
     n = store.count()
     store.close()
-    print(f"재무 수집: 대상 {len(stocks)} · 확보 {loaded} · 미확보 {skipped} · DB 종목 {n}")
+    print(f"DB 종목 {n}")
     for e in errors[:10]:
         print(f"⚠️ {e}")
     return 0
 
 
-__all__ = ["FinSnapshot", "FinStore", "collect_fins", "parse_amount", "DEFAULT_DB"]
+__all__ = ["FinSnapshot", "FinStore", "backfill_annuals", "collect_fins", "parse_amount", "DEFAULT_DB"]
 
 
 if __name__ == "__main__":

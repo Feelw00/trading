@@ -117,3 +117,60 @@ def test_collect_no_corp_code_skips(tmp_path: Path) -> None:
     loaded, skipped, _ = collect_fins(dart, store, {}, [("999990", "코드없음")])  # type: ignore[arg-type]
     assert (loaded, skipped) == (0, 1)
     store.close()
+
+
+# --- v0.3 Phase 1: 순이익 추출·연간 스냅샷·백필 ---
+
+
+def test_snapshot_net_income_prefix_match(tmp_path: Path) -> None:
+    """실관측 계정명 '당기순이익(손실)'을 prefix로 흡수한다."""
+    store = FinStore(tmp_path / "f.sqlite")
+    store.upsert("028670", "2026", "11013", _Q1_ROWS)
+    snap = store.snapshot_for("028670")
+    assert snap is not None
+    assert snap.net_income == 94_516_000_000.0
+    assert snap.net_income_prev == 72_023_000_000.0
+    store.close()
+
+
+def test_annual_only_snapshot_and_net_income_series(tmp_path: Path) -> None:
+    store = FinStore(tmp_path / "f.sqlite")
+    store.upsert("111110", "2026", "11013", [_row("CFS", "IS", "당기순이익(손실)", "30", "20")])
+    store.upsert("111110", "2025", "11011", [_row("CFS", "IS", "당기순이익(손실)", "100", "90")])
+    store.upsert("111110", "2024", "11011", [_row("CFS", "IS", "당기순이익(손실)", "-50", "10")])
+    store.upsert("111110", "2023", "11011", [_row("CFS", "BS", "자본총계", "999", "888")])  # 순이익 결측 연도
+    annual = store.snapshot_for("111110", annual_only=True)
+    assert annual is not None and (annual.bsns_year, annual.reprt_code) == ("2025", "11011")
+    assert annual.net_income == 100.0  # 분기(2026/11013)가 아니라 연간 기준
+    assert store.annual_net_incomes("111110") == [("2025", 100.0), ("2024", -50.0), ("2023", None)]
+    assert store.symbols() == ["111110"]
+    store.close()
+
+
+def test_backfill_annuals_idempotent(tmp_path: Path) -> None:
+    from datetime import datetime
+
+    from trading.collectors.base import KST
+    from trading.collectors.fins import backfill_annuals
+
+    store = FinStore(tmp_path / "f.sqlite")
+    dart = _FakeDart({
+        ("2025", "11011"): [_row("CFS", "IS", "매출액", "100", "90")],
+        ("2024", "11011"): [_row("CFS", "IS", "매출액", "90", "80")],
+        # 2023: 무자료(상장 전 등) → empty 기록
+    })
+    now = datetime(2026, 8, 26, tzinfo=KST)
+    corp = {"028670": ("00123456", "팬오션")}
+    loaded, skipped, errors = backfill_annuals(
+        dart, store, corp, [("028670", "팬오션")], years=3, now=now  # type: ignore[arg-type]
+    )
+    assert (loaded, errors) == (2, [])
+    assert dart.calls == [("2025", "11011"), ("2024", "11011"), ("2023", "11011")]
+    # 재실행 — attempts 기록(ok·empty)으로 API 콜 0회(멱등)
+    dart.calls.clear()
+    loaded2, skipped2, _ = backfill_annuals(
+        dart, store, corp, [("028670", "팬오션")], years=3, now=now  # type: ignore[arg-type]
+    )
+    assert (loaded2, dart.calls) == (0, [])
+    assert skipped2 == 3
+    store.close()
