@@ -68,14 +68,14 @@
 2. `TELEGRAM_BOT_TOKEN/CHAT_ID` — 알림 재개 원할 때 .env에 추가.
 3. 맥북 `~/Downloads/env.example.txt` 삭제(키 평문 잔존).
 
-**Phase 2 — 온도계·화이트리스트 (다음 세션 본체)**
-4. R3 국면 판정 엔진: 밴드(구현 완료) 위에 bottoming=하단+**개선 모멘텀** 요건,
-   secular_decline(섹터 매출 장기 추세), CycleRecord 산출·저장.
-5. 화이트리스트 큐레이션 + 실물 보강 축 매핑표 초안 → **운영자 결재(PIVOT-5)**.
-   실물 지표는 수동 입력 채널(`python -m trading.manual_input`)로 즉시 가동 가능.
-6. ⚠️ **리플레이 사이클 재선정 필요**: 시세 커버리지 2020~ 실측(PIVOT-3④)으로 Phase 2 AC의
-   "반도체 2016 bottoming 재현"은 PBR 축 불가 — 튜닝/검증 사이클을 2020 이후(예: 튜닝=해운
-   2020 저점, 검증=반도체 2022→24 회복)로 교체 결정 필요(재무 축만으로 2016 재현은 반쪽).
+**Phase 2 — 구현 완료(2026-08-27), 운영자 결재 대기**
+4. ~~R3 국면 판정 엔진~~ → **완료**: `cycle/engine.py`(bottoming=하단+개선·unknown 스키마
+   강제·secular CAGR) + CycleStore + `python -m trading.cycle`(현재 판정 22산업 실산출:
+   bottoming 1·recovering 3·overheated 9·unknown 8) + `--replay`(as-of 룩어헤드 금지).
+   튜닝 관찰: **전기·전자 23:decl→24:bott→25:over** — 메모리 사이클 재현.
+5. **▶ 운영자 결재 대기: `docs/POLICY_PARAMS.md` 초안 v1** — R3 파라미터·화이트리스트
+   매핑(조선 처리 결정 ①)·실물 보강 축 키(③)·검증 사이클 택1(④). 결재 후 R4 스크리너
+   (Phase 3) 착수 가능.
 7. 환원·거버넌스 수집 — PIVOT-3 ①② API 공식 문서 확정 후 어댑터(그 전 스텁 유지).
 
 **연 1회 운영 (유지)**
