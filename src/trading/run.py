@@ -232,7 +232,91 @@ def _daily_eod() -> int:
     return _factpack()
 
 
+def _collect_flows_v3() -> int:
+    """v0.3 수급 창 축적 — 화이트리스트 산업 멤버 전 종목(KIS 1콜≈30거래일, 일간 누적).
+
+    PIVOT-7 ④: 수급은 네거티브 스크린·타이밍 보조 — 60~120거래일 창이 원료.
+    """
+    from trading.collectors import flows
+    from trading.collectors.kis import client_from_env
+    from trading.collectors.market import MarketStore
+    from trading.cycle.policy import CURATED_GROUPS, WHITELIST
+    from trading.sectors import KRX_SOURCE
+
+    client = client_from_env()
+    if client is None:
+        print("KIS_APP_KEY/KIS_APP_SECRET 미설정 — 수급 축적 blocked")
+        return 0
+    mstore = MarketStore()
+    bas_dt = mstore.latest_date()
+    if not bas_dt:
+        mstore.close()
+        print("시세 DB 비어 있음 — 수급 기준일 없음(수집 선행)")
+        return 0
+    groups = set(WHITELIST.values())
+    sector_map = mstore.sector_map(KRX_SOURCE)
+    names = mstore.sector_names(KRX_SOURCE)
+    members: dict[str, str] = {}
+    for cd, tags in sector_map.items():
+        if tags and tags[0] in groups:
+            members[cd] = names.get(cd, cd)
+    for codes in CURATED_GROUPS.values():
+        for cd in codes:
+            members[cd] = names.get(cd, cd)
+    mstore.close()
+
+    store = flows.FlowStore()
+    result = flows.collect(client, store, sorted(members.items()), bas_dt)
+    store.close()
+    ok = sum(1 for v in result.values() if v >= 0)
+    fail = sum(1 for v in result.values() if v < 0)
+    print(f"수급 축적: 대상 {len(result)} · 성공 {ok} · 실패 {fail} (기준일 {bas_dt})")
+    return 0
+
+
+def _eod_v3() -> int:
+    """v0.3 일간 EOD 체인(§5) — 시세 갭 치유 → 섹터 태깅 → 재무 자연 갱신 → 수급 창 축적.
+
+    전부 순수 코드(LLM 없음). 재무·수급은 best-effort(실패해도 P1만, 결측은 소비자가 명시).
+    논제 가드(보유 종목 무효화 검사)는 Phase 4에서 보유 연결과 함께 배선 — 현재 보유 0.
+    """
+    for step in (_collect_market, _classify_sectors):
+        rc = step()
+        if rc != 0:
+            return rc
+    for name, step in (("collect-fins", _collect_fins), ("flows-v3", _collect_flows_v3)):
+        step_rc = step()
+        if step_rc != 0:
+            _alert_round_failure(f"eod-v3/{name}", f"rc={step_rc}")
+    print("논제 가드: 보유 0 — 검사 대상 없음(Phase 4에서 보유 연결)")
+    return 0
+
+
+def _weekly_v3() -> int:
+    """v0.3 주간 계측 체인(§5 토요일) — R2 밸류에이션 → R3 온도계 → R4 페이퍼 → 다이제스트."""
+    from trading.cycle.__main__ import main as cycle_main
+    from trading.screen.__main__ import main as screen_main
+    from trading.valuation.build import main as valuation_main
+    from trading.weekly_digest import main as digest_main
+
+    for name, step in (
+        ("valuation", valuation_main),
+        ("cycle", cycle_main),
+        ("screen", screen_main),
+        ("digest", digest_main),
+    ):
+        rc = step()
+        if rc != 0:
+            _alert_round_failure(f"weekly-v3/{name}", f"rc={rc}")
+            return rc
+    return 0
+
+
 ROUNDS: dict[str, Callable[[], int]] = {
+    # --- v0.3 장기 사이클 라운드(전부 순수 코드) ---
+    "eod-v3": _eod_v3,
+    "weekly-v3": _weekly_v3,
+    "flows-v3": _collect_flows_v3,
     "collect-macro": _collect_macro,
     "collect-market": _collect_market,
     "collect-flows": _collect_flows,

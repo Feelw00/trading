@@ -227,6 +227,15 @@ class MarketStore:
         self._conn.commit()
         return self._conn.total_changes - before
 
+    def sector_names(self, source: str) -> dict[str, str]:
+        """{srtn_cd: 종목명} — 섹터 태깅분 기준(수급 수집 등 표시용)."""
+        return {
+            str(r[0]): str(r[1] or r[0])
+            for r in self._conn.execute(
+                "SELECT DISTINCT srtn_cd, name FROM stock_sectors WHERE source=?", (source,)
+            )
+        }
+
     def sector_map(self, source: str) -> dict[str, list[str]]:
         """{srtn_cd: [sector,...]} — 미분류 제외."""
         cur = self._conn.execute(

@@ -117,3 +117,38 @@ def test_cron_llm_slots_outside_dormant_window() -> None:
         day = saturday if "6" in dow else monday
         slot = datetime(day.year, day.month, day.day, int(hour), int(minute), tzinfo=KST)
         assert not in_extended_session(slot, cal), f"{job.name} 슬롯이 휴면 창 안: {job.cron}"
+
+
+# --- v0.3 라운드 (2026-08-27 cron 재작성) ---
+
+
+def test_v3_rounds_registered() -> None:
+    assert {"eod-v3", "weekly-v3", "flows-v3"} <= set(ROUNDS)
+    assert not ({"eod-v3", "weekly-v3", "flows-v3"} & run._LLM_ROUNDS)  # 전부 순수 코드
+
+
+def test_eod_v3_chain_best_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+    """시세·섹터 실패는 중단, 재무·수급 실패는 P1 알림 후 계속(결측은 소비자 명시)."""
+    calls: list[str] = []
+    alerts: list[str] = []
+
+    def _step(name: str, rc: int) -> Any:
+        def _run() -> int:
+            calls.append(name)
+            return rc
+
+        return _run
+
+    monkeypatch.setattr(run, "_collect_market", _step("market", 0))
+    monkeypatch.setattr(run, "_classify_sectors", _step("sectors", 0))
+    monkeypatch.setattr(run, "_collect_fins", _step("fins", 1))  # 실패
+    monkeypatch.setattr(run, "_collect_flows_v3", _step("flows", 0))
+    monkeypatch.setattr(run, "_alert_round_failure", lambda n, d: alerts.append(n))
+    assert run._eod_v3() == 0
+    assert calls == ["market", "sectors", "fins", "flows"]  # 재무 실패에도 수급 진행
+    assert alerts == ["eod-v3/collect-fins"]
+
+    calls.clear()
+    monkeypatch.setattr(run, "_collect_market", _step("market", 2))  # 시세 실패
+    assert run._eod_v3() == 2
+    assert calls == ["market"]  # 하드 중단

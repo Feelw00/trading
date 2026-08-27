@@ -5,8 +5,8 @@
 ③ 하드 탈락(PBR 산출 불가 = 자본잠식·시총 결측). 데이터 미확보 필터(감사의견·관리종목·
 환원 가점·수급 네거티브)는 **unapplied로 명시** — 침묵 생략 금지.
 
-``PROPOSED_R4``는 결재 대상 제안값(docs/POLICY_PARAMS.md §5) — 결재 전 페이퍼(계측·보고)
-전용이며 실집행 편입에 사용 금지.
+``PROPOSED_R4``는 **policy-v1.1로 결재됨**(2026-08-27, docs/POLICY_PARAMS.md §5 — 페이퍼
+모드 정식 가동). 실집행 연결은 Phase 4(§6 결재 + 운영자 전환 결정) 후. 개정은 R7+결재로만.
 """
 
 from dataclasses import dataclass
