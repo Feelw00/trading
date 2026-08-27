@@ -10,22 +10,10 @@ from collections import Counter
 from trading.collectors.base import now_kst
 from trading.collectors.fins import FinStore
 from trading.collectors.market import MarketStore
-from trading.cycle.bands import build_sector_years
+from trading.cycle.bands import build_sector_years, discover_year_ends
 from trading.cycle.engine import PROPOSED_PARAMS, assess_all, to_record
 from trading.cycle.policy import CURATED_GROUPS, POLICY_VERSION
 from trading.cycle.store import CycleStore
-
-
-def discover_year_ends(dates: list[str]) -> dict[str, str]:
-    """적재 일자에서 연도별 연말 스냅샷(12월 최대일) + 최신일(current)을 발견."""
-    out: dict[str, str] = {}
-    for ymd in dates:
-        year, month = ymd[:4], ymd[4:6]
-        if month == "12" and (year not in out or ymd > out[year]):
-            out[year] = ymd
-    if dates:
-        out["current"] = max(dates)
-    return out
 
 
 def main() -> int:

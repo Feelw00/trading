@@ -118,6 +118,33 @@ class ThesisRecord(BaseRecord):
     evidence: list[NonEmptyStr] = Field(default_factory=list)
 
 
+class CandidateRecord(BaseRecord):
+    """R4 스크리너 산출 — 편입·제외는 여기서만 결정되며 **탈락 사유를 전수 박제**한다(§3 R4).
+
+    `unapplied`: 데이터 미확보로 이번 판정에 적용되지 않은 필터 목록 — 침묵 생략 금지,
+    "통과"가 "전 필터 통과"로 오독되지 않게 한다.
+    """
+
+    symbol: NonEmptyStr
+    industry: NonEmptyStr            # 화이트리스트 산업명(policy WHITELIST 키)
+    sector_krx: str | None = None
+    phase: CyclePhase                # 판정 시점 산업 국면(R3)
+    passed: bool
+    reject_reasons: list[NonEmptyStr] = Field(default_factory=list)
+    industry_pbr_pct: float | None = Field(default=None, ge=0.0, le=1.0)
+    unapplied: list[NonEmptyStr] = Field(default_factory=list)
+    valuation_ref: NonEmptyStr
+    cycle_ref: NonEmptyStr
+
+    @model_validator(mode="after")
+    def _passed_xor_reasons(self) -> "CandidateRecord":
+        if self.passed and self.reject_reasons:
+            raise ValueError("passed=True이면 reject_reasons는 비어야 한다")
+        if not self.passed and not self.reject_reasons:
+            raise ValueError("탈락은 사유 없이 박제할 수 없다(§3 R4 — 전수 사유)")
+        return self
+
+
 class OrderSide(str, Enum):
     BUY = "buy"
     SELL = "sell"
@@ -167,6 +194,7 @@ class OrderDraft(BaseRecord):
 
 
 __all__ = [
+    "CandidateRecord",
     "CyclePhase",
     "CycleRecord",
     "DcaTranche",

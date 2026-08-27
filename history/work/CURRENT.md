@@ -73,10 +73,17 @@
    강제·secular CAGR) + CycleStore + `python -m trading.cycle`(현재 판정 22산업 실산출:
    bottoming 1·recovering 3·overheated 9·unknown 8) + `--replay`(as-of 룩어헤드 금지).
    튜닝 관찰: **전기·전자 23:decl→24:bott→25:over** — 메모리 사이클 재현.
-5. ~~정책 결재~~ → **policy-v1.0 확정(2026-08-27)**: 조선=큐레이션 3사(밴드 실산출 —
-   overheated 75%), 매핑·실물 축 키 승인, **검증 사이클 운송·창고 2024 = PASS**(as-of
-   bottoming, 임계 사전 고정). `cycle/policy.py` 동기. **→ Phase 3(R4 스크리너·심사 패킷·
-   페이퍼 모드) 착수 가능** — R4 임계는 POLICY_PARAMS §5 결재 필요(Phase 3 산출물로 제안).
+5. ~~정책 결재~~ → **policy-v1.0 확정(2026-08-27)**: 조선=큐레이션 3사, 매핑·실물 축 키 승인,
+   검증 사이클 운송·창고 2024 = **PASS**. `cycle/policy.py` 동기.
+
+**Phase 3 — R4·보고 구현 완료(2026-08-27), §5 결재 대기**
+6. **R4 스크리너**(`screen/` — CandidateRecord·탈락 전수 박제·미적용 필터 명시) 페이퍼 실측:
+   138종목 → 통과 3(화학·정유 recovering 존 — 011780·051900·051910), 발동 존 아님 119 =
+   시장 상단 국면 정합. **주간 다이제스트**(`python -m trading.weekly_digest` →
+   `.runtime/reports/weekly-*.md`) 첫 발행.
+7. **▶ 결재 대기: POLICY_PARAMS §5(R4 임계)** — 승인 시 페이퍼 주간 리듬 관찰(1~2개월) 개시.
+8. 후속: R4.5 심사 패킷(LLM — `CLAUDE_MODEL` 설정 필요)·R5 DCA(§6 결재 후)·월간 결재 보고·
+   flows 수급 창 축적(일간 수집 재개 필요 — cron v0.3 슬롯 재작성과 함께).
 7. 환원·거버넌스 수집 — PIVOT-3 ①② API 공식 문서 확정 후 어댑터(그 전 스텁 유지).
 
 **연 1회 운영 (유지)**

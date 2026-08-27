@@ -63,6 +63,15 @@ class ValuationStore:
             return None
         return ValuationRecord.model_validate_json(str(row[0]))
 
+    def all_latest(self) -> list[ValuationRecord]:
+        """종목별 최신 레코드 전부 — R4 스크리너 입력."""
+        rows = self._conn.execute(
+            "SELECT payload FROM valuations v WHERE rowid = "
+            "(SELECT rowid FROM valuations WHERE symbol = v.symbol "
+            " ORDER BY as_of DESC, version DESC LIMIT 1)"
+        ).fetchall()
+        return [ValuationRecord.model_validate_json(str(r[0])) for r in rows]
+
     def count(self) -> int:
         row = self._conn.execute("SELECT COUNT(DISTINCT symbol) FROM valuations").fetchone()
         return int(row[0]) if row else 0
