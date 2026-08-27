@@ -97,6 +97,21 @@ def test_band_positions_current_is_bottom(tmp_path: Path) -> None:
     market.close()
 
 
+def test_extra_groups_curated(tmp_path: Path) -> None:
+    """큐레이션 그룹(policy ① 조선) — 명시 종목 리스트로 별도 밴드, 재무 미적재 종목은 제외."""
+    fins, market = _setup(tmp_path)
+    years = build_sector_years(
+        fins, market, year_end_dates=_DATES,
+        extra_groups={"조선(큐레이션)": ["000001", "000002", "000008", "999999"]},  # 999999 미적재
+    )
+    curated = {r.year: r for r in years["조선(큐레이션)"]}
+    # 000001·000002(철강 소속이어도 명시 리스트 우선)·000008 = 3종목 → MIN 충족
+    assert curated["2024"].n_fin == 3
+    assert "철강" in years  # 파생 그룹은 그대로 유지
+    fins.close()
+    market.close()
+
+
 def test_annual_series_extraction(tmp_path: Path) -> None:
     fins = FinStore(tmp_path / "f.sqlite")
     _annual(fins, "000001", "2024", rev="900", op="45", eq="500", ni="-40")

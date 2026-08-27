@@ -73,9 +73,10 @@
    강제·secular CAGR) + CycleStore + `python -m trading.cycle`(현재 판정 22산업 실산출:
    bottoming 1·recovering 3·overheated 9·unknown 8) + `--replay`(as-of 룩어헤드 금지).
    튜닝 관찰: **전기·전자 23:decl→24:bott→25:over** — 메모리 사이클 재현.
-5. **▶ 운영자 결재 대기: `docs/POLICY_PARAMS.md` 초안 v1** — R3 파라미터·화이트리스트
-   매핑(조선 처리 결정 ①)·실물 보강 축 키(③)·검증 사이클 택1(④). 결재 후 R4 스크리너
-   (Phase 3) 착수 가능.
+5. ~~정책 결재~~ → **policy-v1.0 확정(2026-08-27)**: 조선=큐레이션 3사(밴드 실산출 —
+   overheated 75%), 매핑·실물 축 키 승인, **검증 사이클 운송·창고 2024 = PASS**(as-of
+   bottoming, 임계 사전 고정). `cycle/policy.py` 동기. **→ Phase 3(R4 스크리너·심사 패킷·
+   페이퍼 모드) 착수 가능** — R4 임계는 POLICY_PARAMS §5 결재 필요(Phase 3 산출물로 제안).
 7. 환원·거버넌스 수집 — PIVOT-3 ①② API 공식 문서 확정 후 어댑터(그 전 스텁 유지).
 
 **연 1회 운영 (유지)**

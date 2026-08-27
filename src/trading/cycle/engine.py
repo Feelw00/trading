@@ -6,8 +6,8 @@
 - **bottoming = 밴드 하단 + 개선 시작** — 하단이되 개선이 없으면 declining 유지(위치≠반전).
 - 구조적 사양(secular_decline) = 섹터 매출 장기 CAGR 하향 — 밴드가 낮아도 편입 불가(R4에서 차단).
 
-파라미터: ``CycleParams``로 명시 주입. ``PROPOSED_PARAMS``는 **운영자 결재 대상 제안값**
-(docs/POLICY_PARAMS.md) — 결재 전에는 계측·보고 전용이며 편입 판정에 사용 금지(부록 B).
+파라미터: ``CycleParams``로 명시 주입. ``PROPOSED_PARAMS``는 **policy-v1.0으로 결재됨**
+(2026-08-27, docs/POLICY_PARAMS.md §1 — 검증 사이클 운송·창고 2024 PASS). 개정은 R7+결재로만.
 """
 
 from collections.abc import Mapping, Sequence
@@ -18,7 +18,7 @@ from trading.contracts.longterm import CyclePhase, CycleRecord, PrimaryAxes
 from trading.cycle.bands import SectorYear
 from trading.valuation.metrics import percentile_rank
 
-# 운영자 결재 대상 제안값(2026-08-27 세션 제안) — 결재 전 편입 판정 사용 금지
+# policy-v1.0 결재값(2026-08-27) — docs/POLICY_PARAMS.md §1과 동기
 @dataclass(frozen=True)
 class CycleParams:
     band_low: float = 0.30        # PBR 밴드 하단 임계(이하 = 저평가 존)

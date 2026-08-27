@@ -54,8 +54,13 @@ def build_sector_years(
     market_store: MarketStore,
     *,
     year_end_dates: Mapping[str, str],
+    extra_groups: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, list[SectorYear]]:
-    """섹터별 연도 시계열. ``year_end_dates``: {"2024": "20241230", ..., "current": <최신일>}."""
+    """섹터별 연도 시계열. ``year_end_dates``: {"2024": "20241230", ..., "current": <최신일>}.
+
+    ``extra_groups``: 큐레이션 그룹(policy-v1.0 ① 조선 등) — {그룹명: [종목코드]}.
+    KRX 버킷 파생 그룹에 **추가**된다(동명이면 큐레이션이 우선).
+    """
     sector_map = market_store.sector_map(KRX_SOURCE)
     annuals: dict[str, dict[str, dict[str, float | None]]] = {}
     for srtn_cd in fin_store.symbols():
@@ -66,10 +71,15 @@ def build_sector_years(
     }
     fin_years = sorted({y for series in annuals.values() for y in series}, reverse=True)
 
+    groups: dict[str, list[str]] = {
+        sector: [cd for cd in annuals if _sector_of(sector_map, cd) == sector]
+        for sector in sorted({s for tags in sector_map.values() for s in tags})
+    }
+    for name, codes in (extra_groups or {}).items():
+        groups[name] = [cd for cd in codes if cd in annuals]  # 재무 미적재 종목은 정직 제외
+
     out: dict[str, list[SectorYear]] = {}
-    sectors = sorted({s for tags in sector_map.values() for s in tags})
-    for sector in sectors:
-        members = [cd for cd in annuals if _sector_of(sector_map, cd) == sector]
+    for sector, members in groups.items():
         rows: list[SectorYear] = []
         for year in fin_years:
             # 재무 축 — 그 연도 연간 재무가 있는 구성 종목 합산

@@ -12,6 +12,7 @@ from trading.collectors.fins import FinStore
 from trading.collectors.market import MarketStore
 from trading.cycle.bands import build_sector_years
 from trading.cycle.engine import PROPOSED_PARAMS, assess_all, to_record
+from trading.cycle.policy import CURATED_GROUPS, POLICY_VERSION
 from trading.cycle.store import CycleStore
 
 
@@ -33,12 +34,14 @@ def main() -> int:
     store = CycleStore()
     try:
         year_ends = discover_year_ends(market.dates())
-        sector_years = build_sector_years(fins, market, year_end_dates=year_ends)
+        sector_years = build_sector_years(
+            fins, market, year_end_dates=year_ends, extra_groups=CURATED_GROUPS
+        )
         now = now_kst()
 
         if replay:
             years = sorted((y for y in year_ends if y != "current"), reverse=True)[:5]
-            print(f"as-of 리플레이 (제안 파라미터 — 결재 전 계측 전용): {', '.join(reversed(years))}")
+            print(f"as-of 리플레이 ({POLICY_VERSION}): {', '.join(reversed(years))}")
             for sector in sorted(sector_years):
                 cells = []
                 for y in reversed(years):
@@ -52,7 +55,7 @@ def main() -> int:
             return 0
 
         assessments = assess_all(sector_years, at="current", params=PROPOSED_PARAMS)
-        print(f"R3 온도계 (제안 파라미터 — PIVOT-5 결재 전 계측·보고 전용) · 기준일 {year_ends.get('current')}")
+        print(f"R3 온도계 ({POLICY_VERSION}) · 기준일 {year_ends.get('current')}")
         print(f"{'섹터':<14} {'국면':<11} {'온도':>4} {'PBR밴드':>7} {'마진밴드':>7} {'매출z':>6} {'개선':>4} {'사양':>4}")
         def fmt(v: float | int | None, p: str) -> str:
             return f"{v:{p}}" if v is not None else "결측"
