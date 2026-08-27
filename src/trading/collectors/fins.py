@@ -201,12 +201,12 @@ class FinStore:
         """재무가 1건 이상 적재된 종목코드 목록."""
         return [str(r[0]) for r in self._conn.execute("SELECT DISTINCT srtn_cd FROM fin_facts")]
 
-    def annual_net_incomes(self, srtn_cd: str) -> list[tuple[str, float | None]]:
-        """연간(11011) 당기순이익 시계열 (연도 desc). 흑자 유지력(loss_years) 원료.
+    def annual_series(self, srtn_cd: str) -> list[tuple[str, dict[str, float | None]]]:
+        """연간(11011) 주요계정 시계열 (연도 desc) — 섹터 밴드(R3 1차 축)·loss_years 원료.
 
-        CFS 우선, 계정명 prefix 매칭. 해당 연도에 순이익 계정이 없으면 (연도, None).
+        각 연도: {"revenue", "op_income", "equity", "net_income"} (CFS 우선, 결측=None).
         """
-        out: list[tuple[str, float | None]] = []
+        out: list[tuple[str, dict[str, float | None]]] = []
         years = [
             str(r[0])
             for r in self._conn.execute(
@@ -222,13 +222,34 @@ class FinStore:
                 (srtn_cd, year),
             ).fetchall()
             fs_div = "CFS" if any(str(r[0]) == "CFS" for r in rows) else "OFS"
-            ni: float | None = None
-            for fs, nm, th in rows:
-                if str(fs) == fs_div and str(nm).startswith("당기순이익"):
-                    ni = th
-                    break
-            out.append((year, ni))
+
+            def _pick(exact: str | None, prefix: str | None = None) -> float | None:
+                for fs, nm, th in rows:
+                    if str(fs) != fs_div:
+                        continue
+                    name = str(nm)
+                    if exact is not None and name == exact:
+                        return th  # type: ignore[no-any-return]
+                    if prefix is not None and name.startswith(prefix):
+                        return th  # type: ignore[no-any-return]
+                return None
+
+            out.append(
+                (
+                    year,
+                    {
+                        "revenue": _pick("매출액"),
+                        "op_income": _pick("영업이익"),
+                        "equity": _pick("자본총계"),
+                        "net_income": _pick(None, "당기순이익"),
+                    },
+                )
+            )
         return out
+
+    def annual_net_incomes(self, srtn_cd: str) -> list[tuple[str, float | None]]:
+        """연간(11011) 당기순이익 시계열 (연도 desc). 흑자 유지력(loss_years) 원료."""
+        return [(year, vals["net_income"]) for year, vals in self.annual_series(srtn_cd)]
 
     def count(self) -> int:
         row = self._conn.execute("SELECT COUNT(DISTINCT srtn_cd) FROM fin_facts").fetchone()

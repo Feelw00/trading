@@ -188,6 +188,17 @@ class MarketStore:
         )
         return [(str(r[0]), str(r[1])) for r in cur]
 
+    def quotes_on(self, bas_dt: str) -> dict[str, float | None]:
+        """해당 일자 전 종목 {srtn_cd: 시가총액(원, 결측=None)} — 섹터 밴드(R3 1차 축) 원료."""
+        from trading.collectors.fins import parse_amount
+
+        return {
+            str(r[0]): parse_amount(r[1])
+            for r in self._conn.execute(
+                "SELECT srtn_cd, mrkt_tot_amt FROM daily_quotes WHERE bas_dt=?", (bas_dt,)
+            )
+        }
+
     def latest_quote(self, srtn_cd: str) -> tuple[str, str | None, str | None, str | None] | None:
         """종목 최신일 (bas_dt, market, clpr, mrkt_tot_amt). 없으면 None."""
         row = self._conn.execute(

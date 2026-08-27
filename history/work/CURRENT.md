@@ -4,10 +4,13 @@
 > 최종 갱신: 2026-08-26 (KST)
 
 ## 진행 중
-- **v0.3 Phase 1 (밸류에이션·히스토리 기반)** — 코드 골격 완료(계약·R2 계산기·수동 입력·백필
-  함수, 커밋 4d58684). **잔여: 실데이터 적재**(.env 필요 — DART 백필 `--backfill-years` 실행,
-  DART 10년 커버리지 실측 → PIVOT-3④ 백필 연수 확정, `python -m trading.valuation` 첫 산출)
-  + 환원·거버넌스 수집(PIVOT-3 API 확정 후).
+- **v0.3 Phase 1 — 실적재까지 완료(2026-08-27), AC 충족**: EOD 1년(246일·70.8만 행) + 연말
+  스냅샷 2020~2025 + KRX 업종 태깅 223종목 + DART 연간 10년 백필(222종목·1,834건, 완비
+  145/222) → `trading.valuation` 첫 산출(222종목·PER 184·섹터상대 213) + **섹터 3축 밴드**
+  (PBR 창 7y·마진 10y, 22개 섹터). 공시 대조 검증(하이닉스 원문 정합). 잔여: 환원·거버넌스
+  수집(PIVOT-3 ①② API 확정 후 — 스텁 유지).
+- **Phase 0 마무리**: 브로커 대사 종결(PIVOT-6 — 계좌 비어 있음 실측). openclaw 설치는
+  bootstrap 실행분 확인 대기 + **OAuth 로그인(TTY 1회)은 운영자 몫**.
 
 ## 운영 상태 (상시 확인)
 - **🔄 2026-08-26 전략 전면 피벗(P-14) — 설계서 v0.3 비준**: 단타·스윙 폐기 → 장기 사이클·
@@ -60,21 +63,20 @@
 > P-13·drill 감사·M4 잔여·NXT/애프터 실측 등 — 이력은 git·archive 참조). 큰 줄기는 설계서
 > v0.3 §10 로드맵.
 
-**운영자 입력 즉시 (blocked 해제)**
-1. `gh auth login` → `pivot/v0.3-longterm` 푸시.
-2. `.env`(1Password) → `bash ops/bootstrap.sh`(cron sync 제외) → **브로커 대사**
-   `poetry run python ops/reconcile_broker.py` → 잔존 조건주문 정리·기존 보유 처리 결정.
+**운영자 몫 (짧은 것)**
+1. openclaw OAuth 로그인 1회(TTY): `OPENCLAW_STATE_DIR=<repo>/.runtime/openclaw ~/.openclaw/bin/openclaw models auth login --provider openai --method oauth`
+2. `TELEGRAM_BOT_TOKEN/CHAT_ID` — 알림 재개 원할 때 .env에 추가.
+3. 맥북 `~/Downloads/env.example.txt` 삭제(키 평문 잔존).
 
-**Phase 1 잔여 (.env 후)**
-3. DART 연간 백필 실행(`python -m trading.collectors.fins --backfill-years 10`) →
-   커버리지 실측으로 PIVOT-3④ 백필 연수 확정 → `python -m trading.valuation` 첫 실산출 →
-   Phase 1 AC 검증(전 종목 ValuationRecord + 결측 정직 표기 + 공시 실측 대조 N종목).
-4. 환원·거버넌스 수집 — PIVOT-3 ①② API 공식 문서 확정 후 어댑터(그 전 스텁 유지).
-
-**Phase 2 준비 (병행 가능)**
-5. 섹터 히스토리 밴드 산출기(연간 시계열 → PBR·마진·매출 밴드 percentile) — 백필 데이터 축적 후.
-6. 화이트리스트 큐레이션 + 실물 보강 축 매핑표 초안 → 운영자 결재(PIVOT-5).
+**Phase 2 — 온도계·화이트리스트 (다음 세션 본체)**
+4. R3 국면 판정 엔진: 밴드(구현 완료) 위에 bottoming=하단+**개선 모멘텀** 요건,
+   secular_decline(섹터 매출 장기 추세), CycleRecord 산출·저장.
+5. 화이트리스트 큐레이션 + 실물 보강 축 매핑표 초안 → **운영자 결재(PIVOT-5)**.
    실물 지표는 수동 입력 채널(`python -m trading.manual_input`)로 즉시 가동 가능.
+6. ⚠️ **리플레이 사이클 재선정 필요**: 시세 커버리지 2020~ 실측(PIVOT-3④)으로 Phase 2 AC의
+   "반도체 2016 bottoming 재현"은 PBR 축 불가 — 튜닝/검증 사이클을 2020 이후(예: 튜닝=해운
+   2020 저점, 검증=반도체 2022→24 회복)로 교체 결정 필요(재무 축만으로 2016 재현은 반쪽).
+7. 환원·거버넌스 수집 — PIVOT-3 ①② API 공식 문서 확정 후 어댑터(그 전 스텁 유지).
 
 **연 1회 운영 (유지)**
 - 2027년 휴장일 갱신 — `krx_holidays.json` `covered_through=2026-12-31` 만료 시 `--check` ⚠️ 경고.
