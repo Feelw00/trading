@@ -284,7 +284,8 @@ def client_from_env() -> KisClient | None:
     secret = os.environ.get("KIS_APP_SECRET", "")
     if not key or not secret:
         return None
-    return KisClient(key, secret, account_type=os.environ.get("KIS_ACCOUNT_TYPE", "REAL"))
+    # 빈 문자열도 기본 REAL — .env에 `KIS_ACCOUNT_TYPE=`처럼 값 없이 선언돼도 크래시 금지(8/27 실사고)
+    return KisClient(key, secret, account_type=os.environ.get("KIS_ACCOUNT_TYPE") or "REAL")
 
 
 __all__ = [

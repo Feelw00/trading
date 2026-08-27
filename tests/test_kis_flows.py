@@ -342,3 +342,19 @@ def test_fact_pack_includes_flows(tmp_path: Path) -> None:
     assert any("수급 미수집" in n for n in empty.notes)
     flow_store.close()
     mstore.close()
+
+
+def test_kis_client_from_env_empty_account_type_defaults_real(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`.env`에 `KIS_ACCOUNT_TYPE=`(빈 값)로 선언돼도 기본 REAL — 8/27 실사고 회귀."""
+    from trading.collectors.kis import client_from_env
+
+    monkeypatch.setenv("KIS_APP_KEY", "k")
+    monkeypatch.setenv("KIS_APP_SECRET", "s")
+    monkeypatch.setenv("KIS_ACCOUNT_TYPE", "")
+    assert client_from_env() is not None
+
+    monkeypatch.setenv("KIS_ACCOUNT_TYPE", "VIRTUAL")
+    with pytest.raises(ValueError):
+        client_from_env()
