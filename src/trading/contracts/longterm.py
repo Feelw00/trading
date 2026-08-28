@@ -87,13 +87,28 @@ def phase_ko(phase: CyclePhase) -> str:
 
 
 class PrimaryAxes(BaseModel):
-    """자체 히스토리 밴드 1차 축(PIVOT-7 ②) — 편입 판정의 기준."""
+    """자체 히스토리 밴드 1차 축(PIVOT-7 ②) — 편입 판정의 기준.
+
+    profile(policy-v1.4): industrial=(PBR·마진·매출) / financial=(PBR·ROE·topline —
+    금융업은 매출액 계정이 구조적으로 없어 순이자손익(폴백 영업이익)·ROE로 대체).
+    필드는 프로파일별로 분리 — 기존 필드에 다른 의미를 덮어쓰지 않는다(감사 정직성).
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    profile: Literal["industrial", "financial"] = "industrial"
     sector_pbr_band_pct: float | None = Field(default=None, ge=0.0, le=1.0)
     sector_margin_band_pct: float | None = Field(default=None, ge=0.0, le=1.0)
     sector_rev_cycle_z: float | None = None
+    # financial 프로파일 전용
+    sector_roe_band_pct: float | None = Field(default=None, ge=0.0, le=1.0)
+    sector_topline_cycle_z: float | None = None
+
+    def primary_triple(self) -> tuple[float | None, float | None, float | None]:
+        """프로파일의 1차 축 3종 — unknown 규율(하나라도 결측=판정 불가)의 기준."""
+        if self.profile == "financial":
+            return (self.sector_pbr_band_pct, self.sector_roe_band_pct, self.sector_topline_cycle_z)
+        return (self.sector_pbr_band_pct, self.sector_margin_band_pct, self.sector_rev_cycle_z)
 
 
 class CycleRecord(BaseRecord):
@@ -109,14 +124,10 @@ class CycleRecord(BaseRecord):
 
     @model_validator(mode="after")
     def _unknown_when_unobserved(self) -> "CycleRecord":
-        # §3 R3: 1차 축 결측 섹터는 unknown(편입 불가) — 부분 관측으로 국면을 지어내지 않는다
-        primary = (
-            self.axes_primary.sector_pbr_band_pct,
-            self.axes_primary.sector_margin_band_pct,
-            self.axes_primary.sector_rev_cycle_z,
-        )
+        # §3 R3: 프로파일의 1차 축 결측 섹터는 unknown(편입 불가) — 부분 관측으로 국면을
+        # 지어내지 않는다(v1.4: industrial/financial 프로파일별 자기 3축 기준)
         if self.phase is not CyclePhase.UNKNOWN:
-            if any(v is None for v in primary):
+            if any(v is None for v in self.axes_primary.primary_triple()):
                 raise ValueError("primary axes incomplete — phase must be 'unknown'")
             if self.temperature is None:
                 raise ValueError("temperature required unless phase='unknown'")

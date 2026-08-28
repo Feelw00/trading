@@ -13,7 +13,7 @@ from trading.collectors.fins import FinStore
 from trading.collectors.market import MarketStore
 from trading.cycle.bands import build_sector_years, discover_year_ends
 from trading.cycle.engine import PROPOSED_PARAMS, assess_all, to_record
-from trading.cycle.policy import CURATED_GROUPS, POLICY_VERSION
+from trading.cycle.policy import CURATED_GROUPS, FINANCIAL_PROFILE_GROUPS, POLICY_VERSION
 from trading.cycle.store import CycleStore
 
 
@@ -36,14 +36,18 @@ def main() -> int:
                 for y in reversed(years):
                     a = next(
                         x for x in assess_all(
-                            {sector: sector_years[sector]}, at=y, params=PROPOSED_PARAMS
+                            {sector: sector_years[sector]}, at=y, params=PROPOSED_PARAMS,
+                            financial_groups=FINANCIAL_PROFILE_GROUPS,
                         )
                     )
                     cells.append(f"{y[2:]}:{phase_ko(a.phase)[:2]}")
                 print(f"{sector:<14} " + " ".join(cells))
             return 0
 
-        assessments = assess_all(sector_years, at="current", params=PROPOSED_PARAMS)
+        assessments = assess_all(
+            sector_years, at="current", params=PROPOSED_PARAMS,
+            financial_groups=FINANCIAL_PROFILE_GROUPS,
+        )
         print(f"R3 온도계 ({POLICY_VERSION}) · 기준일 {year_ends.get('current')}")
         print(f"{'섹터':<14} {'국면':<11} {'온도':>4} {'PBR밴드':>7} {'마진밴드':>7} {'매출z':>6} {'개선':>4} {'사양':>4}")
         def fmt(v: float | int | None, p: str) -> str:

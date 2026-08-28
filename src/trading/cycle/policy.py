@@ -1,16 +1,17 @@
-"""정책 파라미터 v1.3 — 2026-08-28 운영자 결재분 (docs/POLICY_PARAMS.md가 원본 문서).
+"""정책 파라미터 v1.4 — 2026-08-28 운영자 결재분 (docs/POLICY_PARAMS.md가 원본 문서).
 
 v1.0(8/27): ① 조선=종목 큐레이션 ② 화이트리스트 매핑 ③ 실물 축 키 ④ 검증=운송·창고 2024(PASS).
-v1.3(8/28, "권장대로"): 멤버십 정밀화 — **DART KSIC 실측 자동 규칙 + 지주(64992) 판단 5건**.
+v1.3(8/28): 멤버십 정밀화 — **DART KSIC 실측 자동 규칙 + 지주(64992) 판단 5건**.
 - KSIC 자동: 정유 19x 분리 · 화장품 2042x/타이어 221/플라스틱 222 화학에서 제거 ·
   반도체 261x · 일반은행 64121. (한계: KSIC=등록업종이라 실질과 어긋날 수 있음 —
   제닉(204, 실질 화장품) 잔류 등은 규칙 우선으로 수용, R7에서 재평가.)
 - 지주 판단(운영자 확정): GS→정유 · 은행지주 5(KB·신한·하나·우리·BNK)→은행 ·
   메리츠·한국금융지주→은행 제외 · HD한국조선해양→조선 · 삼성전자(KSIC 264)→반도체.
+v1.4(8/28, 결재 ⑧): 금융 프로파일(아래 FINANCIAL_PROFILE_GROUPS).
 개정은 R7 루프 + 운영자 결재로만(헌장 2). R4 스크리너 임계는 screen/rules.py(§5).
 """
 
-POLICY_VERSION = "policy-v1.3 (2026-08-28)"
+POLICY_VERSION = "policy-v1.4 (2026-08-28)"
 
 # 사이클 화이트리스트 — R4 편입 대상 산업 → R3 밴드 그룹 키.
 # R3는 전 섹터를 계측하지만 편입은 이 목록만(스코프 규율). v1.3: 화학·정유 분리.
@@ -83,7 +84,20 @@ AUX_METRIC_KEYS: dict[str, list[str]] = {
     "증권": ["rates.spread_3y10y"],
 }
 
+# 금융 프로파일(v1.4, 결재 ⑧) — 매출액이 구조적으로 없는 업권은 축 대체:
+# (PBR·ROE 밴드·topline z — topline=순이자손익, 결측 시 영업이익 폴백). 판정 규칙 동형.
+# 관측 창 실측: DART 주요계정·전체 재무제표 모두 금융업 2022 이전 무자료 → 3년(매년 +1),
+# topline z(최소 4관측)는 2026 사업보고서 적재(2027.3경)부터 성립 — 그 전 unknown은 정직.
+FINANCIAL_PROFILE_GROUPS: frozenset[str] = frozenset({"은행(큐레이션)", "증권"})
+
 # 검증 사이클 — 임계 고정 후 1회만 사용됨(2026-08-27 PASS), 재사용 금지(PIVOT-7 ⑥)
 VALIDATION_CYCLE: tuple[str, str] = ("운송·창고", "2024")
 
-__all__ = ["AUX_METRIC_KEYS", "CURATED_GROUPS", "POLICY_VERSION", "VALIDATION_CYCLE", "WHITELIST"]
+__all__ = [
+    "AUX_METRIC_KEYS",
+    "CURATED_GROUPS",
+    "FINANCIAL_PROFILE_GROUPS",
+    "POLICY_VERSION",
+    "VALIDATION_CYCLE",
+    "WHITELIST",
+]

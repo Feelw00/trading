@@ -11,7 +11,7 @@ from trading.collectors.fins import FinStore
 from trading.collectors.market import MarketStore
 from trading.cycle.bands import build_sector_years, discover_year_ends
 from trading.cycle.engine import PROPOSED_PARAMS, Assessment, assess_all
-from trading.cycle.policy import CURATED_GROUPS, POLICY_VERSION, WHITELIST
+from trading.cycle.policy import CURATED_GROUPS, FINANCIAL_PROFILE_GROUPS, POLICY_VERSION, WHITELIST
 from trading.cycle.store import CycleStore
 from trading.screen.rules import PROPOSED_R4, UNAPPLIED_V1
 from trading.screen.run import ScreenSummary, run_screen
@@ -178,7 +178,10 @@ def main() -> int:
         sector_years = build_sector_years(
             fins, market, year_end_dates=year_ends, extra_groups=CURATED_GROUPS
         )
-        assessments = assess_all(sector_years, at="current", params=PROPOSED_PARAMS)
+        assessments = assess_all(
+            sector_years, at="current", params=PROPOSED_PARAMS,
+            financial_groups=FINANCIAL_PROFILE_GROUPS,
+        )
         candidates, summary = run_screen(val_store, cycle_store, params=PROPOSED_R4)
         basis = year_ends.get("current", "?")
         dossier_dir = REPORT_DIR / "dossiers"

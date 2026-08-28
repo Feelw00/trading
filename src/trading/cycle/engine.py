@@ -10,7 +10,7 @@
 (2026-08-27, docs/POLICY_PARAMS.md §1 — 검증 사이클 운송·창고 2024 PASS). 개정은 R7+결재로만.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -35,6 +35,9 @@ PROPOSED_PARAMS = CycleParams()
 
 @dataclass(frozen=True)
 class Assessment:
+    """판정 결과 — profile=financial이면 margin_band_pct에 ROE 밴드, rev_cycle_z에
+    topline z가 담긴다(표시 편의 — 박제 계약(CycleRecord)은 프로파일별 전용 필드로 분리)."""
+
     sector: str
     at: str                        # 판정 기준 연도 라벨("current" 또는 "2024" 등)
     phase: CyclePhase
@@ -42,14 +45,20 @@ class Assessment:
     pbr_band_pct: float | None
     margin_band_pct: float | None
     rev_cycle_z: float | None
-    improving: bool | None         # 개선 모멘텀(마진 or 매출 YoY 전년 대비 상승)
+    improving: bool | None         # 개선 모멘텀(축2 or base YoY 전년 대비 상승)
     secular_decline: bool | None
     n_pbr_history: int
+    profile: str = "industrial"
 
 
-def _yoy_series(rows: Sequence[SectorYear]) -> list[tuple[str, float]]:
-    """연간 매출 YoY [(연도, yoy)] — 연도 desc(rows가 desc 정렬 전제), 결측 연도 스킵."""
-    ann = [(r.year, r.revenue) for r in rows if r.year != "current" and r.revenue is not None]
+def _yoy_series(
+    rows: Sequence[SectorYear], get: "Callable[[SectorYear], float | None]"
+) -> list[tuple[str, float]]:
+    """연간 base YoY [(연도, yoy)] — 연도 desc(rows가 desc 정렬 전제), 결측 연도 스킵.
+
+    base: industrial=매출, financial=topline(순이자손익·폴백 영업이익) — v1.4 프로파일.
+    """
+    ann = [(r.year, v) for r in rows if r.year != "current" and (v := get(r)) is not None]
     out: list[tuple[str, float]] = []
     for (y, rev), (_py, prev) in zip(ann, ann[1:]):
         if prev and prev > 0:
@@ -57,9 +66,11 @@ def _yoy_series(rows: Sequence[SectorYear]) -> list[tuple[str, float]]:
     return out
 
 
-def _secular(rows: Sequence[SectorYear], params: CycleParams) -> bool | None:
-    """섹터 매출 장기 추세 — 창 내 CAGR ≤ 임계면 구조적 사양. 관측 부족 = None."""
-    ann = [(r.year, r.revenue) for r in rows if r.year != "current" and r.revenue is not None]
+def _secular(
+    rows: Sequence[SectorYear], params: CycleParams, get: "Callable[[SectorYear], float | None]"
+) -> bool | None:
+    """섹터 base(매출/topline) 장기 추세 — 창 내 CAGR ≤ 임계면 구조적 사양. 관측 부족 = None."""
+    ann = [(r.year, v) for r in rows if r.year != "current" and (v := get(r)) is not None]
     window = ann[: params.secular_window]
     if len(window) < params.secular_min_obs:
         return None
@@ -72,8 +83,25 @@ def _secular(rows: Sequence[SectorYear], params: CycleParams) -> bool | None:
     return cagr <= params.secular_max_cagr
 
 
-def assess(rows: Sequence[SectorYear], *, at: str, sector: str, params: CycleParams) -> Assessment:
-    """``at`` 시점(연도 라벨) 기준 국면 판정 — 그 시점 이전 데이터만 사용(룩어헤드 금지)."""
+def assess(
+    rows: Sequence[SectorYear],
+    *,
+    at: str,
+    sector: str,
+    params: CycleParams,
+    profile: str = "industrial",
+) -> Assessment:
+    """``at`` 시점(연도 라벨) 기준 국면 판정 — 그 시점 이전 데이터만 사용(룩어헤드 금지).
+
+    profile(policy-v1.4): industrial=(PBR·마진·매출) / financial=(PBR·ROE·topline) —
+    금융업은 매출액이 구조적으로 없어 축을 대체한다(규칙 형태는 동형).
+    """
+    if profile == "financial":
+        axis2_get: Callable[[SectorYear], float | None] = lambda r: r.roe
+        base_get: Callable[[SectorYear], float | None] = lambda r: r.topline
+    else:
+        axis2_get = lambda r: r.margin  # noqa: E731
+        base_get = lambda r: r.revenue  # noqa: E731
     if at == "current":
         cur = next((r for r in rows if r.year == "current"), None)
         hist = [r for r in rows if r.year != "current"]
@@ -94,16 +122,16 @@ def assess(rows: Sequence[SectorYear], *, at: str, sector: str, params: CyclePar
         else None
     )
 
-    # 축 2 — 마진 밴드(연간 기준 — 최신 관측 연도)
-    margins = [(r.year, r.margin) for r in fin_rows if r.margin is not None]
+    # 축 2 — 마진(industrial)/ROE(financial) 밴드(연간 기준 — 최신 관측 연도)
+    margins = [(r.year, v) for r in fin_rows if (v := axis2_get(r)) is not None]
     margin_pct = None
     if len(margins) >= params.min_band_points + 1:
         latest_margin = margins[0][1]
         assert latest_margin is not None
         margin_pct = percentile_rank([m for _y, m in margins if m is not None], latest_margin)
 
-    # 축 3 — 매출 사이클 z
-    yoys = _yoy_series(fin_rows)
+    # 축 3 — 매출(industrial)/topline(financial) 사이클 z
+    yoys = _yoy_series(fin_rows, base_get)
     rev_z = None
     if len(yoys) >= params.min_z_points:
         vals = [v for _y, v in yoys]
@@ -119,7 +147,7 @@ def assess(rows: Sequence[SectorYear], *, at: str, sector: str, params: CyclePar
     if margin_up is not None or yoy_up is not None:
         improving = bool(margin_up) or bool(yoy_up)
 
-    secular = _secular(fin_rows, params)
+    secular = _secular(fin_rows, params, base_get)
 
     if pbr_pct is None or margin_pct is None or rev_z is None or improving is None:
         phase = CyclePhase.UNKNOWN
@@ -145,6 +173,7 @@ def assess(rows: Sequence[SectorYear], *, at: str, sector: str, params: CyclePar
         improving=improving,
         secular_decline=secular,
         n_pbr_history=len(pbr_hist),
+        profile=profile,
     )
 
 
@@ -158,10 +187,19 @@ def to_record(a: Assessment, *, as_of: datetime, fetched_at: datetime, evidence:
         industry=a.sector,
         phase=a.phase,
         temperature=a.temperature,
-        axes_primary=PrimaryAxes(
-            sector_pbr_band_pct=a.pbr_band_pct,
-            sector_margin_band_pct=a.margin_band_pct,
-            sector_rev_cycle_z=a.rev_cycle_z,
+        axes_primary=(
+            PrimaryAxes(
+                profile="financial",
+                sector_pbr_band_pct=a.pbr_band_pct,
+                sector_roe_band_pct=a.margin_band_pct,
+                sector_topline_cycle_z=a.rev_cycle_z,
+            )
+            if a.profile == "financial"
+            else PrimaryAxes(
+                sector_pbr_band_pct=a.pbr_band_pct,
+                sector_margin_band_pct=a.margin_band_pct,
+                sector_rev_cycle_z=a.rev_cycle_z,
+            )
         ),
         axes_aux={},
         secular_decline=a.secular_decline,
@@ -170,9 +208,22 @@ def to_record(a: Assessment, *, as_of: datetime, fetched_at: datetime, evidence:
 
 
 def assess_all(
-    sector_years: Mapping[str, Sequence[SectorYear]], *, at: str, params: CycleParams
+    sector_years: Mapping[str, Sequence[SectorYear]],
+    *,
+    at: str,
+    params: CycleParams,
+    financial_groups: frozenset[str] = frozenset(),
 ) -> list[Assessment]:
-    out = [assess(rows, at=at, sector=sector, params=params) for sector, rows in sector_years.items()]
+    out = [
+        assess(
+            rows,
+            at=at,
+            sector=sector,
+            params=params,
+            profile="financial" if sector in financial_groups else "industrial",
+        )
+        for sector, rows in sector_years.items()
+    ]
     return sorted(out, key=lambda a: (a.pbr_band_pct if a.pbr_band_pct is not None else 2.0))
 
 

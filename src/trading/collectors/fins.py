@@ -239,9 +239,11 @@ class FinStore:
                     year,
                     {
                         "revenue": _pick("매출액"),
-                        "op_income": _pick("영업이익"),
+                        "op_income": _pick(None, "영업이익"),
                         "equity": _pick("자본총계"),
                         "net_income": _pick(None, "당기순이익"),
+                        # 금융 프로파일(v1.4) top line — 은행 실관측 계정 "순이자손익"
+                        "net_interest": _pick("순이자손익"),
                     },
                 )
             )

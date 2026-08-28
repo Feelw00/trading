@@ -109,3 +109,49 @@ def test_as_of_no_lookahead() -> None:
     # 2023의 2.0은 [0.9, 1.0, 1.1] 히스토리 대비 최상단 — 미래(0.1) 미포함 증거
     assert a.pbr_band_pct is not None and a.pbr_band_pct > 0.8
     assert a.n_pbr_history == 3
+
+# --- 금융 프로파일 (policy-v1.4 결재 ⑧) ---
+
+
+def _fin_row(year: str, pbr: float | None, roe: float | None, topline: float | None) -> SectorYear:
+    return SectorYear(year=year, pbr=pbr, margin=None, revenue=None,
+                      n_pbr=5, n_fin=5, roe=roe, topline=topline)
+
+
+def test_financial_profile_judges_with_roe_and_topline() -> None:
+    """financial 프로파일 — 마진·매출 결측이어도 ROE·topline 축으로 판정한다."""
+    rows = [
+        SectorYear("current", 0.4, None, None, 5, 0),
+        _fin_row("2025", 0.4, 0.10, 1300.0),
+        _fin_row("2024", 0.5, 0.08, 1150.0),
+        _fin_row("2023", 1.0, 0.06, 1000.0),
+        _fin_row("2022", 1.1, 0.07, 980.0),
+        _fin_row("2021", 1.2, 0.09, 990.0),
+        _fin_row("2020", 1.3, 0.08, 1010.0),
+    ]
+    a = assess(rows, at="current", sector="은행(큐레이션)", params=P, profile="financial")
+    assert a.profile == "financial"
+    assert a.phase is not CyclePhase.UNKNOWN          # 산업 축 결측에도 판정 성립
+    assert a.margin_band_pct is not None              # = ROE 밴드(표시 캐리)
+    # 박제 계약은 전용 필드로 분리(감사 정직성)
+    ts = datetime(2026, 8, 28, 18, 0, tzinfo=KST)
+    rec = to_record(a, as_of=ts, fetched_at=ts, evidence=["bands:x"])
+    assert rec.axes_primary.profile == "financial"
+    assert rec.axes_primary.sector_roe_band_pct == a.margin_band_pct
+    assert rec.axes_primary.sector_margin_band_pct is None
+
+    # industrial 프로파일이었다면 같은 데이터로 unknown(마진·매출 결측)
+    b = assess(rows, at="current", sector="은행(큐레이션)", params=P)
+    assert b.phase is CyclePhase.UNKNOWN
+
+
+def test_financial_profile_short_window_stays_unknown() -> None:
+    """관측 3년(현 은행 실측 창) — topline z 미충족이라 unknown 유지(정직)."""
+    rows = [
+        SectorYear("current", 0.9, None, None, 5, 0),
+        _fin_row("2025", 0.9, 0.096, 1300.0),
+        _fin_row("2024", 0.95, 0.084, 1150.0),
+        _fin_row("2023", 1.0, 0.078, 1000.0),
+    ]
+    a = assess(rows, at="current", sector="은행(큐레이션)", params=P, profile="financial")
+    assert a.phase is CyclePhase.UNKNOWN and a.rev_cycle_z is None

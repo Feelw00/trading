@@ -32,6 +32,9 @@ class SectorYear:
     revenue: float | None
     n_pbr: int           # PBR 합산(시총·자본 짝) 구성 종목 수
     n_fin: int           # 재무 합산 구성 종목 수
+    # 금융 프로파일(policy-v1.4) 축 — ROE=Σ순이익/Σ자본, topline=Σ(순이자손익, 폴백 영업이익)
+    roe: float | None = None
+    topline: float | None = None
 
 
 @dataclass(frozen=True)
@@ -124,7 +127,32 @@ def build_sector_years(
                 if n_pbr >= MIN_COMPOSITION
                 else None
             )
-            rows.append(SectorYear(year, pbr, margin, revenue, n_pbr, n_fin))
+            # 금융 프로파일 축(v1.4): ROE = Σ순이익/Σ자본(짝 있는 종목만),
+            # topline = Σ(순이자손익 — 결측 시 영업이익 폴백)
+            roe_pairs = [
+                (annuals[cd][year].get("net_income"), annuals[cd][year].get("equity"))
+                for cd in members
+                if year in annuals[cd]
+            ]
+            roe_matched = [(ni, eq) for ni, eq in roe_pairs if ni is not None and eq is not None and eq > 0]
+            roe = (
+                sum(ni for ni, _eq in roe_matched) / sum(eq for _ni, eq in roe_matched)
+                if len(roe_matched) >= MIN_COMPOSITION
+                else None
+            )
+            toplines = [
+                v
+                for cd in members
+                if year in annuals[cd]
+                for v in [
+                    annuals[cd][year].get("net_interest")
+                    if annuals[cd][year].get("net_interest") is not None
+                    else annuals[cd][year].get("op_income")
+                ]
+                if v is not None
+            ]
+            topline = sum(toplines) if len(toplines) >= MIN_COMPOSITION else None
+            rows.append(SectorYear(year, pbr, margin, revenue, n_pbr, n_fin, roe, topline))
 
         # 현재 행 — 최신 시총 × 최신 연간 자본(밴드의 "지금 위치" 판정용)
         if "current" in caps_by_label:

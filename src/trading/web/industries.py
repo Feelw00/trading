@@ -8,7 +8,7 @@ from trading.collectors.market import MarketStore
 from trading.contracts.longterm import PHASE_LEGEND_KO, phase_ko
 from trading.cycle.bands import SectorYear, build_sector_years, discover_year_ends
 from trading.cycle.engine import PROPOSED_PARAMS, assess
-from trading.cycle.policy import CURATED_GROUPS
+from trading.cycle.policy import CURATED_GROUPS, FINANCIAL_PROFILE_GROUPS
 from trading.cycle.store import CycleStore
 from trading.web.layout import page
 from trading.web.stocks_data import GROUP_TO_INDUSTRY, stock_rows
@@ -83,11 +83,13 @@ def render_industry_detail(group: str) -> str | None:
     pbr_pts = [r.pbr for r in ann if r.pbr is not None]
     pbr_years = [r.year for r in ann if r.pbr is not None]
     margin_pts = [(r.year, r.margin) for r in ann if r.margin is not None]
+    profile = "financial" if group in FINANCIAL_PROFILE_GROUPS else "industrial"
     strip = [
-        (year, assess(rows, at=year, sector=group, params=PROPOSED_PARAMS).phase.value)
+        (year, assess(rows, at=year, sector=group, params=PROPOSED_PARAMS,
+                      profile=profile).phase.value)
         for year in years[-6:]
     ]
-    now = assess(rows, at="current", sector=group, params=PROPOSED_PARAMS)
+    now = assess(rows, at="current", sector=group, params=PROPOSED_PARAMS, profile=profile)
     members = [r for r in stock_rows() if r.group == group]
 
     industry_label = GROUP_TO_INDUSTRY.get(group)
