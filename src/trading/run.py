@@ -232,6 +232,30 @@ def _daily_eod() -> int:
     return _factpack()
 
 
+def _whitelist_members() -> tuple[dict[str, str], str | None]:
+    """화이트리스트 산업 멤버 {코드: 이름}과 시세 최신일 — 수급·토스 사실 축적의 공통 대상."""
+    from trading.collectors.market import MarketStore
+    from trading.cycle.policy import CURATED_GROUPS, WHITELIST
+    from trading.sectors import KRX_SOURCE
+
+    mstore = MarketStore()
+    try:
+        bas_dt = mstore.latest_date()
+        groups = set(WHITELIST.values())
+        sector_map = mstore.sector_map(KRX_SOURCE)
+        names = mstore.sector_names(KRX_SOURCE)
+        members: dict[str, str] = {}
+        for cd, tags in sector_map.items():
+            if tags and tags[0] in groups:
+                members[cd] = names.get(cd, cd)
+        for codes in CURATED_GROUPS.values():
+            for cd in codes:
+                members[cd] = names.get(cd, cd)
+        return members, bas_dt
+    finally:
+        mstore.close()
+
+
 def _collect_flows_v3() -> int:
     """v0.3 수급 창 축적 — 화이트리스트 산업 멤버 전 종목(KIS 1콜≈30거래일, 일간 누적).
 
@@ -239,31 +263,15 @@ def _collect_flows_v3() -> int:
     """
     from trading.collectors import flows
     from trading.collectors.kis import client_from_env
-    from trading.collectors.market import MarketStore
-    from trading.cycle.policy import CURATED_GROUPS, WHITELIST
-    from trading.sectors import KRX_SOURCE
 
     client = client_from_env()
     if client is None:
         print("KIS_APP_KEY/KIS_APP_SECRET 미설정 — 수급 축적 blocked")
         return 0
-    mstore = MarketStore()
-    bas_dt = mstore.latest_date()
+    members, bas_dt = _whitelist_members()
     if not bas_dt:
-        mstore.close()
         print("시세 DB 비어 있음 — 수급 기준일 없음(수집 선행)")
         return 0
-    groups = set(WHITELIST.values())
-    sector_map = mstore.sector_map(KRX_SOURCE)
-    names = mstore.sector_names(KRX_SOURCE)
-    members: dict[str, str] = {}
-    for cd, tags in sector_map.items():
-        if tags and tags[0] in groups:
-            members[cd] = names.get(cd, cd)
-    for codes in CURATED_GROUPS.values():
-        for cd in codes:
-            members[cd] = names.get(cd, cd)
-    mstore.close()
 
     store = flows.FlowStore()
     result = flows.collect(client, store, sorted(members.items()), bas_dt)
@@ -274,17 +282,55 @@ def _collect_flows_v3() -> int:
     return 0
 
 
-def _eod_v3() -> int:
-    """v0.3 일간 EOD 체인(§5) — 시세 갭 치유 → 섹터 태깅 → 재무 자연 갱신 → 수급 창 축적.
+def _collect_toss_facts_v3() -> int:
+    """v0.3 토스 사실 축적 — 공매도·대차·신용 일별(화이트리스트 멤버, PIVOT-10).
 
-    전부 순수 코드(LLM 없음). 재무·수급은 best-effort(실패해도 P1만, 결측은 소비자가 명시).
-    논제 가드(보유 종목 무효화 검사)는 Phase 4에서 보유 연결과 함께 배선 — 현재 보유 0.
+    보수 페이싱(1.1s/콜)으로 3종×멤버 ≈ 8분 — eod 체인 best-effort 단계.
+    당일 잠정 행은 store가 제외(관측 근거는 toss_facts 모듈 주석).
+    """
+    from trading.collectors.base import now_kst
+    from trading.collectors.toss import client_from_env
+    from trading.collectors.toss_facts import TossFactsStore, collect_stock_facts
+
+    client = client_from_env()
+    if client is None:
+        print("TOSS 키 미설정 — 토스 사실 축적 blocked")
+        return 0
+    members, _bas_dt = _whitelist_members()
+    if not members:
+        print("화이트리스트 멤버 없음 — 섹터 태깅 선행")
+        return 0
+    store = TossFactsStore()
+    try:
+        added, calls, errors = collect_stock_facts(
+            client, store, sorted(members), today=now_kst().strftime("%Y-%m-%d")
+        )
+        cov = store.coverage()
+    finally:
+        store.close()
+    print(f"토스 사실 축적: 신규 {added}행 · 호출 {calls} · 실패 {len(errors)}")
+    for kind, (syms, days, latest) in sorted(cov.items()):
+        print(f"  {kind}: {syms}종목 · {days}일자 · 최신 {latest}")
+    for e in errors[:5]:
+        print(f"  ⚠️ {e}")
+    return 0
+
+
+def _eod_v3() -> int:
+    """v0.3 일간 EOD 체인(§5) — 시세 갭 치유 → 섹터 태깅 → 재무 자연 갱신 → 수급·토스 사실 축적.
+
+    전부 순수 코드(LLM 없음). 재무·수급·토스 사실은 best-effort(실패해도 P1만, 결측은
+    소비자가 명시). 논제 가드(보유 무효화 검사)는 Phase 4에서 보유 연결과 함께 배선 — 현재 보유 0.
     """
     for step in (_collect_market, _classify_sectors):
         rc = step()
         if rc != 0:
             return rc
-    for name, step in (("collect-fins", _collect_fins), ("flows-v3", _collect_flows_v3)):
+    for name, step in (
+        ("collect-fins", _collect_fins),
+        ("flows-v3", _collect_flows_v3),
+        ("toss-facts-v3", _collect_toss_facts_v3),
+    ):
         step_rc = step()
         if step_rc != 0:
             _alert_round_failure(f"eod-v3/{name}", f"rc={step_rc}")
@@ -317,6 +363,7 @@ ROUNDS: dict[str, Callable[[], int]] = {
     "eod-v3": _eod_v3,
     "weekly-v3": _weekly_v3,
     "flows-v3": _collect_flows_v3,
+    "toss-facts-v3": _collect_toss_facts_v3,
     "collect-macro": _collect_macro,
     "collect-market": _collect_market,
     "collect-flows": _collect_flows,

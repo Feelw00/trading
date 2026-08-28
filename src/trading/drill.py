@@ -71,6 +71,14 @@ def m_flows() -> str:
     return f"{r[0]}종목·창 {r[1]}일·최신 {r[2]}" if r and r[0] else "비어 있음"
 
 
+def m_tossfacts() -> str:
+    r = _q1(
+        "toss_facts.sqlite",
+        "SELECT COUNT(DISTINCT symbol), COUNT(DISTINCT date), MAX(date) FROM stock_daily",
+    )
+    return f"{r[0]}종목·{r[1]}일자·최신 {r[2]}" if r and r[0] else "비어 있음"
+
+
 def m_valuation() -> str:
     r = _q1("valuation.sqlite", "SELECT COUNT(DISTINCT symbol), COUNT(*), substr(MAX(as_of),1,10) FROM valuations")
     return f"{r[0]}종목·{r[1]}레코드·as_of {r[2]}" if r and r[0] else "비어 있음"
@@ -119,6 +127,7 @@ STAGES: tuple[Stage, ...] = (
     Stage("sectors", "eod-v3", lambda: _r("classify-sectors"), m_sectors),
     Stage("fins", "eod-v3", lambda: _r("collect-fins"), m_fins),
     Stage("flows", "eod-v3", lambda: _r("flows-v3"), m_flows),
+    Stage("tossfacts", "eod-v3", lambda: _r("toss-facts-v3"), m_tossfacts),
     Stage("valuation", "weekly-v3", lambda: _valuation_main, m_valuation),
     Stage("cycle", "weekly-v3", lambda: _cycle_main, m_cycle),
     Stage("screen", "weekly-v3", lambda: _screen_main, m_screen),

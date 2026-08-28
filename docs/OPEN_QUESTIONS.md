@@ -489,8 +489,18 @@
 - **스펙 재실측(공식 openapi.json, 33개 엔드포인트):** 7/13 조사에서 "없음"으로 기록된
   **종목별 수급(`investor-trading`)·공매도(`short-selling`)·신용·대차·프로그램 매매**가 공식
   API에 추가돼 있음 — 수급 이중 소스(KIS 교차 검증)·공매도/대차 축(관측 가능) 후보.
-  어댑터 추가는 별도 결정. **테마/업종 분류 엔드포인트는 여전히 없음**(rankings는 종목 랭킹뿐)
+  **테마/업종 분류 엔드포인트는 여전히 없음**(rankings는 종목 랭킹뿐)
   — 토스 앱 테마 데이터는 내부 API라 자동 수집 불가(비공식 스크래핑 금지).
+- **어댑터 구현(운영자 "진행" 2026-08-28):** 실호출 관측 봉투(005930) —
+  `GET /api/v1/stocks/{symbol}/{kind}?count&until` → `{nextUntil, records[{date, updatedAt, …}]}`.
+  공매도 `shortSellingVolume/Amount/…Rate`(rate null 가능) · 대차 `execution/repayment/
+  balanceQuantity/balanceAmount` · 신용 `marginLoan/stockLoan{new/return/balanceQuantity,
+  balanceRate, tradingRate}` · 수급 `individual/foreigner/institution{buy/sell/netBuyVolume}
+  + foreignerHolding{holdingRate…}`. **당일 행은 잠정 관측**(individual null·장중 updatedAt)
+  → 적재 제외(v0.2 KIS 잠정 오판 계열 방어). 구현: `toss.py` 시계열 4메서드(수급은 KIS 교차
+  검증용 — 일일 축적 제외) + `toss_facts.py`(append-only `data/toss_facts.sqlite`, 공매도·대차·
+  신용 3종 일일 축적) + eod-v3 best-effort 단계 + drill `tossfacts` 스테이지. 소비(네거티브
+  스크린 보조·심사 패킷 병기)는 창 축적 후 정책 결재와 함께.
 - **제안(운영자 제공 데이터 계기):** 토스 앱 테마 해상도(원유정제 4·조선사 6·은행 11·종합
   반도체 5 등)를 참조해, 화이트리스트 산업 멤버십을 **운영자 제공 구성 목록의 큐레이션
   그룹**으로 정밀화 — 특히 "화학·정유"의 화학/정유 분리(정제마진≠화학 스프레드 사이클).

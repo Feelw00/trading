@@ -211,6 +211,44 @@ class TossClient:
             return list(rows) if isinstance(rows, list) else []
         return list(out) if isinstance(out, list) else []
 
+    # --- 종목별 일별 시계열 (2026-08-28 스펙 갱신 실측 — PIVOT-10) ---
+    # 공통 봉투 관측: {"nextUntil": "YYYY-MM-DD", "records": [{"date", "updatedAt", ...}]}.
+    # ⚠️ 당일 행은 잠정(관측: individual null·장중 updatedAt) — 적재 소비자는 당일분 제외
+    # (v0.2 KIS 장중 잠정 수급 오판 사건과 같은 계열의 함정).
+
+    def _stock_series(
+        self, kind: str, symbol: str, *, count: int = 10, until: str | None = None
+    ) -> dict[str, Any]:
+        params = {"count": str(count)}
+        if until:
+            params["until"] = until
+        out = self._call("GET", f"/api/v1/stocks/{symbol}/{kind}", params=params)
+        return out if isinstance(out, dict) else {}
+
+    def stock_investor_trading(
+        self, symbol: str, *, count: int = 10, until: str | None = None
+    ) -> dict[str, Any]:
+        """종목별 투자자 수급(개인/외국인/기관/기타법인 + 외국인 보유) — KIS 교차 검증용."""
+        return self._stock_series("investor-trading", symbol, count=count, until=until)
+
+    def stock_short_selling(
+        self, symbol: str, *, count: int = 10, until: str | None = None
+    ) -> dict[str, Any]:
+        """종목별 공매도(거래량·대금·비중) 일별."""
+        return self._stock_series("short-selling", symbol, count=count, until=until)
+
+    def stock_securities_lending(
+        self, symbol: str, *, count: int = 10, until: str | None = None
+    ) -> dict[str, Any]:
+        """종목별 대차거래(체결·상환·잔고수량·잔고금액) 일별."""
+        return self._stock_series("securities-lending", symbol, count=count, until=until)
+
+    def stock_credit_trades(
+        self, symbol: str, *, count: int = 10, until: str | None = None
+    ) -> dict[str, Any]:
+        """종목별 신용거래(신용융자 marginLoan·대주 stockLoan 잔고) 일별."""
+        return self._stock_series("credit-trades", symbol, count=count, until=until)
+
     def rankings_trading_amount(
         self, *, market: str = "KR", duration: str = "realtime", count: int = 100
     ) -> list[dict[str, Any]]:

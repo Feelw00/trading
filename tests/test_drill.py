@@ -10,7 +10,10 @@ from trading.run import ROUNDS
 
 def test_stages_cover_both_chains_in_order() -> None:
     names = [s.name for s in drill.STAGES]
-    assert names == ["market", "sectors", "fins", "flows", "valuation", "cycle", "screen", "digest"]
+    assert names == [
+        "market", "sectors", "fins", "flows", "tossfacts",
+        "valuation", "cycle", "screen", "digest",
+    ]
     chains = {s.name: s.chain for s in drill.STAGES}
     assert chains["market"] == "eod-v3" and chains["digest"] == "weekly-v3"
 
