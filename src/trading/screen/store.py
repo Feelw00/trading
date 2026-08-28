@@ -47,6 +47,14 @@ class CandidateStore:
         self._conn.commit()
         return version
 
+    def latest_run(self) -> list[CandidateRecord]:
+        """최신 회차(as_of 최대) 전 판정 레코드 — 깔때기·종목 페이지 입력."""
+        rows = self._conn.execute(
+            "SELECT payload FROM candidates c WHERE as_of = (SELECT MAX(as_of) FROM candidates) "
+            "AND version = (SELECT MAX(version) FROM candidates WHERE id = c.id)"
+        ).fetchall()
+        return [CandidateRecord.model_validate_json(str(r[0])) for r in rows]
+
     def latest_passed(self) -> list[CandidateRecord]:
         rows = self._conn.execute(
             "SELECT payload FROM candidates c WHERE passed=1 AND rowid = "

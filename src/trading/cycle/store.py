@@ -45,6 +45,30 @@ class CycleStore:
         self._conn.commit()
         return version
 
+    def all_latest(self) -> list[CycleRecord]:
+        """산업별 최신 레코드 전부 — 대시보드·산업 페이지 입력."""
+        rows = self._conn.execute(
+            "SELECT payload FROM cycles c WHERE rowid = "
+            "(SELECT rowid FROM cycles WHERE industry = c.industry "
+            " ORDER BY as_of DESC, version DESC LIMIT 1)"
+        ).fetchall()
+        return [CycleRecord.model_validate_json(str(r[0])) for r in rows]
+
+    def recent_phases(self, *, n: int = 2) -> dict[str, list[str]]:
+        """산업별 최근 n개 산출 회차의 국면(최신순) — 국면 전환 감지용(직전 산출 대비)."""
+        out: dict[str, list[str]] = {}
+        seen: dict[str, set[str]] = {}
+        for r in self._conn.execute(
+            "SELECT industry, phase, as_of FROM cycles ORDER BY industry, as_of DESC, version DESC"
+        ):
+            ind, phase, as_of = str(r[0]), str(r[1]), str(r[2])
+            if as_of in seen.setdefault(ind, set()):
+                continue
+            if len(out.setdefault(ind, [])) < n:
+                out[ind].append(phase)
+                seen[ind].add(as_of)
+        return out
+
     def latest_for_industry(self, industry: str) -> CycleRecord | None:
         row = self._conn.execute(
             "SELECT payload FROM cycles WHERE industry=? ORDER BY as_of DESC, version DESC LIMIT 1",

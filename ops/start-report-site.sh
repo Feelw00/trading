@@ -22,7 +22,7 @@ HOST="$("$TS" ip -4 2>/dev/null | head -1)"
 
 tmux new-session -d -s "$SESSION" -c "$REPO"
 tmux send-keys -t "$SESSION" \
-  "REPORT_SITE_HOST=$HOST REPORT_SITE_PORT=$PORT $REPO/.venv/bin/python -m trading.report_site" Enter
+  "REPORT_SITE_HOST=$HOST REPORT_SITE_PORT=$PORT $REPO/.venv/bin/python -m trading.web" Enter
 
 sleep 1
 if curl -sf --max-time 3 "http://$HOST:$PORT/" > /dev/null; then
