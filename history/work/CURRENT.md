@@ -1,29 +1,33 @@
 # 현재 작업 (CURRENT)
 
 > 슬림 유지. 완료된 작업은 `archive/YYYY-MM-DD-<slug>.md`로 떨구고 여기엔 한 줄 + 링크만.
-> 최종 갱신: 2026-08-26 (KST)
+> 최종 갱신: 2026-08-28 (KST)
 
 ## 진행 중
-- **v0.3 Phase 1 — 실적재까지 완료(2026-08-27), AC 충족**: EOD 1년(246일·70.8만 행) + 연말
-  스냅샷 2020~2025 + KRX 업종 태깅 223종목 + DART 연간 10년 백필(222종목·1,834건, 완비
-  145/222) → `trading.valuation` 첫 산출(222종목·PER 184·섹터상대 213) + **섹터 3축 밴드**
-  (PBR 창 7y·마진 10y, 22개 섹터). 공시 대조 검증(하이닉스 원문 정합). 잔여: 환원·거버넌스
-  수집(PIVOT-3 ①② API 확정 후 — 스텁 유지).
-- **Phase 0 마무리**: 브로커 대사 종결(PIVOT-6 — 계좌 비어 있음 실측). openclaw 설치는
-  bootstrap 실행분 확인 대기 + **OAuth 로그인(TTY 1회)은 운영자 몫**.
+- **Phase 3 페이퍼 관찰 기간(1~2개월)** — 자동: eod-v3 평일 18:00(시세·재무·수급·공매도/대차/
+  신용 축적) · weekly-v3 토 09:30(밸류에이션→온도계→R4→보고). 수동: `trading.drill`.
+  웹: http://<테일넷IP>:8787 (대시보드·종목·산업·보고서·자료실 — P-15 W1~W3 완결).
+- 관찰 포인트: weekly-v3 첫 자동 발화(8/29 토) · 수급 60일 창 도달 시 네거티브 스크린 배선
+  제안 · 후보 품질·탈락 분포 주간 리뷰.
 
 ## 운영 상태 (상시 확인)
 - **🔄 2026-08-26 전략 전면 피벗(P-14) — 설계서 v0.3 비준**: 단타·스윙 폐기 → 장기 사이클·
   가치 투자. 판단=순수 코드(운영자·LLM 종목 심사 배제), 결정 원장은 OPEN_QUESTIONS PIVOT-1~8.
 - **❄️ v0.2 스윙 계열 전면 동결**: 감시기·브래킷·EXEC 규율·cron 슬롯 재가동 금지.
   스킬 5종 → `.claude/skills-frozen/`, `ops/openclaw/FROZEN.md` 참조. 자동 매매 없음.
-- **환경**: python 3.13.13·poetry 복구 완료, pytest·mypy 기준선 통과. PostgreSQL/docker 폐기
-  (PIVOT-8 — SQLite). **`.env` 없음 · openclaw 미설치 · cron 미등록**(의도된 상태).
-- **⏳ 운영자 입력 대기 2건**: ① `gh auth login`(브랜치 `pivot/v0.3-longterm` 4커밋 푸시 대기)
-  ② 1Password `.env` → bootstrap 완주 + **브로커 대사**(`ops/reconcile_broker.py` — 7/15 이후
-  방치된 피에스케이 5주·S-Oil 4주·OCO 브래킷 실측, PIVOT-6).
+- **환경(8/27 복구 완료)**: python 3.13.13·poetry·openclaw(격리, ChatGPT OAuth)·`.env` 가동.
+  PostgreSQL/docker 폐기(PIVOT-8 — SQLite). 상주: tmux `openclaw-trading`(게이트웨이) +
+  `trading-reports`(웹 :8787) — **재부팅 시 두 스크립트 수동 재기동**(start-gateway·
+  start-report-site). ⚠️ .env 변경 = 게이트웨이 재기동.
+- **⏳ 운영자 대기**: PIVOT-10 멤버십 구성 목록(원유정제·조선사·은행·종합반도체) ·
+  TELEGRAM 토큰(P0 알림 재개 시) · §6 결재(비중·DCA·거부권 창 — 페이퍼 관찰 후 세션이 제안).
 
 ## 최근 완료
+- 2026-08-26~28 — **v0.3 전면 피벗: 비준·마이그레이션 → Phase 0(복구·대사: 계좌 비어 있음)
+  → Phase 1(시세 1,385일·DART 10년·밸류에이션 222) → Phase 2(온도계·리플레이 재현·검증 PASS·
+  policy-v1.2) → Phase 3(cron 2잡 무인 가동·R4 페이퍼 통과 1·심사 패킷·공매도/대차/신용 축적)
+  + 테일넷 웹(대시보드·종목·산업·보고서·자료실). 실사고 교정 3건(빈 ACCOUNT_TYPE·pytest 실키
+  행·드릴 T+1 오탐)** → [archive](archive/2026-08-28-v03-pivot-phase3-web.md)
 - 2026-07-14~15 — **가드 전면 보수 + live 첫 실사이클: 감사(A/B묶음 수정)·SEL-4(reclaim 폐지·이격 주입)·EXEC-8(밴드·재진입)·EXEC-9(시간손절 14:30)·EXEC-10(아침 규율·모멘텀)·EXEC-11(저잔고·교체 Δ1.5%p)·청산 큐·토스 실측 3건(OCO 순서·status·빈 본문). 첫 자동 익절(뉴파워 +3.6%). 잔여: A5·C2·C3·D1** → [archive](archive/2026-07-15-guard-overhaul-live-cycle.md)
 - 2026-07-14 — **부팅 재구조화: work-boot를 읽기 전용 요약으로(신선도 자동 수집·drill --audit 제거 — 갭은 수동 /collect), session.md 동기화. 유령 중복 `.claude/commands/collect.md` 발견(삭제 미결)** → [archive](archive/2026-07-14-boot-readonly-summary.md)
 - 2026-07-14 — **live 전환 사고 대응: 7/13 지시("소액 진입") dry-run 격하 인코딩 사고 + 게이트웨이 env 스냅샷 사고 → 운영자 "dry run 다 빼"로 live 전환(10:05). 유령 포지션 정리·dedup mode 분리·잔여 R:R 가드(EXEC_MIN_RR)·R5 2단 사다리 기본 강제·/end 스킬 신설** → [archive](archive/2026-07-14-live-transition.md)
