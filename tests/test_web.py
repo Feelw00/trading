@@ -96,3 +96,17 @@ def test_dashboard_survives_empty_stores(tmp_path: Path, monkeypatch: pytest.Mon
 
     body = render_dashboard()
     assert "대시보드" in body and "비어 있음" in body  # 죽지 않고 결측 정직 표기
+
+
+def test_policy_v13_curated_groups_sane() -> None:
+    """policy-v1.3 — 큐레이션 그룹 무결성: 밴드 최소 표본 충족·중복 없음·화이트리스트 정합."""
+    from trading.cycle.bands import MIN_COMPOSITION
+    from trading.cycle.policy import CURATED_GROUPS, WHITELIST
+
+    for name, codes in CURATED_GROUPS.items():
+        assert len(codes) >= MIN_COMPOSITION, f"{name} 표본 미달"
+        assert len(set(codes)) == len(codes), f"{name} 중복 코드"
+    assert WHITELIST["화학"] == "화학(큐레이션)" and WHITELIST["정유"] == "정유(큐레이션)"
+    assert "096770" in CURATED_GROUPS["정유(큐레이션)"]
+    assert "005930" in CURATED_GROUPS["반도체(큐레이션)"]
+    assert "009540" in CURATED_GROUPS["조선(큐레이션)"]
