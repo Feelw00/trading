@@ -245,7 +245,7 @@ def cmd_audit() -> int:
         "(SELECT rowid FROM cycles WHERE industry=c.industry ORDER BY as_of DESC, version DESC LIMIT 1)",
     )
     if unknown_row:
-        print(f"INFO  unknown 산업 {unknown_row[0]}개 (표본 미달 — 결측 정직, 결함 아님)")
+        print(f"INFO  판정 불가(unknown) 산업 {unknown_row[0]}개 (표본 미달 — 결측 정직, 결함 아님)")
 
     logs = sorted(Path(".runtime/logs/cron").glob("*.log"))
     if logs:

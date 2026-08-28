@@ -18,7 +18,7 @@ from trading.screen.run import ScreenSummary, run_screen
 from trading.screen.store import CandidateStore
 from trading.valuation.store import ValuationStore
 
-from trading.contracts.longterm import CandidateRecord
+from trading.contracts.longterm import PHASE_LEGEND_KO, CandidateRecord, phase_ko
 
 REPORT_DIR = Path(".runtime") / "reports"
 
@@ -48,12 +48,13 @@ def render(
     wl_groups = set(WHITELIST.values())
     for a in assessments:
         lines.append(
-            f"| {a.sector} | {a.phase.value} | {_fmt(a.temperature, '')} "
+            f"| {a.sector} | {phase_ko(a.phase)} | {_fmt(a.temperature, '')} "
             f"| {_fmt(a.pbr_band_pct, '.0%')} | {_fmt(a.margin_band_pct, '.0%')} "
             f"| {'예' if a.improving else '—' if a.improving is not None else '?'} "
             f"| {'⚠' if a.secular_decline else '—' if a.secular_decline is not None else '?'} "
             f"| {'✓' if a.sector in wl_groups else ''} |"
         )
+    lines += ["", f"> {PHASE_LEGEND_KO}"]
     passed = [c for c in candidates if c.passed]
     lines += ["", f"## R4 페이퍼 후보 — 평가 {summary.evaluated} · 통과 {len(passed)}", ""]
     if passed:
@@ -61,7 +62,7 @@ def render(
             packet = (dossiers or {}).get(c.symbol)
             suffix = f" · 심사 패킷: {packet}" if packet else " · 심사 패킷 미작성"
             lines.append(
-                f"- **{c.symbol}** [{c.industry}] 국면={c.phase.value}, "
+                f"- **{c.symbol}** [{c.industry}] 국면={phase_ko(c.phase)}, "
                 f"산업내 PBR 하위 {_fmt(c.industry_pbr_pct, '.0%')}{suffix}"
             )
     else:
@@ -126,20 +127,20 @@ def render_html(
     ]
     for a in assessments:
         parts.append(
-            f"<tr><td>{a.sector}</td><td>{a.phase.value}</td><td>{_fmt(a.temperature, '')}</td>"
+            f"<tr><td>{a.sector}</td><td>{phase_ko(a.phase)}</td><td>{_fmt(a.temperature, '')}</td>"
             f"<td>{_fmt(a.pbr_band_pct, '.0%')}</td><td>{_fmt(a.margin_band_pct, '.0%')}</td>"
             f"<td>{'예' if a.improving else '아니오' if a.improving is not None else '?'}</td>"
             f"<td>{'경고' if a.secular_decline else '아니오' if a.secular_decline is not None else '?'}</td>"
             f"<td>{'✓' if a.sector in wl_groups else ''}</td></tr>"
         )
-    parts.append("</table></div>")
+    parts.append(f"</table><p class='meta'>{PHASE_LEGEND_KO}</p></div>")
 
     parts.append(f"<h2>R4 통과 후보와 심사 패킷 (평가 {summary.evaluated}건, 통과 {len(passed)}건)</h2>")
     if not passed:
         parts.append("<div class='card'>통과 후보가 없습니다. 발동 존 산업 부재 또는 필터 전체 탈락으로, 정상 상태일 수 있습니다.</div>")
     for c in passed:
         parts.append(
-            f"<div class='card'><b>{c.symbol}</b> [{c.industry}] 국면 {c.phase.value}, "
+            f"<div class='card'><b>{c.symbol}</b> [{c.industry}] 국면 {phase_ko(c.phase)}, "
             f"산업 내 PBR 하위 {_fmt(c.industry_pbr_pct, '.0%')}"
         )
         d = dossier_by_symbol.get(c.symbol)

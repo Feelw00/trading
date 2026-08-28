@@ -67,6 +67,25 @@ class CyclePhase(str, Enum):
     UNKNOWN = "unknown"
 
 
+# 표시용 한글 라벨(운영자 2026-08-28: DB는 영어 enum, 보고서는 한글) — 렌더러 단일 소스
+PHASE_KO: dict[CyclePhase, str] = {
+    CyclePhase.BOTTOMING: "바닥 통과",
+    CyclePhase.RECOVERING: "회복",
+    CyclePhase.OVERHEATED: "과열",
+    CyclePhase.DECLINING: "하강",
+    CyclePhase.UNKNOWN: "판정 불가",
+}
+
+PHASE_LEGEND_KO = (
+    "국면 기준: 바닥 통과=밴드 하단(30% 이하)+개선 시작, 회복=중간 구간+개선, "
+    "과열=밴드 상단(75% 이상), 하강=개선 없음(하단 포함), 판정 불가=관측 부족"
+)
+
+
+def phase_ko(phase: CyclePhase) -> str:
+    return PHASE_KO[phase]
+
+
 class PrimaryAxes(BaseModel):
     """자체 히스토리 밴드 1차 축(PIVOT-7 ②) — 편입 판정의 기준."""
 
@@ -224,7 +243,10 @@ __all__ = [
     "OrderDraft",
     "OrderSide",
     "OrderStatus",
+    "PHASE_KO",
+    "PHASE_LEGEND_KO",
     "PrimaryAxes",
+    "phase_ko",
     "ReviewCadence",
     "ThesisRecord",
     "ValuationRecord",

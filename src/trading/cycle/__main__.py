@@ -8,6 +8,7 @@ import sys
 from collections import Counter
 
 from trading.collectors.base import now_kst
+from trading.contracts.longterm import phase_ko
 from trading.collectors.fins import FinStore
 from trading.collectors.market import MarketStore
 from trading.cycle.bands import build_sector_years, discover_year_ends
@@ -38,7 +39,7 @@ def main() -> int:
                             {sector: sector_years[sector]}, at=y, params=PROPOSED_PARAMS
                         )
                     )
-                    cells.append(f"{y[2:]}:{a.phase.value[:4]}")
+                    cells.append(f"{y[2:]}:{phase_ko(a.phase)[:2]}")
                 print(f"{sector:<14} " + " ".join(cells))
             return 0
 
@@ -50,7 +51,7 @@ def main() -> int:
 
         for a in assessments:
             print(
-                f"{a.sector:<14} {a.phase.value:<11} {fmt(a.temperature, '>4')} "
+                f"{a.sector:<14} {phase_ko(a.phase):<8} {fmt(a.temperature, '>4')} "
                 f"{fmt(a.pbr_band_pct, '>7.0%')} {fmt(a.margin_band_pct, '>7.0%')} "
                 f"{fmt(a.rev_cycle_z, '>6.2f')} "
                 f"{'예' if a.improving else '—' if a.improving is not None else '?':>4} "
@@ -64,7 +65,7 @@ def main() -> int:
                     evidence=[f"bands:{a.sector}:{year_ends.get('current', '?')}"],
                 )
             )
-        dist = Counter(a.phase.value for a in assessments)
+        dist = Counter(phase_ko(a.phase) for a in assessments)
         print(f"\n국면 분포: {dict(dist)} → data/cycle.sqlite ({store.count()}개 산업)")
     finally:
         fins.close()

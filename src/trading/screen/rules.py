@@ -12,7 +12,7 @@
 
 from dataclasses import dataclass
 
-from trading.contracts.longterm import CyclePhase, ValuationRecord
+from trading.contracts.longterm import CyclePhase, ValuationRecord, phase_ko
 
 ENTRY_PHASES = frozenset({CyclePhase.BOTTOMING, CyclePhase.RECOVERING})
 
@@ -55,7 +55,7 @@ def evaluate(
     reasons: list[str] = []
 
     if phase not in ENTRY_PHASES:
-        reasons.append(f"발동 존 아님(국면={phase.value})")
+        reasons.append(f"발동 존 아님(국면={phase_ko(phase)})")
     if secular_decline is True:
         reasons.append("구조적 사양 산업(매출 장기 추세 하향)")
 

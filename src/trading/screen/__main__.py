@@ -22,8 +22,10 @@ def main() -> int:
             print("\n통과 후보:")
             for r in records:
                 if r.passed:
+                    from trading.contracts.longterm import phase_ko
+
                     pct = f"{r.industry_pbr_pct:.0%}" if r.industry_pbr_pct is not None else "?"
-                    print(f"  · {r.symbol} [{r.industry}] 국면={r.phase.value} 산업내PBR 하위 {pct}")
+                    print(f"  · {r.symbol} [{r.industry}] 국면={phase_ko(r.phase)} 산업내PBR 하위 {pct}")
         print("\n탈락 사유 분포:")
         for reason, n in s.reject_counts.items():
             print(f"  {n:>4} × {reason}")

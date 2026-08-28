@@ -15,7 +15,13 @@ import sys
 from pathlib import Path
 
 from trading.collectors.base import now_kst
-from trading.contracts.longterm import CandidateRecord, CycleRecord, DossierRecord, ValuationRecord
+from trading.contracts.longterm import (
+    CandidateRecord,
+    CycleRecord,
+    DossierRecord,
+    ValuationRecord,
+    phase_ko,
+)
 from trading.cycle.policy import WHITELIST
 from trading.cycle.store import CycleStore
 from trading.llm import LLMClient, client_from_env, complete_json
@@ -89,7 +95,8 @@ def build_fact_card(cand: CandidateRecord, val: ValuationRecord, cyc: CycleRecor
     lines = [
         f"[종목] {cand.symbol} · 산업 {cand.industry} (KRX 업종 {val.sector_krx or '자료 없음'})",
         f"[기준일] 밸류에이션 {str(val.as_of)[:10]} · 재무 기준 {val.fin_basis or '자료 없음'}",
-        f"[산업 국면(R3)] {cyc.phase.value} · 온도 {cyc.temperature if cyc.temperature is not None else '자료 없음'}"
+        f"[산업 국면(R3)] {phase_ko(cyc.phase)}({cyc.phase.value})"
+        f" · 온도 {cyc.temperature if cyc.temperature is not None else '자료 없음'}"
         f" · PBR밴드 {_fmt(ax.sector_pbr_band_pct, '.0%')} · 마진밴드 {_fmt(ax.sector_margin_band_pct, '.0%')}"
         f" · 매출z {_fmt(ax.sector_rev_cycle_z)} · 구조적사양 {cyc.secular_decline}",
         f"[밸류에이션] PBR {_fmt(val.pbr)} · PER {_fmt(val.per)} · PSR {_fmt(val.psr)}"
