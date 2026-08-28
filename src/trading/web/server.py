@@ -21,7 +21,17 @@ class WebHandler(BaseHTTPRequestHandler):
             if route in ("", "/", "/index.html"):
                 self._html(render_dashboard())
             elif route == "/stocks":
-                self._html(placeholder("종목", "W2", active="/stocks"))
+                from trading.web.stocks import render_list
+
+                self._html(render_list())
+            elif route.startswith("/stocks/"):
+                from trading.web.stocks import render_detail
+
+                body = render_detail(route.removeprefix("/stocks/"))
+                if body is None:
+                    self._send(404, "text/plain; charset=utf-8", "종목 없음".encode())
+                else:
+                    self._html(body)
             elif route == "/industries":
                 self._html(placeholder("산업", "W3", active="/industries"))
             elif route == "/files":

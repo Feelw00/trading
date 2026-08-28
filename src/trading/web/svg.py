@@ -95,6 +95,91 @@ def funnel_chart(stages: list[tuple[str, int]]) -> str:
     return "\n".join(parts)
 
 
+def line_chart(
+    points: list[float],
+    *,
+    start_label: str = "",
+    end_label: str = "",
+    color: str = "#2b6cb0",
+    height: int = 160,
+    fmt: str = ",.0f",
+) -> str:
+    """단일 시계열 라인 — 최소/최대/최종값 주석. 점이 2개 미만이면 결측 안내."""
+    if len(points) < 2:
+        return "<svg viewBox='0 0 600 40' xmlns='http://www.w3.org/2000/svg' font-size='12'><text x='4' y='24' fill='#a0aec0'>관측 부족(2점 미만)</text></svg>"
+    width, pad_l, pad_r, pad_y = 640, 8, 90, 16
+    lo, hi = min(points), max(points)
+    span = (hi - lo) or abs(hi) or 1.0
+    n = len(points)
+
+    def xy(i: int, v: float) -> str:
+        x = pad_l + (width - pad_l - pad_r) * i / (n - 1)
+        y = pad_y + (height - 2 * pad_y) * (1 - (v - lo) / span)
+        return f"{x:.1f},{y:.1f}"
+
+    poly = " ".join(xy(i, v) for i, v in enumerate(points))
+    last_y = pad_y + (height - 2 * pad_y) * (1 - (points[-1] - lo) / span)
+    return (
+        f"<svg viewBox='0 0 {width} {height}' xmlns='http://www.w3.org/2000/svg' "
+        "font-family='sans-serif' font-size='11'>"
+        f"<polyline points='{poly}' fill='none' stroke='{color}' stroke-width='1.8'/>"
+        f"<text x='{pad_l}' y='{height - 3}' fill='#5a6472'>{html.escape(start_label)}</text>"
+        f"<text x='{width - pad_r}' y='{height - 3}' text-anchor='end' fill='#5a6472'>{html.escape(end_label)}</text>"
+        f"<text x='{width - pad_r + 4}' y='{last_y + 4}' fill='{color}'>{points[-1]:{fmt}}</text>"
+        f"<text x='{width - pad_r + 4}' y='{pad_y + 4}' fill='#a0aec0'>{hi:{fmt}}</text>"
+        f"<text x='{width - pad_r + 4}' y='{height - pad_y + 4}' fill='#a0aec0'>{lo:{fmt}}</text>"
+        "</svg>"
+    )
+
+
+def dual_bar_chart(
+    years: list[str],
+    a: list[float | None],
+    b: list[float | None],
+    *,
+    label_a: str,
+    label_b: str,
+    height: int = 180,
+) -> str:
+    """연도별 이중 바(예: 매출·영업이익) — 음수(적자) 지원, 결측 칸 비움."""
+    if not years:
+        return "<svg/>"
+    width, pad_l, pad_y = 640, 8, 26
+    vals = [v for v in (*a, *b) if v is not None]
+    if not vals:
+        return "<svg viewBox='0 0 600 40' xmlns='http://www.w3.org/2000/svg' font-size='12'><text x='4' y='24' fill='#a0aec0'>재무 관측 없음</text></svg>"
+    hi, lo = max(max(vals), 0.0), min(min(vals), 0.0)
+    span = (hi - lo) or 1.0
+    zero_y = pad_y + (height - 2 * pad_y) * (hi / span)
+    group_w = (width - pad_l * 2) / len(years)
+    bar_w = group_w * 0.32
+
+    def bar(i: int, v: float | None, offset: float, color: str) -> str:
+        if v is None:
+            return ""
+        h = abs(v) / span * (height - 2 * pad_y)
+        x = pad_l + i * group_w + offset
+        y = zero_y - h if v >= 0 else zero_y
+        return f"<rect x='{x:.1f}' y='{y:.1f}' width='{bar_w:.1f}' height='{max(h, 1):.1f}' fill='{color}' rx='2'/>"
+
+    parts = [
+        f"<svg viewBox='0 0 {width} {height}' xmlns='http://www.w3.org/2000/svg' "
+        "font-family='sans-serif' font-size='11'>",
+        f"<line x1='{pad_l}' y1='{zero_y:.1f}' x2='{width - pad_l}' y2='{zero_y:.1f}' stroke='#cbd5e0'/>",
+        f"<text x='{pad_l}' y='12' fill='#2b6cb0'>■ {html.escape(label_a)}</text>",
+        f"<text x='{pad_l + 110}' y='12' fill='#975a16'>■ {html.escape(label_b)}</text>",
+    ]
+    for i, year in enumerate(years):
+        parts.append(bar(i, a[i], group_w * 0.12, "#2b6cb0"))
+        parts.append(bar(i, b[i], group_w * 0.12 + bar_w + 2, "#975a16"))
+        parts.append(
+            f"<text x='{pad_l + i * group_w + group_w / 2:.1f}' y='{height - 6}' "
+            f"text-anchor='middle' fill='#5a6472'>{html.escape(year[2:])}</text>"
+        )
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
 def progress_bar(current: float, target: float) -> str:
     """신선도 스트립용 미니 진행 바(HTML) — 목표 대비 진행률."""
     pct = min(current / target, 1.0) if target > 0 else 0.0
@@ -104,4 +189,12 @@ def progress_bar(current: float, target: float) -> str:
     )
 
 
-__all__ = ["BandRow", "PHASE_COLOR", "band_chart", "funnel_chart", "progress_bar"]
+__all__ = [
+    "BandRow",
+    "PHASE_COLOR",
+    "band_chart",
+    "dual_bar_chart",
+    "funnel_chart",
+    "line_chart",
+    "progress_bar",
+]
