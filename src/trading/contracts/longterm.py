@@ -145,6 +145,24 @@ class CandidateRecord(BaseRecord):
         return self
 
 
+class DossierRecord(BaseRecord):
+    """R4.5 심사 패킷 — LLM 서술의 감사 기록(§3 R4.5).
+
+    **어떤 수치·점수도 산출하지 않으며 파이프라인의 어떤 판정에도 입력되지 않는다.**
+    bear_case는 의무(확증 편향을 시스템이 막는다). 서술의 사실 근거는 ``fact_card``
+    (결정론 조립 정량 카드)에 한정되며 카드 밖 수치 주장은 프롬프트로 금지된다.
+    """
+
+    candidate_ref: NonEmptyStr
+    symbol: NonEmptyStr
+    industry: NonEmptyStr
+    model: NonEmptyStr                                    # 서술 모델(감사용)
+    bull_case: list[NonEmptyStr] = Field(min_length=1)
+    bear_case: list[NonEmptyStr] = Field(min_length=1)    # 의무 — 비면 ValidationError
+    risks: list[NonEmptyStr] = Field(default_factory=list)
+    fact_card: NonEmptyStr                                # 주입한 정량 카드 원문(귀속 근거)
+
+
 class OrderSide(str, Enum):
     BUY = "buy"
     SELL = "sell"
@@ -198,6 +216,7 @@ __all__ = [
     "CyclePhase",
     "CycleRecord",
     "DcaTranche",
+    "DossierRecord",
     "Governance",
     "OrderDraft",
     "OrderSide",

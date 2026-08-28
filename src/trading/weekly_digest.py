@@ -33,6 +33,7 @@ def render(
     summary: ScreenSummary,
     *,
     basis_date: str,
+    dossiers: dict[str, str] | None = None,
 ) -> str:
     lines = [
         f"# 주간 다이제스트 — {basis_date} 기준 ({POLICY_VERSION})",
@@ -57,9 +58,11 @@ def render(
     lines += ["", f"## R4 페이퍼 후보 — 평가 {summary.evaluated} · 통과 {len(passed)}", ""]
     if passed:
         for c in passed:
+            packet = (dossiers or {}).get(c.symbol)
+            suffix = f" · 심사 패킷: {packet}" if packet else " · 심사 패킷 미작성"
             lines.append(
                 f"- **{c.symbol}** [{c.industry}] 국면={c.phase.value}, "
-                f"산업내 PBR 하위 {_fmt(c.industry_pbr_pct, '.0%')}"
+                f"산업내 PBR 하위 {_fmt(c.industry_pbr_pct, '.0%')}{suffix}"
             )
     else:
         lines.append("- 없음(발동 존 산업 부재 또는 필터 전체 탈락 — 정상 상태일 수 있음)")
@@ -86,7 +89,13 @@ def main() -> int:
         assessments = assess_all(sector_years, at="current", params=PROPOSED_PARAMS)
         candidates, summary = run_screen(val_store, cycle_store, params=PROPOSED_R4)
         basis = year_ends.get("current", "?")
-        text = render(assessments, candidates, summary, basis_date=basis)
+        dossier_dir = REPORT_DIR / "dossiers"
+        dossiers = {
+            c.symbol: files[-1].name
+            for c in candidates
+            if c.passed and (files := sorted(dossier_dir.glob(f"*-{c.symbol}.md")))
+        }
+        text = render(assessments, candidates, summary, basis_date=basis, dossiers=dossiers)
 
         REPORT_DIR.mkdir(parents=True, exist_ok=True)
         out = REPORT_DIR / f"weekly-{now_kst().strftime('%Y%m%d')}.md"
