@@ -7,16 +7,17 @@
 import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-from trading.report_site import REPORT_DIR, build_index, safe_path, wrap_markdown
+from trading.report_site import REPORT_DIR, safe_path, wrap_markdown
 from trading.web.dashboard import render_dashboard
-from trading.web.layout import placeholder
 
 
 class WebHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 — http.server 규약
-        route = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        route = parsed.path
+        query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
         try:
             if route in ("", "/", "/index.html"):
                 self._html(render_dashboard())
@@ -27,26 +28,85 @@ class WebHandler(BaseHTTPRequestHandler):
             elif route.startswith("/stocks/"):
                 from trading.web.stocks import render_detail
 
-                body = render_detail(route.removeprefix("/stocks/"))
-                if body is None:
-                    self._send(404, "text/plain; charset=utf-8", "종목 없음".encode())
-                else:
-                    self._html(body)
+                self._html_or_404(render_detail(route.removeprefix("/stocks/")), "종목 없음")
             elif route == "/industries":
-                self._html(placeholder("산업", "W3", active="/industries"))
-            elif route == "/files":
-                self._html(placeholder("자료실", "W3", active="/files"))
+                from trading.web.industries import render_industries_list
+
+                self._html(render_industries_list())
+            elif route.startswith("/industries/"):
+                from trading.web.industries import render_industry_detail
+
+                group = unquote(route.removeprefix("/industries/"))
+                self._html_or_404(render_industry_detail(group), "산업 그룹 없음")
             elif route == "/reports":
-                self._html(build_index(REPORT_DIR))
+                from trading.web.reports_page import render_reports
+
+                self._html(render_reports(week=query.get("week"), tab=query.get("tab", "weekly")))
+            elif route == "/files":
+                from trading.web.files_page import render_files
+
+                self._html(render_files())
+            elif route.startswith("/files/db/"):
+                self._db_snapshot(unquote(route.removeprefix("/files/db/")))
+            elif route.startswith("/files/raw/"):
+                self._file(route.removeprefix("/files/raw"), attachment=True)
+            elif route.startswith("/files/"):
+                self._csv(route.removeprefix("/files/"))
             else:
                 self._file(route)
+        except BrokenPipeError:
+            pass
         except Exception as exc:  # noqa: BLE001 — 뷰 오류가 서버를 죽이지 않는다
             self._send(500, "text/plain; charset=utf-8", f"오류: {exc}".encode())
 
-    def _file(self, route: str) -> None:
+    def _csv(self, name: str) -> None:
+        from trading.web.files_page import CSV_BUILDERS
+
+        builder = CSV_BUILDERS.get(name)
+        if builder is None:
+            self._send(404, "text/plain; charset=utf-8", "not found".encode())
+            return
+        body = builder().encode("utf-8-sig")  # 엑셀 한글 호환 BOM
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f"attachment; filename={name}")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _db_snapshot(self, name: str) -> None:
+        from trading.web.files_page import DATA_DIR
+
+        target = (DATA_DIR / name).resolve()
+        if (
+            "/" in name
+            or target.suffix != ".sqlite"
+            or target.parent != DATA_DIR.resolve()
+            or not target.is_file()
+        ):
+            self._send(404, "text/plain; charset=utf-8", "not found".encode())
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f"attachment; filename={name}")
+        self.send_header("Content-Length", str(target.stat().st_size))
+        self.end_headers()
+        with target.open("rb") as fh:  # 대용량(market 수백 MB) — 스트리밍
+            while chunk := fh.read(1 << 20):
+                self.wfile.write(chunk)
+
+    def _file(self, route: str, *, attachment: bool = False) -> None:
         target = safe_path(REPORT_DIR, route)
         if target is None:
             self._send(404, "text/plain; charset=utf-8", "not found".encode())
+        elif attachment:
+            body = target.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f"attachment; filename={target.name}")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif target.suffix == ".html":
             self._send(200, "text/html; charset=utf-8", target.read_bytes())
         elif target.suffix == ".md":
@@ -56,6 +116,12 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def _html(self, body: str) -> None:
         self._send(200, "text/html; charset=utf-8", body.encode())
+
+    def _html_or_404(self, body: str | None, msg: str) -> None:
+        if body is None:
+            self._send(404, "text/plain; charset=utf-8", msg.encode())
+        else:
+            self._html(body)
 
     def _send(self, code: int, ctype: str, body: bytes) -> None:
         self.send_response(code)

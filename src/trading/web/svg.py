@@ -180,6 +180,41 @@ def dual_bar_chart(
     return "\n".join(parts)
 
 
+def phase_strip(items: list[tuple[str, str]]) -> str:
+    """as-of 리플레이 국면 타임라인 — (연도, phase.value) 색 띠."""
+    if not items:
+        return "<svg/>"
+    cell_w, h, pad = 84, 46, 4
+    width = pad * 2 + cell_w * len(items)
+    parts = [
+        f"<svg viewBox='0 0 {width} {h}' xmlns='http://www.w3.org/2000/svg' "
+        "font-family='sans-serif' font-size='11'>"
+    ]
+    for i, (year, phase) in enumerate(items):
+        x = pad + i * cell_w
+        color = PHASE_COLOR.get(phase, "#a0aec0")
+        label = _PHASE_SHORT.get(phase, phase[:2])
+        parts.append(f"<rect x='{x}' y='{pad}' width='{cell_w - 4}' height='22' rx='4' fill='{color}'/>")
+        parts.append(
+            f"<text x='{x + (cell_w - 4) / 2}' y='{pad + 15}' text-anchor='middle' fill='#fff' "
+            f"font-weight='700'>{html.escape(label)}</text>"
+        )
+        parts.append(
+            f"<text x='{x + (cell_w - 4) / 2}' y='{h - 3}' text-anchor='middle' fill='#5a6472'>{html.escape(year)}</text>"
+        )
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+_PHASE_SHORT = {
+    "bottoming": "바닥 통과",
+    "recovering": "회복",
+    "overheated": "과열",
+    "declining": "하강",
+    "unknown": "불명",
+}
+
+
 def progress_bar(current: float, target: float) -> str:
     """신선도 스트립용 미니 진행 바(HTML) — 목표 대비 진행률."""
     pct = min(current / target, 1.0) if target > 0 else 0.0
