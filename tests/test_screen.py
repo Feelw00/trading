@@ -17,10 +17,12 @@ TS = datetime(2026, 8, 27, 18, 0, tzinfo=KST)
 
 def _val(symbol: str, *, sector: str | None, pbr: float | None = 0.8,
          losses: int | None = 0, observed: int | None = 5,
-         debt: float | None = 0.5) -> ValuationRecord:
+         debt: float | None = 0.5, roe: float | None = 0.08,
+         roe_median: float | None = 0.06) -> ValuationRecord:
     return ValuationRecord(
         id=f"val.20260826.{symbol}", as_of=TS, fetched_at=TS, source="derived:test",
         symbol=symbol, sector_krx=sector, pbr=pbr,
+        roe=roe, roe_median_5y=roe_median, roe_years_observed=observed,
         loss_years_5y=losses, loss_years_observed=observed, debt_ratio=debt,
     )
 
@@ -64,6 +66,30 @@ def test_evaluate_honest_gaps_and_debt_exemption() -> None:
         industry_pbr_pct=0.1, params=PROPOSED_R4,
     )
     assert any("관측 부족" in r for r in reasons) and any("부채비율 미산출" in r for r in reasons)
+
+
+def test_value_trap_filters_v12() -> None:
+    """v1.2(운영자 2026-08-28): 최신 연간 적자 또는 만성 저수익은 저PBR이어도 탈락."""
+    latest_loss = _val("051910", sector="화학", roe=-0.02)  # LG화학 사례 — 중앙값은 양호해도
+    _, reasons = evaluate(
+        latest_loss, industry="화학·정유", phase=CyclePhase.RECOVERING, secular_decline=False,
+        industry_pbr_pct=0.07, params=PROPOSED_R4,
+    )
+    assert any(r.startswith("가치 함정 방어") for r in reasons)
+
+    chronic = _val("000005", sector="금속", roe=0.01, roe_median=0.01)  # 만성 저수익
+    _, reasons2 = evaluate(
+        chronic, industry="철강", phase=CyclePhase.BOTTOMING, secular_decline=False,
+        industry_pbr_pct=0.1, params=PROPOSED_R4,
+    )
+    assert any(r.startswith("만성 저수익") for r in reasons2)
+
+    healthy = _val("000006", sector="금속")  # ROE 8%·중앙값 6% — 통과 유지
+    passed, _ = evaluate(
+        healthy, industry="철강", phase=CyclePhase.BOTTOMING, secular_decline=False,
+        industry_pbr_pct=0.1, params=PROPOSED_R4,
+    )
+    assert passed
 
     bank = _val("000004", sector="금융", debt=None)  # 금융업 — 부채 필터 면제
     passed, reasons2 = evaluate(

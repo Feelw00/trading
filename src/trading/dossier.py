@@ -62,6 +62,13 @@ class DossierStore:
         self._conn.commit()
         return version
 
+    def latest_for_symbol(self, symbol: str) -> DossierRecord | None:
+        row = self._conn.execute(
+            "SELECT payload FROM dossiers WHERE symbol=? ORDER BY as_of DESC, version DESC LIMIT 1",
+            (symbol,),
+        ).fetchone()
+        return DossierRecord.model_validate_json(str(row[0])) if row else None
+
     def exists_for_candidate(self, candidate_ref: str) -> bool:
         row = self._conn.execute(
             "SELECT 1 FROM dossiers WHERE candidate_ref=? LIMIT 1", (candidate_ref,)
@@ -88,7 +95,8 @@ def build_fact_card(cand: CandidateRecord, val: ValuationRecord, cyc: CycleRecor
         f"[밸류에이션] PBR {_fmt(val.pbr)} · PER {_fmt(val.per)} · PSR {_fmt(val.psr)}"
         f" · ROE {_fmt(val.roe)} · 부채비율 {_fmt(val.debt_ratio)}",
         f"[상대] 산업 내 PBR 하위 {_fmt(cand.industry_pbr_pct, '.0%')} · 섹터 내 하위 {_fmt(val.sector_pbr_pct, '.0%')}",
-        f"[생존력] 최근 5년 적자 {val.loss_years_5y}년 (관측 {val.loss_years_observed}년)",
+        f"[생존력] 최근 5년 적자 {val.loss_years_5y}년 (관측 {val.loss_years_observed}년)"
+        f" · 5년 ROE 중앙값 {_fmt(val.roe_median_5y, '+.1%')}",
         f"[환원·거버넌스] 수집 전(PIVOT-3) — 자료 없음",
         f"[수급] 창 축적 중(60거래일 미만) — 미포함",
         f"[미적용 필터] {', '.join(cand.unapplied) if cand.unapplied else '없음'}",

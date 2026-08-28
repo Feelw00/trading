@@ -123,6 +123,7 @@ def test_build_valuation_records(tmp_path: Path) -> None:
     assert by_sym["000003"].sector_pbr_pct is not None
     assert by_sym["000003"].sector_pbr_pct < by_sym["000001"].sector_pbr_pct  # type: ignore[operator]
     assert r1.loss_years_5y == 0 and r1.loss_years_observed == 1
+    assert r1.roe_median_5y == 0.1 and r1.roe_years_observed == 1  # ni 100 / eq 1000
     fins.close()
     market.close()
 

@@ -37,8 +37,28 @@ class _Row:
     metrics: Metrics
     losses: int | None
     observed: int
+    roe_median: float | None
+    roe_observed: int
     basis: str
     evidence: list[str]
+
+
+def _roe_median(annuals: list[tuple[str, dict[str, float | None]]]) -> tuple[float | None, int]:
+    """관측 연간(최대 5년) ROE 중앙값 — 사이클 관통 수익성(가치 함정 방어, policy-v1.2).
+
+    ROE = 당기순이익/자본총계, 자본잠식(equity<=0) 연도는 관측 제외. 관측 0이면 None.
+    """
+    roes: list[float] = []
+    for _year, vals in annuals[:5]:
+        ni, eq = vals["net_income"], vals["equity"]
+        if ni is not None and eq is not None and eq > 0:
+            roes.append(ni / eq)
+    if not roes:
+        return None, 0
+    roes.sort()
+    n = len(roes)
+    mid = (roes[n // 2] if n % 2 else (roes[n // 2 - 1] + roes[n // 2]) / 2)
+    return mid, n
 
 
 def _as_of_close(bas_dt: str) -> datetime:
@@ -79,9 +99,9 @@ def build_valuation_records(
             annual_revenue=annual.revenue if annual else None,
             annual_equity=annual.equity if annual else None,
         )
-        losses, observed = loss_years(
-            [ni for _year, ni in fin_store.annual_net_incomes(srtn_cd)]
-        )
+        annuals = fin_store.annual_series(srtn_cd)
+        losses, observed = loss_years([vals["net_income"] for _year, vals in annuals])
+        roe_median, roe_observed = _roe_median(annuals)
         sectors = sector_map.get(srtn_cd, [])
         basis = f"BS {snap.bsns_year}/{snap.reprt_code}"
         if annual is not None and annual is not snap:
@@ -94,6 +114,8 @@ def build_valuation_records(
                 metrics=metrics,
                 losses=losses,
                 observed=min(observed, 5),
+                roe_median=roe_median,
+                roe_observed=roe_observed,
                 basis=basis,
                 evidence=[
                     f"fins:{srtn_cd}:{snap.bsns_year}/{snap.reprt_code}",
@@ -127,6 +149,8 @@ def build_valuation_records(
                 per=row.metrics.per,
                 psr=row.metrics.psr,
                 roe=row.metrics.roe,
+                roe_median_5y=row.roe_median,
+                roe_years_observed=row.roe_observed,
                 debt_ratio=row.metrics.debt_ratio,
                 loss_years_5y=row.losses,
                 loss_years_observed=row.observed,

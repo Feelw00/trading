@@ -46,6 +46,9 @@ class ValuationRecord(BaseRecord):
     per: float | None = None
     psr: float | None = None
     roe: float | None = None
+    # 사이클 관통 수익성(v1.2 가치 함정 방어) — 관측 연간(최대 5년) ROE 중앙값
+    roe_median_5y: float | None = None
+    roe_years_observed: int | None = Field(default=None, ge=0, le=5)
     debt_ratio: float | None = None
     interest_coverage: float | None = None  # 이자비용 소스 확보 전까지 항상 None(PIVOT-3)
     loss_years_5y: int | None = Field(default=None, ge=0, le=5)
