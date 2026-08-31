@@ -372,6 +372,15 @@ def main() -> int:
     res = screen(mstore, ScreenConfig(top_n=1_000_000))
     mstore.close()
     stocks = [(c.srtn_cd, c.name) for c in res.candidates]
+    # 큐레이션 멤버는 게이트 유니버스 밖이어도 수집 — 밴드의 "재무 미적재 정직 제외" 해소 경로
+    # (policy-v1.5 멤버십은 토스 스냅샷 파생이라 게이트와 독립).
+    from trading.cycle.membership import snapshot_names
+    from trading.cycle.policy import CURATED_GROUPS
+
+    known = {cd for cd, _name in stocks}
+    curated = {cd for codes in CURATED_GROUPS.values() for cd in codes} - known
+    names = snapshot_names()
+    stocks += [(cd, names.get(cd, cd)) for cd in sorted(curated)]
     if limit:
         stocks = stocks[:limit]
     if not stocks:

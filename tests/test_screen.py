@@ -102,10 +102,10 @@ def test_value_trap_filters_v12() -> None:
 def test_run_screen_zone_membership_and_persistence(tmp_path: Path) -> None:
     vs = ValuationStore(tmp_path / "v.sqlite")
     cs = CycleStore(tmp_path / "c.sqlite")
-    # 철강(금속 버킷): bottoming 존 — 3종목(percentile 산출 가능), 1종목만 저PBR
-    for sym, pbr in (("000001", 0.4), ("000002", 1.0), ("000003", 2.0)):
+    # 철강(v1.5: 금속(큐레이션)): bottoming 존 — 실멤버 3종목(percentile 산출 가능), 1종목만 저PBR
+    for sym, pbr in (("005490", 0.4), ("004020", 1.0), ("010130", 2.0)):
         vs.append(_val(sym, sector="금속", pbr=pbr))
-    cs.append(_cyc("금속", CyclePhase.BOTTOMING))
+    cs.append(_cyc("금속(큐레이션)", CyclePhase.BOTTOMING))
     # 조선(큐레이션): overheated 존 밖 — 멤버십은 명시 리스트로
     vs.append(_val("329180", sector="운송장비·부품", pbr=3.0))
     cs.append(_cyc("조선(큐레이션)", CyclePhase.OVERHEATED))
@@ -113,19 +113,19 @@ def test_run_screen_zone_membership_and_persistence(tmp_path: Path) -> None:
 
     records, s = run_screen(vs, cs, params=PROPOSED_R4, now=TS)
     by_sym = {r.symbol: r for r in records}
-    assert by_sym["000001"].passed and by_sym["000001"].industry == "철강"
-    assert not by_sym["000002"].passed  # 하위 50% > 40%
-    assert any("가치 미달" in r for r in by_sym["000003"].reject_reasons)
+    assert by_sym["005490"].passed and by_sym["005490"].industry == "철강"
+    assert not by_sym["004020"].passed  # 하위 50% > 40%
+    assert any("가치 미달" in r for r in by_sym["010130"].reject_reasons)
     ship = by_sym["329180"]
     assert ship.industry == "조선" and not ship.passed
     assert any("발동 존 아님" in r for r in ship.reject_reasons)
     assert len(s.skipped_industries) >= 4  # 국면 미산출 산업 정직 보고
-    assert by_sym["000001"].unapplied  # 미적용 필터 명시(침묵 생략 금지)
+    assert by_sym["005490"].unapplied  # 미적용 필터 명시(침묵 생략 금지)
 
     store = CandidateStore(tmp_path / "cand.sqlite")
     for r in records:
         store.append(r)
-    assert [c.symbol for c in store.latest_passed()] == ["000001"]
+    assert [c.symbol for c in store.latest_passed()] == ["005490"]
     store.close()
     vs.close()
     cs.close()
