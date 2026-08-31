@@ -12,8 +12,13 @@ from trading.contracts.longterm import phase_ko
 from trading.collectors.fins import FinStore
 from trading.collectors.market import MarketStore
 from trading.cycle.bands import build_sector_years, full_year_ends
-from trading.cycle.engine import PROPOSED_PARAMS, assess_all, to_record
-from trading.cycle.policy import CURATED_GROUPS, FINANCIAL_PROFILE_GROUPS, POLICY_VERSION
+from trading.cycle.engine import PROPOSED_PARAMS, Assessment, assess_all, to_record
+from trading.cycle.policy import (
+    CURATED_GROUPS,
+    FINANCIAL_PROFILE_GROUPS,
+    POLICY_VERSION,
+    WHITELIST,
+)
 from trading.cycle.store import CycleStore
 
 
@@ -49,11 +54,10 @@ def main() -> int:
             financial_groups=FINANCIAL_PROFILE_GROUPS,
         )
         print(f"R3 온도계 ({POLICY_VERSION}) · 기준일 {year_ends.get('current')}")
-        print(f"{'섹터':<14} {'국면':<11} {'온도':>4} {'PBR밴드':>7} {'마진밴드':>7} {'매출z':>6} {'개선':>4} {'사양':>4}")
         def fmt(v: float | int | None, p: str) -> str:
             return f"{v:{p}}" if v is not None else "결측"
 
-        for a in assessments:
+        def show(a: Assessment) -> None:
             print(
                 f"{a.sector:<14} {phase_ko(a.phase):<8} {fmt(a.temperature, '>4')} "
                 f"{fmt(a.pbr_band_pct, '>7.0%')} {fmt(a.margin_band_pct, '>7.0%')} "
@@ -61,6 +65,20 @@ def main() -> int:
                 f"{'예' if a.improving else '—' if a.improving is not None else '?':>4} "
                 f"{'⚠' if a.secular_decline else '—' if a.secular_decline is not None else '?':>4}"
             )
+
+        wl_groups = set(WHITELIST.values())
+        header = f"{'섹터':<14} {'국면':<11} {'온도':>4} {'PBR밴드':>7} {'마진밴드':>7} {'매출z':>6} {'개선':>4} {'사양':>4}"
+        print("── 편입 심사 대상(화이트리스트 큐레이션) ──")
+        print(header)
+        for a in assessments:
+            if a.sector in wl_groups:
+                show(a)
+        print("── 전 시장 관찰(KRX 버킷 — 판정·편입 미사용) ──")
+        print(header)
+        for a in assessments:
+            if a.sector not in wl_groups:
+                show(a)
+        for a in assessments:
             store.append(
                 to_record(
                     a,

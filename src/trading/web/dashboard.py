@@ -122,8 +122,11 @@ def render_dashboard() -> str:
         "<div class='grid2'>",
         f"<div class='card'><div class='meta'>{tip('phase', '국면')} 분포 (계측 산업 전체)</div>"
         f"{donut_chart(_phase_segments(records))}{_phase_legend(records)}</div>",
-        f"<div class='card'><div class='meta'>색=국면, 숫자={tip('band_pct', 'PBR밴드')}·"
-        f"{tip('temp', '온도')} — 타일 클릭 시 산업 상세</div>{_heat_tiles(records, wl)}</div>",
+        f"<div class='card'><div class='meta'><b>편입 심사 대상(화이트리스트)</b> — 색=국면, "
+        f"숫자={tip('band_pct', 'PBR밴드')}·{tip('temp', '온도')}, 타일 클릭 시 산업 상세</div>"
+        f"{_heat_tiles([r for r in records if r.industry in wl], wl)}"
+        f"<div class='meta' style='margin-top:8px'><b>전 시장 관찰(KRX 버킷)</b> — 판정·편입 미사용</div>"
+        f"{_heat_tiles([r for r in records if r.industry not in wl], wl)}</div>",
         "</div>",
         f"<h2>산업 온도 지도 — {tip('band_pct', 'PBR 밴드 위치')} 낮을수록 역사적 저평가</h2>",
         f"<div class='card scroll'>{band_chart(band_rows)}",

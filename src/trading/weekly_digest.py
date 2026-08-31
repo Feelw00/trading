@@ -35,25 +35,41 @@ def render(
     basis_date: str,
     dossiers: dict[str, str] | None = None,
 ) -> str:
+    wl_groups = set(WHITELIST.values())
+    group_to_industry = {group: industry for industry, group in WHITELIST.items()}
+
+    def _r3_row(a: Assessment, label: str) -> str:
+        return (
+            f"| {label} | {phase_ko(a.phase)} | {_fmt(a.temperature, '')} "
+            f"| {_fmt(a.pbr_band_pct, '.0%')} | {_fmt(a.margin_band_pct, '.0%')} "
+            f"| {'예' if a.improving else '—' if a.improving is not None else '?'} "
+            f"| {'⚠' if a.secular_decline else '—' if a.secular_decline is not None else '?'} |"
+        )
+
     lines = [
         f"# 주간 다이제스트 — {basis_date} 기준 ({POLICY_VERSION})",
         "",
         "> 읽기 전용. 편입·집행 없음(§5 결재 전 페이퍼). 대부분의 주는 '변화 없음'이 정상.",
         "",
-        "## R3 산업 온도계",
+        "## R3 산업 온도계 — 편입 심사 대상 (화이트리스트 큐레이션)",
         "",
-        "| 산업 그룹 | 국면 | 온도 | PBR밴드 | 마진밴드 | 개선 | 사양 | WL |",
-        "|---|---|---|---|---|---|---|---|",
+        "| 산업 (구성) | 국면 | 온도 | PBR밴드 | 마진밴드 | 개선 | 사양 |",
+        "|---|---|---|---|---|---|---|",
     ]
-    wl_groups = set(WHITELIST.values())
     for a in assessments:
-        lines.append(
-            f"| {a.sector} | {phase_ko(a.phase)} | {_fmt(a.temperature, '')} "
-            f"| {_fmt(a.pbr_band_pct, '.0%')} | {_fmt(a.margin_band_pct, '.0%')} "
-            f"| {'예' if a.improving else '—' if a.improving is not None else '?'} "
-            f"| {'⚠' if a.secular_decline else '—' if a.secular_decline is not None else '?'} "
-            f"| {'✓' if a.sector in wl_groups else ''} |"
-        )
+        if a.sector in wl_groups:
+            n = len(CURATED_GROUPS.get(a.sector, []))
+            lines.append(_r3_row(a, f"{group_to_industry.get(a.sector, a.sector)} ({n}종)"))
+    lines += [
+        "",
+        "### 전 시장 관찰 — KRX 버킷 (판정·편입에 미사용, 참고용)",
+        "",
+        "| 산업 그룹 | 국면 | 온도 | PBR밴드 | 마진밴드 | 개선 | 사양 |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for a in assessments:
+        if a.sector not in wl_groups:
+            lines.append(_r3_row(a, a.sector))
     lines += ["", f"> {PHASE_LEGEND_KO}"]
     passed = [c for c in candidates if c.passed]
     lines += ["", f"## R4 페이퍼 후보 — 평가 {summary.evaluated} · 통과 {len(passed)}", ""]

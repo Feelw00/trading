@@ -5,7 +5,7 @@ from urllib.parse import quote
 
 from trading.collectors.fins import FinStore
 from trading.collectors.market import MarketStore
-from trading.contracts.longterm import PHASE_LEGEND_KO, phase_ko
+from trading.contracts.longterm import PHASE_LEGEND_KO, CycleRecord
 from trading.cycle.bands import SectorYear, build_sector_years, full_year_ends
 from trading.cycle.engine import PROPOSED_PARAMS, assess
 from trading.cycle.policy import CURATED_GROUPS, FINANCIAL_PROFILE_GROUPS
@@ -51,27 +51,44 @@ def render_industries_list() -> str:
         entries.append((pct if pct is not None else 2.0, group, cyc, amp, rows))
     entries.sort(key=lambda e: e[0])
 
-    parts = [
-        "<h1>산업</h1>",
-        f"<div class='meta'>밴드 그룹 {len(entries)}개, PBR 밴드 위치 오름차순. ✓=화이트리스트. "
-        f"{html.escape(PHASE_LEGEND_KO)}</div>",
+    header_row = (
         "<div class='card scroll'><table><thead><tr><th>산업 그룹</th>"
         f"<th>{tip('phase', '국면')}</th><th>{tip('temp', '온도')}</th>"
         f"<th>{tip('band_pct', 'PBR밴드')}</th><th>{tip('margin_band', '마진밴드')}</th>"
-        f"<th>{tip('amplitude', '사이클 진폭')}</th><th>구성</th></tr></thead><tbody>",
-    ]
-    for _key, group, cyc, amp, rows in entries:
-        wl = " ✓" if group in GROUP_TO_INDUSTRY else ""
+        f"<th>{tip('amplitude', '사이클 진폭')}</th><th>구성</th></tr></thead><tbody>"
+    )
+
+    def _row(group: str, cyc: CycleRecord | None, amp: float | None, rows: list[SectorYear]) -> str:
+        label = GROUP_TO_INDUSTRY.get(group)
+        shown = f"{html.escape(label)} <span class='meta'>{html.escape(group)}</span>" if label else html.escape(group)
         n_now = next((r.n_pbr for r in rows if r.year == "current"), 0)
-        parts.append(
-            f"<tr><td><a href='/industries/{quote(group)}'>{html.escape(group)}</a>{wl}</td>"
+        return (
+            f"<tr><td><a href='/industries/{quote(group)}'>{shown}</a></td>"
             f"<td>{phase_pill(cyc.phase) if cyc else '—'}</td>"
             f"<td>{cyc.temperature if cyc and cyc.temperature is not None else '—'}</td>"
             f"<td>{_fmt(cyc.axes_primary.sector_pbr_band_pct if cyc else None, '.0%')}</td>"
             f"<td>{_fmt(cyc.axes_primary.sector_margin_band_pct if cyc else None, '.0%')}</td>"
             f"<td>{f'{amp:.1f}배' if amp else '—'}</td><td>{n_now}종목</td></tr>"
         )
-    parts.append("</tbody></table></div>")
+
+    wl_entries = [e for e in entries if e[1] in GROUP_TO_INDUSTRY]
+    obs_entries = [e for e in entries if e[1] not in GROUP_TO_INDUSTRY]
+    parts = [
+        "<h1>산업</h1>",
+        f"<div class='meta'>{html.escape(PHASE_LEGEND_KO)}</div>",
+        f"<h2>편입 심사 대상 — 화이트리스트 큐레이션 ({len(wl_entries)})</h2>",
+        "<div class='meta'>R4 편입 판정에 쓰이는 그룹. 토스 태깅 기반 명시 구성(policy-v1.5), "
+        "PBR 밴드 위치 오름차순.</div>",
+        header_row,
+        *(_row(g, c, amp, rows) for _key, g, c, amp, rows in wl_entries),
+        "</tbody></table></div>",
+        f"<h2>전 시장 관찰 — KRX 버킷 ({len(obs_entries)})</h2>",
+        "<div class='meta'>판정·편입에 쓰이지 않는 참고용 계측(전 섹터 계측 규율). "
+        "같은 이름의 산업이 위 표에도 있으면 위쪽(큐레이션)이 판정 기준.</div>",
+        header_row,
+        *(_row(g, c, amp, rows) for _key, g, c, amp, rows in obs_entries),
+        "</tbody></table></div>",
+    ]
     return page("산업 — 트레이딩 v0.3", "\n".join(parts), active="/industries")
 
 
