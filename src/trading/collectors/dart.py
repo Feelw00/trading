@@ -106,5 +106,21 @@ class DartClient:
         )
         return self._rows(self._json(f"{DART_BASE}/fnlttSinglAcnt.json?{q}"))
 
+    def stock_totals(
+        self, corp_code: str, bsns_year: str, reprt_code: str = "11011"
+    ) -> list[dict[str, Any]]:
+        """주식의 총수 현황(stockTotqySttus) — 실호출 관측 확정(2026-08-31, P-17 ①):
+        행 필드 se(보통주/우선주/합계)·istc_totqy(발행주식 총수)·tesstk_co(자기주식)·
+        distb_stock_co(유통주식)·stlm_dt(결산기준일, 쉼표 천단위·결측 '-')."""
+        q = urlencode(
+            {
+                "crtfc_key": self._key,
+                "corp_code": corp_code,
+                "bsns_year": bsns_year,
+                "reprt_code": reprt_code,
+            }
+        )
+        return self._rows(self._json(f"{DART_BASE}/stockTotqySttus.json?{q}"))
+
 
 __all__ = ["DartClient"]

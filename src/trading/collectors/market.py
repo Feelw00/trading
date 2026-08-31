@@ -68,6 +68,18 @@ CREATE TABLE IF NOT EXISTS no_data_days (
 )
 """
 
+# 시총 스냅샷(밴드 소급용 파생 — P-17 ①): 토스 캔들 종가(미수정) × DART 발행주식총수.
+# daily_quotes와 분리하는 이유: 연속성 가드(_scan_start)가 첫 보유일부터 갭을 치유하는데,
+# 2016~2019는 data.go.kr 무자료 시대라 섞으면 헛수집 ~1,000콜 + 가짜 휴장 관측이 쏟아진다.
+CAP_SNAPSHOTS_DDL = """
+CREATE TABLE IF NOT EXISTS cap_snapshots (
+  bas_dt TEXT NOT NULL, srtn_cd TEXT NOT NULL,
+  clpr REAL NOT NULL, shares INTEGER NOT NULL, cap REAL NOT NULL,
+  source TEXT NOT NULL, fetched_at TEXT NOT NULL,
+  PRIMARY KEY (bas_dt, srtn_cd)
+)
+"""
+
 
 def _row_values(row: dict[str, Any]) -> tuple[Any, ...]:
     return tuple(row.get(k) for k in _SRC)
@@ -82,6 +94,7 @@ class MarketStore:
         self._conn.execute(MARKET_DDL)
         self._conn.execute(SECTORS_DDL)
         self._conn.execute(NO_DATA_DDL)
+        self._conn.execute(CAP_SNAPSHOTS_DDL)
 
     def mark_no_data(self, bas_dt: str, source: str = "data.go.kr:getStockPriceInfo") -> bool:
         """해당일을 '소스 무자료(휴장 관측)'로 박제. 신규 기록이면 True."""
@@ -196,6 +209,33 @@ class MarketStore:
             str(r[0]): parse_amount(r[1])
             for r in self._conn.execute(
                 "SELECT srtn_cd, mrkt_tot_amt FROM daily_quotes WHERE bas_dt=?", (bas_dt,)
+            )
+        }
+
+    # --- 시총 스냅샷(밴드 소급 — P-17 ①) ---
+
+    def upsert_cap_snapshots(self, rows: Sequence[tuple[str, str, float, int, float, str]]) -> int:
+        """(bas_dt, srtn_cd, clpr, shares, cap, source) 적재 — append-only(IGNORE)."""
+        now = datetime.now(KST).isoformat()
+        cur = self._conn.executemany(
+            "INSERT OR IGNORE INTO cap_snapshots "
+            "(bas_dt, srtn_cd, clpr, shares, cap, source, fetched_at) VALUES (?,?,?,?,?,?,?)",
+            [(*r, now) for r in rows],
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    def snapshot_dates(self) -> list[str]:
+        """스냅샷 보유 일자(YYYYMMDD, 오름차순) — 연말 발견에 daily_quotes와 합집합으로 쓴다."""
+        cur = self._conn.execute("SELECT DISTINCT bas_dt FROM cap_snapshots ORDER BY bas_dt")
+        return [str(r[0]) for r in cur]
+
+    def snapshot_caps_on(self, bas_dt: str) -> dict[str, float]:
+        """해당 일자 스냅샷 {srtn_cd: 시가총액(원)} — daily_quotes가 있으면 그쪽이 우선."""
+        return {
+            str(r[0]): float(r[1])
+            for r in self._conn.execute(
+                "SELECT srtn_cd, cap FROM cap_snapshots WHERE bas_dt=?", (bas_dt,)
             )
         }
 

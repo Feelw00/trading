@@ -8,7 +8,7 @@ from trading.collectors.fins import FinStore, parse_amount
 from trading.collectors.market import MarketStore
 from trading.collectors.toss_facts import TossFactsStore
 from trading.contracts.longterm import CandidateRecord, CycleRecord, DossierRecord, ValuationRecord
-from trading.cycle.bands import SectorYear, build_sector_years, discover_year_ends
+from trading.cycle.bands import SectorYear, build_sector_years, full_year_ends
 from trading.cycle.policy import CURATED_GROUPS, WHITELIST
 from trading.cycle.store import CycleStore
 from trading.dossier import DossierStore
@@ -125,7 +125,7 @@ def _band_context(group: str | None) -> BandContext | None:
         return None
     fins, market, cyc_store = FinStore(), MarketStore(), CycleStore()
     try:
-        year_ends = discover_year_ends(market.dates())
+        year_ends = full_year_ends(market)
         if not year_ends:
             return None
         sector_years = build_sector_years(

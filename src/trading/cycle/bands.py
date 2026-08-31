@@ -59,6 +59,15 @@ def discover_year_ends(dates: Sequence[str]) -> dict[str, str]:
     return out
 
 
+def full_year_ends(market_store: MarketStore) -> dict[str, str]:
+    """일별 시세 + 시총 스냅샷(소급 백필, P-17 ①) 합집합에서 연말 발견.
+
+    current는 daily_quotes 최신일이어야 한다(스냅샷은 과거 연말 전용) — 합집합 max가
+    스냅샷일 리는 없지만(백필=과거 한정) 계약으로 명시해 둔다.
+    """
+    return discover_year_ends([*market_store.dates(), *market_store.snapshot_dates()])
+
+
 def _sector_of(sector_map: Mapping[str, list[str]], srtn_cd: str) -> str | None:
     tags = sector_map.get(srtn_cd)
     return tags[0] if tags else None
@@ -81,8 +90,14 @@ def build_sector_years(
     for srtn_cd in fin_store.symbols():
         annuals[srtn_cd] = dict(fin_store.annual_series(srtn_cd))
 
+    # 시총: 일별 시세 우선, 없는 (일자, 종목)만 스냅샷(백필 파생)으로 보충
     caps_by_label: dict[str, dict[str, float | None]] = {
-        label: market_store.quotes_on(ymd) for label, ymd in year_end_dates.items()
+        label: {**market_store.snapshot_caps_on(ymd), **{
+            cd: cap
+            for cd, cap in market_store.quotes_on(ymd).items()
+            if cap is not None
+        }}
+        for label, ymd in year_end_dates.items()
     }
     fin_years = sorted({y for series in annuals.values() for y in series}, reverse=True)
 
@@ -216,4 +231,4 @@ def band_positions(sector_years: Mapping[str, Sequence[SectorYear]]) -> list[Ban
     return sorted(out, key=lambda b: (b.pbr_band_pct if b.pbr_band_pct is not None else 2.0))
 
 
-__all__ = ["BandPosition", "MIN_COMPOSITION", "SectorYear", "band_positions", "build_sector_years"]
+__all__ = ["BandPosition", "MIN_COMPOSITION", "SectorYear", "band_positions", "build_sector_years", "discover_year_ends", "full_year_ends"]

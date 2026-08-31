@@ -11,7 +11,7 @@ from trading.collectors.base import now_kst
 from trading.contracts.longterm import phase_ko
 from trading.collectors.fins import FinStore
 from trading.collectors.market import MarketStore
-from trading.cycle.bands import build_sector_years, discover_year_ends
+from trading.cycle.bands import build_sector_years, full_year_ends
 from trading.cycle.engine import PROPOSED_PARAMS, assess_all, to_record
 from trading.cycle.policy import CURATED_GROUPS, FINANCIAL_PROFILE_GROUPS, POLICY_VERSION
 from trading.cycle.store import CycleStore
@@ -22,7 +22,7 @@ def main() -> int:
     fins, market = FinStore(), MarketStore()
     store = CycleStore()
     try:
-        year_ends = discover_year_ends(market.dates())
+        year_ends = full_year_ends(market)
         sector_years = build_sector_years(
             fins, market, year_end_dates=year_ends, extra_groups=CURATED_GROUPS
         )

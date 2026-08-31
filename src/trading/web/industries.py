@@ -6,7 +6,7 @@ from urllib.parse import quote
 from trading.collectors.fins import FinStore
 from trading.collectors.market import MarketStore
 from trading.contracts.longterm import PHASE_LEGEND_KO, phase_ko
-from trading.cycle.bands import SectorYear, build_sector_years, discover_year_ends
+from trading.cycle.bands import SectorYear, build_sector_years, full_year_ends
 from trading.cycle.engine import PROPOSED_PARAMS, assess
 from trading.cycle.policy import CURATED_GROUPS, FINANCIAL_PROFILE_GROUPS
 from trading.cycle.store import CycleStore
@@ -23,7 +23,7 @@ def _fmt(v: float | None, spec: str = ".2f") -> str:
 def _sector_years() -> dict[str, list[SectorYear]]:
     fins, market = FinStore(), MarketStore()
     try:
-        year_ends = discover_year_ends(market.dates())
+        year_ends = full_year_ends(market)
         if not year_ends:
             return {}
         return build_sector_years(

@@ -197,6 +197,26 @@ class TossClient:
         )
         return list(out) if isinstance(out, list) else []
 
+    def candles(
+        self,
+        symbol: str,
+        *,
+        interval: str = "1d",
+        count: int = 200,
+        before: str | None = None,
+        adjusted: bool = True,
+    ) -> dict[str, Any]:
+        """종목 캔들(OHLCV) — 스펙: interval 1m|1d, count≤200, before 페이지네이션(ISO 8601,
+        응답 nextBefore 재전달), adjusted 수정주가 여부. 실호출 관측(2026-08-31): 일봉이
+        1985년까지 소급(P-17 ①). 봉투 {"candles": [{timestamp, openPrice, ..., closePrice,
+        volume, currency}], "nextBefore": ...}."""
+        params = {"interval": interval, "count": str(count), "symbol": symbol,
+                  "adjusted": "true" if adjusted else "false"}
+        if before:
+            params["before"] = before
+        out = self._call("GET", "/api/v1/candles", params=params)
+        return out if isinstance(out, dict) else {}
+
     def market_indicator_candles(
         self, symbol: str, *, interval: str = "1d", count: int = 2
     ) -> list[dict[str, Any]]:
