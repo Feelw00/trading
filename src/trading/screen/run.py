@@ -1,11 +1,19 @@
-"""R4 스크리닝 실행 — 화이트리스트 산업별 후보 판정 조립(DB-first, 외부 호출 없음)."""
+"""R4 스크리닝 실행 — P-18 가치 코어: 전 유니버스 심사 조립(DB-first, 외부 호출 없음).
+
+P-18(운영자 결재 2026-08-31): 게이트는 가치·건전성만, 사이클은 도구.
+- 1패스: 화이트리스트 큐레이션 산업(다중 소속 허용 — 종목이 산업별로 각각 심사됨).
+- 2패스: 나머지 전 종목을 KRX 버킷 산업으로 심사(결재 ② 전 상장 확장).
+- 국면은 게이트가 아니라 도구 정보 — 레코드에 박제 + 과열이면 `cycle_caution` 플래그
+  (결재 ① — 탈락 아님). 국면 레코드 부재 산업도 심사한다(도구 정보 없이, unknown).
+- 가치 기준 병행(결재 ③): 산업 내 percentile + 시장 전체 percentile 모두 산출·박제.
+"""
 
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
 from trading.collectors.base import now_kst
-from trading.contracts.longterm import CandidateRecord, CyclePhase, ValuationRecord
+from trading.contracts.longterm import CandidateRecord, CyclePhase, CycleRecord, ValuationRecord
 from trading.cycle.policy import CURATED_GROUPS, WHITELIST
 from trading.cycle.store import CycleStore
 from trading.screen.rules import UNAPPLIED_V1, ScreenParams, evaluate
@@ -20,16 +28,7 @@ class ScreenSummary:
     evaluated: int
     passed: int
     reject_counts: dict[str, int]
-    skipped_industries: list[str]  # 국면 레코드 부재 등으로 판정 자체를 못 한 산업
-
-
-def _members(
-    industry_group: str, latest: list[ValuationRecord]
-) -> list[ValuationRecord]:
-    if industry_group in CURATED_GROUPS:
-        allow = set(CURATED_GROUPS[industry_group])
-        return [v for v in latest if v.symbol in allow]
-    return [v for v in latest if v.sector_krx == industry_group]
+    skipped_industries: list[str]  # P-18: 국면 레코드 부재 산업(심사는 수행 — 도구 정보만 결측)
 
 
 def run_screen(
@@ -41,52 +40,79 @@ def run_screen(
 ) -> tuple[list[CandidateRecord], ScreenSummary]:
     fetched = now or now_kst()
     latest = val_store.all_latest()
+    market_pbrs = [v.pbr for v in latest if v.pbr is not None]
 
     records: list[CandidateRecord] = []
     reject_counter: Counter[str] = Counter()
     skipped: list[str] = []
 
-    for industry, group in WHITELIST.items():
-        cyc = cycle_store.latest_for_industry(group)
-        if cyc is None:
-            skipped.append(f"{industry}(국면 레코드 없음 — R3 미산출)")
-            continue
-        members = _members(group, latest)
-        pbrs = [v.pbr for v in members if v.pbr is not None]
-
+    def _screen_members(
+        industry: str, members: list[ValuationRecord], cyc: CycleRecord | None
+    ) -> None:
+        # 미분류 버킷은 산업이 아니다 — 산업 내 상대 위치를 산출하지 않는다(시장 기준만).
+        pbrs = [] if industry == "미분류" else [v.pbr for v in members if v.pbr is not None]
+        phase = cyc.phase if cyc else CyclePhase.UNKNOWN
         for val in members:
             industry_pct = (
                 percentile_rank(pbrs, val.pbr)
                 if val.pbr is not None and len(pbrs) >= MIN_INDUSTRY_GROUP
                 else None
             )
+            market_pct = percentile_rank(market_pbrs, val.pbr) if val.pbr is not None else None
             passed, reasons = evaluate(
                 val,
                 industry=industry,
-                phase=cyc.phase,
-                secular_decline=cyc.secular_decline,
+                secular_decline=cyc.secular_decline if cyc else None,
                 industry_pbr_pct=industry_pct,
+                market_pbr_pct=market_pct,
                 params=params,
             )
             reject_counter.update(r.split("(")[0] for r in reasons)
             records.append(
                 CandidateRecord(
-                    id=f"cand.{fetched.strftime('%Y%m%d')}.{val.symbol}",
-                    as_of=cyc.as_of,
+                    # id에 산업 포함 — 다중 소속 종목이 두 산업에서 심사되면 레코드도 둘이다
+                    # (동일 id면 store 최신 뷰가 한쪽을 가림 — 전수 박제 원칙 위반)
+                    id=f"cand.{fetched.strftime('%Y%m%d')}.{val.symbol}.{industry}",
+                    # 회차 키 — 한 실행의 전 레코드가 같은 as_of를 가져야 배치 조회
+                    # (store latest_all/latest_passed의 MAX(as_of))가 회차를 온전히 본다
+                    as_of=fetched,
                     fetched_at=fetched,
                     source="derived:screen-r4",
                     symbol=val.symbol,
                     industry=industry,
                     sector_krx=val.sector_krx,
-                    phase=cyc.phase,
+                    phase=phase,
                     passed=passed,
                     reject_reasons=reasons,
                     industry_pbr_pct=industry_pct,
+                    market_pbr_pct=market_pct,
+                    cycle_caution=phase is CyclePhase.OVERHEATED,
                     unapplied=list(UNAPPLIED_V1),
                     valuation_ref=val.id,
-                    cycle_ref=cyc.id,
+                    cycle_ref=cyc.id if cyc else None,
                 )
             )
+
+    # 1패스 — 화이트리스트 큐레이션 산업(다중 소속: 산업별 각각 심사)
+    curated_codes: set[str] = set()
+    for industry, group in WHITELIST.items():
+        cyc = cycle_store.latest_for_industry(group)
+        if cyc is None:
+            skipped.append(f"{industry}(국면 레코드 없음 — 도구 정보 없이 심사)")
+        allow = set(CURATED_GROUPS.get(group, []))
+        curated_codes |= allow
+        _screen_members(industry, [v for v in latest if v.symbol in allow], cyc)
+
+    # 2패스 — 나머지 전 종목을 KRX 버킷 산업으로(결재 ② 전 상장)
+    rest = [v for v in latest if v.symbol not in curated_codes]
+    by_bucket: dict[str, list[ValuationRecord]] = {}
+    for v in rest:
+        by_bucket.setdefault(v.sector_krx or "미분류", []).append(v)
+    for bucket in sorted(by_bucket):
+        cyc = cycle_store.latest_for_industry(bucket) if bucket != "미분류" else None
+        if cyc is None:
+            skipped.append(f"{bucket}(국면 레코드 없음 — 도구 정보 없이 심사)")
+        _screen_members(bucket, by_bucket[bucket], cyc)
 
     summary = ScreenSummary(
         evaluated=len(records),

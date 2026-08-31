@@ -27,6 +27,20 @@ def _fmt(v: float | int | None, spec: str) -> str:
     return f"{v:{spec}}" if v is not None else "결측"
 
 
+# P-18: 사이클은 도구 — 통과 후보 정렬 기준(바닥·회복 산업 먼저, 그 안에서 시장 PBR 싼 순)
+_PHASE_PRIORITY = {
+    CyclePhase.BOTTOMING: 0, CyclePhase.RECOVERING: 1, CyclePhase.UNKNOWN: 2,
+    CyclePhase.DECLINING: 3, CyclePhase.OVERHEATED: 4,
+}
+
+
+def _candidate_priority(c: CandidateRecord) -> tuple[int, float]:
+    return (
+        _PHASE_PRIORITY.get(c.phase, 9),
+        c.market_pbr_pct if c.market_pbr_pct is not None else 2.0,
+    )
+
+
 def render(
     assessments: list[Assessment],
     candidates: list[CandidateRecord],
@@ -71,18 +85,32 @@ def render(
         if a.sector not in wl_groups:
             lines.append(_r3_row(a, a.sector))
     lines += ["", f"> {PHASE_LEGEND_KO}"]
-    passed = [c for c in candidates if c.passed]
-    lines += ["", f"## R4 페이퍼 후보 — 평가 {summary.evaluated} · 통과 {len(passed)}", ""]
+    passed = sorted((c for c in candidates if c.passed), key=_candidate_priority)
+    caution_n = sum(1 for c in passed if c.cycle_caution)
+    lines += [
+        "",
+        f"## R4 가치 후보 — 평가 {summary.evaluated} · 통과 {len(passed)} (과열 ⚠ {caution_n})",
+        "",
+        "> P-18: 게이트는 가치·건전성만. 국면은 도구 — 바닥·회복 산업이 위, 과열 ⚠는 '천천히' 신호.",
+        "",
+    ]
     if passed:
-        for c in passed:
+        lines += [
+            "| 종목 | 산업 | 국면 | 산업내 PBR | 시장 PBR | 심사 패킷 |",
+            "|---|---|---|---|---|---|",
+        ]
+        for c in passed[:40]:
             packet = (dossiers or {}).get(c.symbol)
-            suffix = f" · 심사 패킷: {packet}" if packet else " · 심사 패킷 미작성"
+            warn = " ⚠" if c.cycle_caution else ""
             lines.append(
-                f"- **{c.symbol}** [{c.industry}] 국면={phase_ko(c.phase)}, "
-                f"산업내 PBR 하위 {_fmt(c.industry_pbr_pct, '.0%')}{suffix}"
+                f"| {c.symbol} | {c.industry} | {phase_ko(c.phase)}{warn} "
+                f"| {_fmt(c.industry_pbr_pct, '.0%')} | {_fmt(c.market_pbr_pct, '.0%')} "
+                f"| {packet or '미작성'} |"
             )
+        if len(passed) > 40:
+            lines.append(f"\n(상위 40만 표시 — 외 {len(passed) - 40}종은 DB·웹 전수)")
     else:
-        lines.append("- 없음(발동 존 산업 부재 또는 필터 전체 탈락 — 정상 상태일 수 있음)")
+        lines.append("- 없음(가치·건전성 통과 종목 없음)")
     lines += ["", "### 탈락 사유 분포", ""]
     for reason, n in summary.reject_counts.items():
         lines.append(f"- {n} × {reason}")
@@ -198,17 +226,47 @@ def render_html(
     else:
         parts.append("<div class='card meta'>변화 없음</div>")
 
-    # --- 3. 통과 후보 + 심사 패킷(접힘) ---
-    parts.append(f"<h2>통과 후보 ({len(passed)}) — 관찰 후보, 매수 결정 아님</h2>")
+    # --- 3. 가치 후보 표(P-18 — 국면 우선순위 정렬·과열 ⚠) + 신규 후보만 상세 카드 ---
+    passed = sorted(passed, key=_candidate_priority)
+    caution_n = sum(1 for c in passed if c.cycle_caution)
+    parts.append(
+        f"<h2>가치 후보 ({len(passed)}, 과열 ⚠ {caution_n}) — 관찰 후보, 매수 결정 아님</h2>"
+    )
+    parts.append(
+        "<div class='note'>P-18: 게이트는 가치·건전성만. 국면은 도구 — 바닥·회복 산업이 위, "
+        "⚠는 과열 산업(천천히) 신호입니다.</div>"
+    )
     if not passed:
-        parts.append("<div class='card meta'>없음 — 발동 존 산업 부재 또는 필터 전체 탈락(정상 상태일 수 있음)</div>")
-    for c in passed:
-        mark = " <span class='pill'>신규</span>" if c.symbol in new_passed else ""
+        parts.append("<div class='card meta'>없음 — 가치·건전성 통과 종목 없음</div>")
+    else:
+        parts += [
+            "<div class='card scroll'><table>",
+            f"<tr><th>종목</th><th>산업</th><th>{tip('phase', '국면')}</th>"
+            f"<th>{tip('sector_pct', '산업내 PBR')}</th><th>시장 PBR</th><th></th></tr>",
+        ]
+        show = passed[:60]
+        for c in show:
+            mark = " <span class='pill'>신규</span>" if c.symbol in new_passed else ""
+            warn = " ⚠" if c.cycle_caution else ""
+            parts.append(
+                f"<tr><td><b>{name_of(c.symbol)}</b> <span class='meta'>{c.symbol}</span></td>"
+                f"<td>{c.industry}</td><td>{phase_pill(c.phase)}{warn}</td>"
+                f"<td>{_fmt(c.industry_pbr_pct, '.0%')}</td>"
+                f"<td>{_fmt(c.market_pbr_pct, '.0%')}</td><td>{mark}</td></tr>"
+            )
+        parts.append("</table>")
+        if len(passed) > len(show):
+            parts.append(
+                f"<div class='meta'>상위 {len(show)}만 표시 — 외 {len(passed) - len(show)}종은 웹 전수</div>"
+            )
+        parts.append("</div>")
+    for c in (c for c in passed if c.symbol in new_passed):
         parts.append(
             f"<div class='card'><div class='headline'>{name_of(c.symbol)} "
-            f"<span class='meta'>{c.symbol}</span>{mark}</div>"
-            f"<div>{c.industry} {phase_pill(c.phase)} · "
-            f"{tip('sector_pct', '산업내 PBR')} 하위 {_fmt(c.industry_pbr_pct, '.0%')}</div>"
+            f"<span class='meta'>{c.symbol}</span> <span class='pill'>신규</span></div>"
+            f"<div>{c.industry} {phase_pill(c.phase)}{' ⚠과열' if c.cycle_caution else ''} · "
+            f"{tip('sector_pct', '산업내 PBR')} 하위 {_fmt(c.industry_pbr_pct, '.0%')} · "
+            f"시장 하위 {_fmt(c.market_pbr_pct, '.0%')}</div>"
         )
         d = dossier_by_symbol.get(c.symbol)
         if isinstance(d, DossierRecord):
@@ -231,26 +289,44 @@ def render_html(
 
     # --- 4. 산업 온도계(밴드 오름차순, 진입 존 하이라이트) ---
     parts += [
-        "<h2>산업 온도계 — 싼 곳부터</h2><div class='card scroll'><table>",
-        f"<tr><th>산업 그룹</th><th>{tip('phase', '국면')}</th><th>{tip('temp', '온도')}</th>"
-        f"<th>{tip('band_pct', 'PBR밴드')}</th><th>{tip('margin_band', '마진밴드')}</th>"
-        f"<th>{tip('improving', '개선')}</th><th>{tip('secular', '사양')}</th><th>WL</th></tr>",
+        "<h2>산업 온도계 — 싼 곳부터</h2>",
     ]
+    group_to_industry = {group: industry for industry, group in WHITELIST.items()}
     ordered = sorted(
         assessments,
         key=lambda a: a.pbr_band_pct if a.pbr_band_pct is not None else 2.0,
     )
-    for a in ordered:
-        zone = " class='zone'" if a.phase in (CyclePhase.BOTTOMING, CyclePhase.RECOVERING) else ""
+
+    def _thermo_table(items: list[Assessment], caption: str, *, use_industry_name: bool) -> None:
         parts.append(
-            f"<tr{zone}><td>{a.sector}</td><td>{phase_pill(a.phase)}</td><td>{_fmt(a.temperature, '')}</td>"
-            f"<td>{_fmt(a.pbr_band_pct, '.0%')}</td><td>{_fmt(a.margin_band_pct, '.0%')}</td>"
-            f"<td>{'예' if a.improving else '아니오' if a.improving is not None else '?'}</td>"
-            f"<td>{'경고' if a.secular_decline else '아니오' if a.secular_decline is not None else '?'}</td>"
-            f"<td>{'✓' if a.sector in wl_groups else ''}</td></tr>"
+            f"<div class='card scroll'><div class='meta'><b>{caption}</b></div><table>"
+            f"<tr><th>산업</th><th>{tip('phase', '국면')}</th><th>{tip('temp', '온도')}</th>"
+            f"<th>{tip('band_pct', 'PBR밴드')}</th><th>{tip('margin_band', '마진밴드')}</th>"
+            f"<th>{tip('improving', '개선')}</th><th>{tip('secular', '사양')}</th></tr>"
         )
+        for a in items:
+            zone = " class='zone'" if a.phase in (CyclePhase.BOTTOMING, CyclePhase.RECOVERING) else ""
+            label = group_to_industry.get(a.sector, a.sector) if use_industry_name else a.sector
+            parts.append(
+                f"<tr{zone}><td>{label}</td><td>{phase_pill(a.phase)}</td><td>{_fmt(a.temperature, '')}</td>"
+                f"<td>{_fmt(a.pbr_band_pct, '.0%')}</td><td>{_fmt(a.margin_band_pct, '.0%')}</td>"
+                f"<td>{'예' if a.improving else '아니오' if a.improving is not None else '?'}</td>"
+                f"<td>{'경고' if a.secular_decline else '아니오' if a.secular_decline is not None else '?'}</td></tr>"
+            )
+        parts.append("</table></div>")
+
+    _thermo_table(
+        [a for a in ordered if a.sector in wl_groups],
+        "편입 심사 대상 — 화이트리스트 큐레이션",
+        use_industry_name=True,
+    )
+    _thermo_table(
+        [a for a in ordered if a.sector not in wl_groups],
+        "전 시장 관찰 — KRX 버킷 (판정·편입 미사용)",
+        use_industry_name=False,
+    )
     parts.append(
-        "</table><p class='meta'>초록 행 = 진입 존(바닥 통과·회복). 지표에 마우스를 올리면 설명이 나옵니다.</p></div>"
+        "<p class='meta'>초록 행 = 바닥 통과·회복(우선순위 존). 지표에 마우스를 올리면 설명이 나옵니다.</p>"
     )
 
     # --- 5. 탈락 사유(건수 내림차순) + 부속(접힘) ---

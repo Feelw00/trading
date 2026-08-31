@@ -125,12 +125,12 @@ def test_glossary_tip_and_phase_pill() -> None:
 
 
 def test_dashboard_v1_decision_cards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """V1 — 첫 화면이 통과 종목·진입 존·변화 카드로 즉답한다(빈 스토어에서도 구조 유지)."""
+    """V1 — 첫 화면이 가치 후보·우선순위 존·변화 카드로 즉답한다(빈 스토어에서도 구조 유지, P-18)."""
     monkeypatch.chdir(tmp_path)
     from trading.web.dashboard import render_dashboard
 
     body = render_dashboard()
-    assert "통과 종목" in body and "진입 존 산업" in body and "변화 (직전 산출 대비)" in body
+    assert "가치 후보" in body and "우선순위 존 산업" in body and "변화 (직전 산출 대비)" in body
     assert "<details>" in body                      # 신선도는 접힘(관심 위계)
     assert "data-tip=" in body                      # 용어 설명 존재
 

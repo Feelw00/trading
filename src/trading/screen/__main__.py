@@ -19,13 +19,28 @@ def main() -> int:
         for r in records:
             cand_store.append(r)
         if s.passed:
-            print("\n통과 후보:")
-            for r in records:
-                if r.passed:
-                    from trading.contracts.longterm import phase_ko
+            from trading.contracts.longterm import CyclePhase, phase_ko
 
-                    pct = f"{r.industry_pbr_pct:.0%}" if r.industry_pbr_pct is not None else "?"
-                    print(f"  · {r.symbol} [{r.industry}] 국면={phase_ko(r.phase)} 산업내PBR 하위 {pct}")
+            # P-18: 사이클은 도구 — 통과 후보를 국면 우선순위(바닥·회복 먼저)로 정렬만 한다
+            prio = {
+                CyclePhase.BOTTOMING: 0, CyclePhase.RECOVERING: 1, CyclePhase.UNKNOWN: 2,
+                CyclePhase.DECLINING: 3, CyclePhase.OVERHEATED: 4,
+            }
+            passed_recs = sorted(
+                (r for r in records if r.passed),
+                key=lambda r: (prio.get(r.phase, 9), r.market_pbr_pct if r.market_pbr_pct is not None else 2.0),
+            )
+            print("\n통과 후보(국면 우선순위 → 시장 percentile 순, 상위 40):")
+            for r in passed_recs[:40]:
+                ind = f"{r.industry_pbr_pct:.0%}" if r.industry_pbr_pct is not None else "?"
+                mkt = f"{r.market_pbr_pct:.0%}" if r.market_pbr_pct is not None else "?"
+                warn = " ⚠과열" if r.cycle_caution else ""
+                print(
+                    f"  · {r.symbol} [{r.industry}] 국면={phase_ko(r.phase)}{warn} "
+                    f"산업내 {ind} · 시장 {mkt}"
+                )
+            if len(passed_recs) > 40:
+                print(f"  … 외 {len(passed_recs) - 40}종(전수는 DB·웹)")
         print("\n탈락 사유 분포:")
         for reason, n in s.reject_counts.items():
             print(f"  {n:>4} × {reason}")

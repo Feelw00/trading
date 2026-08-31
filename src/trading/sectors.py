@@ -226,12 +226,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"큐레이션 오버라이드(manual-curated-v1): 신규 {n_manual}행")
 
     # --- KRX 공식 업종(최우선 소스, 운영자 결정 2026-07-13) ---
+    # P-18 결재 ②(2026-08-31): 태깅 스코프 = 전 상장 — 가치 스크린의 산업 상대 위치 원료.
+    # (아래 grounded/KSIC 보강은 계약층 taxonomy용 — 게이트 스코프 유지, DART 한도 보호)
     kis = kis_client_from_env()
     if kis is None:
         print("KIS 키 미설정 — KRX 업종 태깅 스킵(blocked)")
     else:
+        bas_dt = store.latest_date()
+        all_names = store.names_on(bas_dt) if bas_dt else {}
         krx_done = store.codes_with_any_row(KRX_SOURCE)
-        krx_todo = [(c.srtn_cd, c.name) for c in res.candidates if c.srtn_cd not in krx_done]
+        krx_todo = [(cd, nm) for cd, nm in sorted(all_names.items()) if cd not in krx_done]
         if krx_todo:
             ks = classify_krx(store, kis, krx_todo, as_of=res.as_of)
             print(

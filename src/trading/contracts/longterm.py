@@ -159,15 +159,19 @@ class CandidateRecord(BaseRecord):
     """
 
     symbol: NonEmptyStr
-    industry: NonEmptyStr            # 화이트리스트 산업명(policy WHITELIST 키)
+    industry: NonEmptyStr            # 산업명 — 화이트리스트 산업(WHITELIST 키) 또는 KRX 버킷(P-18)
     sector_krx: str | None = None
-    phase: CyclePhase                # 판정 시점 산업 국면(R3)
+    phase: CyclePhase                # 판정 시점 산업 국면(R3) — P-18: 도구 정보(게이트 아님)
     passed: bool
     reject_reasons: list[NonEmptyStr] = Field(default_factory=list)
     industry_pbr_pct: float | None = Field(default=None, ge=0.0, le=1.0)
+    # P-18(결재 ③ 병행): 시장 전체 PBR percentile — 산업 내 상대와 함께 박제
+    market_pbr_pct: float | None = Field(default=None, ge=0.0, le=1.0)
+    # P-18(결재 ①): 과열 산업의 가치 통과분 — 탈락시키지 않고 플래그만("천천히" 신호)
+    cycle_caution: bool = False
     unapplied: list[NonEmptyStr] = Field(default_factory=list)
     valuation_ref: NonEmptyStr
-    cycle_ref: NonEmptyStr
+    cycle_ref: str | None = None     # P-18: 국면 레코드 부재 산업도 심사(도구 정보 없이)
 
     @model_validator(mode="after")
     def _passed_xor_reasons(self) -> "CandidateRecord":

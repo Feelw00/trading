@@ -212,6 +212,15 @@ class MarketStore:
             )
         }
 
+    def names_on(self, bas_dt: str) -> dict[str, str]:
+        """해당 일자 전 종목 {srtn_cd: 종목명} — 전 상장 스코프 수집·태깅(P-18 ②)의 표시용."""
+        return {
+            str(r[0]): str(r[1] or r[0])
+            for r in self._conn.execute(
+                "SELECT srtn_cd, name FROM daily_quotes WHERE bas_dt=?", (bas_dt,)
+            )
+        }
+
     # --- 시총 스냅샷(밴드 소급 — P-17 ①) ---
 
     def upsert_cap_snapshots(self, rows: Sequence[tuple[str, str, float, int, float, str]]) -> int:

@@ -45,28 +45,44 @@ def render_dashboard() -> str:
     names = stock_names()
     new_passed, dropped = passed_delta()
 
-    # --- 핵심 카드 1: 통과 종목 ---
-    card1 = ["<div class='card hero'><h2 style='margin-top:0'>통과 종목 "
-             f"({len(passed)})</h2>"]
+    # --- 핵심 카드 1: 가치 후보(P-18 — 국면 우선순위 정렬, 상위 10 + 전수 카운트) ---
+    prio = {
+        CyclePhase.BOTTOMING: 0, CyclePhase.RECOVERING: 1, CyclePhase.UNKNOWN: 2,
+        CyclePhase.DECLINING: 3, CyclePhase.OVERHEATED: 4,
+    }
+    passed = sorted(
+        passed,
+        key=lambda c: (
+            prio.get(c.phase, 9),
+            c.market_pbr_pct if c.market_pbr_pct is not None else 2.0,
+        ),
+    )
+    caution_n = sum(1 for c in passed if c.cycle_caution)
+    card1 = ["<div class='card hero'><h2 style='margin-top:0'>가치 후보 "
+             f"({len(passed)}, 과열 ⚠ {caution_n})</h2>"]
     if passed:
-        for c in passed:
-            pct = f"{c.industry_pbr_pct:.0%}" if c.industry_pbr_pct is not None else "—"
+        card1.append("<div class='meta'>가치·건전성 게이트 통과(P-18). 바닥·회복 산업 우선, "
+                     "⚠=과열 산업(천천히). 관찰 후보 — 매수 결정 아님</div>")
+        for c in passed[:10]:
+            ind = f"{c.industry_pbr_pct:.0%}" if c.industry_pbr_pct is not None else "—"
+            mkt = f"{c.market_pbr_pct:.0%}" if c.market_pbr_pct is not None else "—"
             name = names.get(c.symbol, c.symbol)
+            warn = " ⚠" if c.cycle_caution else ""
             card1.append(
-                f"<div class='big'><a href='/stocks/{c.symbol}'>{html.escape(name)}</a> "
-                f"<span class='meta'>{c.symbol}</span></div>"
-                f"<div>{html.escape(c.industry)} {phase_pill(c.phase)} · "
-                f"{tip('sector_pct', '산업내 PBR')} 하위 {pct}</div>"
-                f"<div class='meta'>관찰 후보(매수 결정 아님) — 종목명 클릭 시 근거·심사 패킷</div>"
+                f"<div><a href='/stocks/{c.symbol}'>{html.escape(name)}</a> "
+                f"<span class='meta'>{c.symbol}</span> · {html.escape(c.industry)} "
+                f"{phase_pill(c.phase)}{warn} <span class='meta'>산업내 {ind} · 시장 {mkt}</span></div>"
             )
+        if len(passed) > 10:
+            card1.append(f"<div class='meta'>상위 10만 표시 — 전수 {len(passed)}종은 "
+                         "<a href='/stocks'>종목</a>에서</div>")
     else:
-        card1.append("<div class='meta'>없음 — 진입 존 산업 부재 또는 필터 전체 탈락"
-                     "(이미 오른 곳을 쫓지 않는 규칙의 정상 상태일 수 있음)</div>")
+        card1.append("<div class='meta'>없음 — 가치·건전성 통과 종목 없음</div>")
     card1.append("</div>")
 
-    # --- 핵심 카드 2: 진입 존 산업 ---
+    # --- 핵심 카드 2: 우선순위 존 산업(P-18 — 게이트 아님, 후보 정렬·사이징 도구) ---
     entry = [r for r in records if r.phase in ENTRY_PHASES]
-    card2 = [f"<div class='card'><h2 style='margin-top:0'>{tip('phase', '진입 존 산업')} "
+    card2 = [f"<div class='card'><h2 style='margin-top:0'>{tip('phase', '우선순위 존 산업')} "
              f"({len(entry)})</h2>"]
     if entry:
         for r in entry:
@@ -81,7 +97,8 @@ def render_dashboard() -> str:
                 f"{html.escape(r.industry)}</a>{wl_mark} {phase_pill(r.phase)} "
                 f"<span class='meta'>{tip('band_pct', 'PBR밴드')} {pct}</span></div>"
             )
-        card2.append("<div class='meta'>✓=화이트리스트(편입 대상). 나머지는 계측만</div>")
+        card2.append("<div class='meta'>바닥·회복 산업의 가치 후보가 우선 정렬됩니다(P-18 — "
+                     "게이트 아님). ✓=사이클 계측 신뢰 라벨(구 화이트리스트)</div>")
     else:
         card2.append("<div class='meta'>바닥 통과·회복 산업 없음</div>")
     card2.append("</div>")

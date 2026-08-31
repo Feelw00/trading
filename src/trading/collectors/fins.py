@@ -355,7 +355,9 @@ def backfill_annuals(
 
 def main() -> int:
     from trading.collectors.market import MarketStore
-    from trading.screener import ScreenConfig, screen
+    from trading.cycle.membership import snapshot_names
+    from trading.cycle.policy import CURATED_GROUPS
+    from trading.sectors import KRX_SOURCE
 
     key = os.environ.get("DART_API_KEY", "")
     if not key:
@@ -368,23 +370,27 @@ def main() -> int:
     if "--backfill-years" in sys.argv:
         backfill_years = int(sys.argv[sys.argv.index("--backfill-years") + 1])
 
+    # P-18 결재 ②(2026-08-31): 유니버스 = 전 상장. 시총 내림차순 — DART 일 한도에 걸려도
+    # 대형주부터 적재되고, 잔여는 attempts 멱등으로 다음 실행에서 이어진다.
+    # DART corp 미등재(우선주·ETF·스팩 일부·KDR)는 corp_map 단계에서 무호출 스킵.
     mstore = MarketStore()
-    res = screen(mstore, ScreenConfig(top_n=1_000_000))
+    bas_dt = mstore.latest_date()
+    quotes = mstore.quotes_on(bas_dt) if bas_dt else {}
+    market_names = mstore.sector_names(KRX_SOURCE)
     mstore.close()
-    stocks = [(c.srtn_cd, c.name) for c in res.candidates]
-    # 큐레이션 멤버는 게이트 유니버스 밖이어도 수집 — 밴드의 "재무 미적재 정직 제외" 해소 경로
-    # (policy-v1.5 멤버십은 토스 스냅샷 파생이라 게이트와 독립).
-    from trading.cycle.membership import snapshot_names
-    from trading.cycle.policy import CURATED_GROUPS
-
+    stocks = [
+        (cd, market_names.get(cd, cd))
+        for cd, _cap in sorted(quotes.items(), key=lambda kv: -(kv[1] or 0.0))
+    ]
+    # 큐레이션 멤버 안전망 — 최신일 무시세(거래정지 등)여도 밴드 구성원이면 수집
     known = {cd for cd, _name in stocks}
     curated = {cd for codes in CURATED_GROUPS.values() for cd in codes} - known
-    names = snapshot_names()
-    stocks += [(cd, names.get(cd, cd)) for cd in sorted(curated)]
+    toss_names = snapshot_names()
+    stocks += [(cd, toss_names.get(cd, cd)) for cd in sorted(curated)]
     if limit:
         stocks = stocks[:limit]
     if not stocks:
-        print("게이트 통과 종목 없음 — 스킵")
+        print("시세 유니버스 비어 있음 — 스킵")
         return 0
     dart = DartClient(key)
     store = FinStore()

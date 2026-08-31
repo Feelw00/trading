@@ -45,9 +45,9 @@ def test_change_first_order_and_badges() -> None:
         transitions=[("바닥산업", CyclePhase.DECLINING, CyclePhase.BOTTOMING)],
         new_passed={"011780"}, dropped=set(), names={"011780": "금호석유화학"},
     )
-    # 위계: 헤드라인 → 변화 → 후보 → 온도계
-    assert html.index("신규 후보 1") < html.index("전주 대비 변화") < html.index("통과 후보 (1)")
-    assert html.index("통과 후보 (1)") < html.index("산업 온도계")
+    # 위계: 헤드라인 → 변화 → 후보 → 온도계 (P-18: "가치 후보" — 과열 ⚠ 카운트 병기)
+    assert html.index("신규 후보 1") < html.index("전주 대비 변화") < html.index("가치 후보 (1, 과열 ⚠ 0)")
+    assert html.index("가치 후보 (1, 과열 ⚠ 0)") < html.index("산업 온도계")
     assert "금호석유화학" in html and ">신규</span>" in html        # 종목명 + 신규 배지
     assert "ph-decl" in html and "ph-bott" in html                  # 전환이 배지 쌍으로
     assert html.index("바닥산업</td>") < html.index("과열산업</td>")  # 밴드 오름차순
