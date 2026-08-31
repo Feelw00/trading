@@ -9,16 +9,18 @@ cd "$REPO"
 
 SESSION="trading-reports"
 TS="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
-PORT="${REPORT_SITE_PORT:-8787}"
+PORT="${REPORT_SITE_PORT:-80}"
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "[reports] tmux 세션 '$SESSION' 이미 실행 중"
   exit 0
 fi
 
-# 테일넷 IP 동적 해석(기기 IP는 바뀔 수 있음 — 하드코딩 금지)
-HOST="$("$TS" ip -4 2>/dev/null | head -1)"
-[ -n "$HOST" ] || { echo "[reports] tailscale IP 해석 실패 — Tailscale 실행 확인" >&2; exit 1; }
+# 0.0.0.0:80 와일드카드 바인딩(2026-08-31 실측 확정 경로):
+# - macOS는 특정 IP 저포트 바인딩은 거부하지만 와일드카드는 비루트 허용.
+# - tailscale serve는 Host 헤더가 ts.net 호스트명일 때만 응답해 운영자 도메인 불가 — 미사용.
+# - 노출 범위: 테일넷 + 홈 LAN(읽기 전용 대시보드 — 공유기 포트포워딩 없는 한 인터넷 비노출).
+HOST="0.0.0.0"
 
 tmux new-session -d -s "$SESSION" -c "$REPO"
 tmux send-keys -t "$SESSION" \
@@ -26,7 +28,7 @@ tmux send-keys -t "$SESSION" \
 
 sleep 1
 if curl -sf --max-time 3 "http://$HOST:$PORT/" > /dev/null; then
-  echo "[reports] 기동 완료: http://$HOST:$PORT/ (테일넷 전용)"
+  echo "[reports] 기동 완료: 포트 $PORT (테일넷+LAN, 읽기 전용)"
 else
   echo "[reports] ⚠️ 기동 확인 실패 — tmux attach -t $SESSION 로 로그 확인" >&2
   exit 1
