@@ -256,13 +256,26 @@ def cmd_audit() -> int:
     if unknown_row:
         print(f"INFO  판정 불가(unknown) 산업 {unknown_row[0]}개 (표본 미달 — 결측 정직, 결함 아님)")
 
-    logs = sorted(Path(".runtime/logs/cron").glob("*.log"))
-    if logs:
-        newest = max(logs, key=lambda p: p.stat().st_mtime)
-        age_h = (time.time() - newest.stat().st_mtime) / 3600
-        check(age_h < 30, "cron 로그", f"{newest.name} 마지막 갱신 {age_h:.1f}시간 전 (일간 잡 기준 30h 내 정상)")
+    # 잡별 기대 리듬으로 검사(주말 인식 — 8/31 감사 오탐 교정): eod=직전 거래일 18:00 발화,
+    # weekly=토요일 주 1회. "최신 로그 하나 + 30h" 룰은 월요일 아침 주말 무발화를 오탐한다.
+    from datetime import datetime as _dt
+
+    eod_log = Path(".runtime/logs/cron/eod-v3.log")
+    if eod_log.exists():
+        mdate = _dt.fromtimestamp(eod_log.stat().st_mtime).date()
+        check(
+            mdate >= prev1,
+            "cron eod-v3",
+            f"마지막 발화 {mdate} (기대: 직전 거래일 {prev1} 18:00 이후)",
+        )
     else:
-        check(False, "cron 로그", "로그 없음 — cron 미발화 또는 게이트웨이 확인")
+        check(False, "cron eod-v3", "로그 없음 — cron 미발화 또는 게이트웨이 확인")
+    weekly_log = Path(".runtime/logs/cron/weekly-v3.log")
+    if weekly_log.exists():
+        age_d = (time.time() - weekly_log.stat().st_mtime) / 86400
+        check(age_d < 8, "cron weekly-v3", f"마지막 발화 {age_d:.1f}일 전 (토 주 1회 — 8일 내 정상)")
+    else:
+        check(False, "cron weekly-v3", "로그 없음 — 첫 토요일 발화 전이면 정상")
 
     print(f"\n감사 결과: {'전부 PASS' if issues == 0 else f'WARN {issues}건'}")
     return 0
