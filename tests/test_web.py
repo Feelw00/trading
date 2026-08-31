@@ -133,3 +133,26 @@ def test_dashboard_v1_decision_cards(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert "통과 종목" in body and "진입 존 산업" in body and "변화 (직전 산출 대비)" in body
     assert "<details>" in body                      # 신선도는 접힘(관심 위계)
     assert "data-tip=" in body                      # 용어 설명 존재
+
+
+def test_donut_chart_segments_and_full_circle() -> None:
+    from trading.web.svg import donut_chart
+
+    svg = donut_chart([("바닥 통과", 2, "#2f855a"), ("과열", 1, "#c53030"), ("불명", 0, "#a0aec0")])
+    assert svg.count("<path") == 2                       # 0개 조각 생략
+    assert "바닥 통과: 2개 (67%)" in svg and ">3</text>" in svg  # 툴팁 + 중앙 합계
+    full = donut_chart([("회복", 5, "#2b6cb0")])
+    assert "<circle" in full and "<path" not in full     # 100%는 원으로
+    assert donut_chart([("x", 0, "#000")]) == "<svg/>"
+
+
+def test_dashboard_v2_donut_heatmap_funnel_titles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """V2 — 국면 도넛·히트맵 타일·깔때기 단계 설명이 대시보드에 조립된다(빈 스토어 내성)."""
+    monkeypatch.chdir(tmp_path)
+    from trading.web.dashboard import _FUNNEL_TITLES, render_dashboard
+
+    body = render_dashboard()
+    assert "국면 분포와 히트맵" in body
+    assert len(_FUNNEL_TITLES) == 5 and "관찰 후보" in _FUNNEL_TITLES[-1]

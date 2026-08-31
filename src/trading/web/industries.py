@@ -110,15 +110,16 @@ def render_industry_detail(group: str) -> str | None:
     if pbr_pts:
         cur = next((r.pbr for r in rows if r.year == "current"), None)
         series = [*pbr_pts, *( [cur] if cur is not None else [] )]
+        s_labels = [*pbr_years, *(["현재"] if cur is not None else [])]
         amp = f"{max(pbr_pts) / min(pbr_pts):.1f}배" if min(pbr_pts) > 0 else "—"
         parts += [
             f"<h2>섹터 PBR 밴드 (연말 합산, 진폭 {amp})</h2>",
-            f"<div class='card scroll'>{line_chart(series, start_label=pbr_years[0], end_label='현재', fmt='.2f')}</div>",
+            f"<div class='card scroll'>{line_chart(series, labels=s_labels, start_label=pbr_years[0], end_label='현재', fmt='.2f')}</div>",
         ]
     if margin_pts:
         parts += [
             "<h2>섹터 영업이익률 (연간)</h2>",
-            f"<div class='card scroll'>{line_chart([m for _y, m in margin_pts], start_label=margin_pts[0][0], end_label=margin_pts[-1][0], color='#975a16', fmt='.1%')}</div>",
+            f"<div class='card scroll'>{line_chart([m for _y, m in margin_pts], labels=[y for y, _m in margin_pts], start_label=margin_pts[0][0], end_label=margin_pts[-1][0], color='#975a16', fmt='.1%')}</div>",
         ]
     revs = [r.revenue for r in ann]
     if any(v is not None for v in revs):

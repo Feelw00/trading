@@ -120,11 +120,11 @@ def render_list(rows: list[StockRow] | None = None) -> str:
     return page("종목 — 트레이딩 v0.3", "\n".join(parts), active="/stocks")
 
 
-def _downsample(values: list[float], limit: int = 130) -> list[float]:
-    if len(values) <= limit:
-        return values
-    step = len(values) / limit
-    return [values[int(i * step)] for i in range(limit - 1)] + [values[-1]]
+def _downsample(pairs: list[tuple[str, float]], limit: int = 130) -> list[tuple[str, float]]:
+    if len(pairs) <= limit:
+        return pairs
+    step = len(pairs) / limit
+    return [pairs[int(i * step)] for i in range(limit - 1)] + [pairs[-1]]
 
 
 def render_detail(symbol: str) -> str | None:
@@ -148,10 +148,10 @@ def render_detail(symbol: str) -> str | None:
     ]
 
     if d.closes:
-        closes = _downsample([c for _dt, c in d.closes])
+        pairs = _downsample(d.closes)
         parts += [
             "<h2>주가 (2021~)</h2>",
-            f"<div class='card scroll'>{line_chart(closes, start_label=d.closes[0][0], end_label=d.closes[-1][0])}</div>",
+            f"<div class='card scroll'>{line_chart([c for _dt, c in pairs], labels=[dt for dt, _c in pairs], start_label=d.closes[0][0], end_label=d.closes[-1][0])}</div>",
         ]
 
     if d.annual:
@@ -183,6 +183,7 @@ def render_detail(symbol: str) -> str | None:
 
     if d.flows:
         cum_f, cum_o, acc_f, acc_o = [], [], 0.0, 0.0
+        flow_dates = [dt for dt, _p, _f, _o in d.flows]
         for _dt, _p, f, o in d.flows:
             acc_f += f or 0.0
             acc_o += o or 0.0
@@ -191,8 +192,8 @@ def render_detail(symbol: str) -> str | None:
         parts += [
             f"<h2>수급 누적 순매수 (백만원, 창 {len(d.flows)}거래일)</h2>",
             "<div class='grid2'>",
-            f"<div class='card scroll'><div class='meta'>외국인</div>{line_chart(cum_f, color='#2b6cb0')}</div>",
-            f"<div class='card scroll'><div class='meta'>기관</div>{line_chart(cum_o, color='#975a16')}</div>",
+            f"<div class='card scroll'><div class='meta'>외국인</div>{line_chart(cum_f, labels=flow_dates, color='#2b6cb0')}</div>",
+            f"<div class='card scroll'><div class='meta'>기관</div>{line_chart(cum_o, labels=flow_dates, color='#975a16')}</div>",
             "</div>",
         ]
 
@@ -201,12 +202,12 @@ def render_detail(symbol: str) -> str | None:
         if d.short_rates:
             parts.append(
                 f"<div class='card scroll'><div class='meta'>공매도 거래 비중</div>"
-                f"{line_chart([r for _d, r in d.short_rates], color='#c53030', fmt='.1%')}</div>"
+                f"{line_chart([r for _d, r in d.short_rates], labels=[dt for dt, _r in d.short_rates], color='#c53030', fmt='.1%')}</div>"
             )
         if d.lending_balance:
             parts.append(
                 f"<div class='card scroll'><div class='meta'>대차잔고 수량</div>"
-                f"{line_chart([q for _d, q in d.lending_balance], color='#6b46c1')}</div>"
+                f"{line_chart([q for _d, q in d.lending_balance], labels=[dt for dt, _q in d.lending_balance], color='#6b46c1')}</div>"
             )
         parts.append("</div>")
 

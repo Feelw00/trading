@@ -98,3 +98,19 @@ def test_list_splits_passed_section(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert body.index("R4 통과") < body.index("전체 평가 유니버스")  # 통과가 위
     assert "passed-row" in body and "ind-filter" in body            # 강조행 + 산업 필터
     assert "data-tip=" in body                                       # 헤더 용어 설명
+
+
+def test_line_chart_v2_point_tooltips_and_gridlines() -> None:
+    """V2 — labels 제공 시 포인트 원 툴팁·세로 눈금, 마지막 포인트 강조."""
+    svg = line_chart([1.0, 3.0, 2.0], labels=["21", "22", "23"], fmt=".1f")
+    assert svg.count("<circle") == 3 and svg.count("<title>") == 3
+    assert "<title>22: 3.0</title>" in svg           # 라벨: 값
+    assert "r='4'" in svg and "stroke='#e2e8f0'" in svg  # 최종점 강조 + 눈금
+    assert line_chart([1.0, 3.0, 2.0], fmt=".1f").count("<circle") == 3  # 라벨 없어도 포인트
+
+
+def test_dual_bar_v2_bar_tooltips() -> None:
+    svg = dual_bar_chart(["2024", "2025"], [100.0, None], [-20.0, 30.0],
+                         label_a="매출", label_b="영업이익")
+    assert "<title>2024 매출: 100</title>" in svg
+    assert "<title>2025 영업이익: 30</title>" in svg

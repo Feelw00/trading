@@ -32,6 +32,11 @@ CSS = """
   .pill { display:inline-block; font-size:11px; font-weight:700; padding:2px 8px;
           border-radius:999px; margin-right:4px; background:#ebf4ff; color:#2b6cb0; }
   .pill.warn { background:#fffbeb; color:#975a16; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:8px; }
+  a.tile { display:block; border-radius:8px; padding:10px 12px; color:#fff; text-decoration:none; }
+  a.tile:hover { filter:brightness(1.12); }
+  .tile b { display:block; margin-bottom:2px; }
+  .tile small { color:rgba(255,255,255,.88); }
   .pbar { display:inline-block; width:120px; height:9px; background:#e2e8f0;
           border-radius:5px; overflow:hidden; vertical-align:middle; margin-right:6px; }
   .pbar-fill { display:block; height:100%; background:#2b6cb0; }

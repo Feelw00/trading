@@ -1,6 +1,7 @@
 """서버 생성 SVG 미니 라이브러리 — 무의존·결정론(테스트 가능). P-15 원칙."""
 
 import html
+import math
 from dataclasses import dataclass
 
 PHASE_COLOR = {
@@ -53,9 +54,16 @@ def band_chart(rows: list[BandRow], *, low: float = 0.30, high: float = 0.75) ->
                 f"<text x='{x(0) + 4}' y='{cy + 4}' fill='#a0aec0'>결측(관측 부족)</text>"
             )
         else:
+            from trading.contracts.longterm import CyclePhase, phase_ko as _pk
+
+            tip_txt = (
+                f"{r.label} — {_pk(CyclePhase(r.phase))}, PBR 밴드 하위 {r.pct:.0%}"
+                + (f", 온도 {r.temperature}" if r.temperature is not None else "")
+            )
             parts.append(
                 f"<rect x='{x0}' y='{y + 6}' width='{max(r.pct * chart_w, 2):.1f}' "
-                f"height='{row_h - 12}' rx='3' fill='{color}'/>"
+                f"height='{row_h - 12}' rx='3' fill='{color}'>"
+                f"<title>{html.escape(tip_txt)}</title></rect>"
             )
             temp = f" · 온도 {r.temperature}" if r.temperature is not None else ""
             parts.append(
@@ -68,8 +76,8 @@ def band_chart(rows: list[BandRow], *, low: float = 0.30, high: float = 0.75) ->
     return "\n".join(parts)
 
 
-def funnel_chart(stages: list[tuple[str, int]]) -> str:
-    """R4 깔때기 — 단계별 잔존 수(가로 바, 상대폭)."""
+def funnel_chart(stages: list[tuple[str, int]], titles: list[str] | None = None) -> str:
+    """R4 깔때기 — 단계별 잔존 수(가로 바, 상대폭). titles=단계별 호버 설명."""
     if not stages:
         return "<svg/>"
     row_h, label_w, chart_w, pad = 30, 190, 460, 6
@@ -86,9 +94,14 @@ def funnel_chart(stages: list[tuple[str, int]]) -> str:
         parts.append(
             f"<text x='{label_w - 8}' y='{y + row_h / 2 + 4}' text-anchor='end'>{html.escape(label)}</text>"
         )
+        title = (
+            f"<title>{html.escape(titles[i])}</title>"
+            if titles and i < len(titles)
+            else ""
+        )
         parts.append(
             f"<rect x='{label_w}' y='{y + 5}' width='{w:.1f}' height='{row_h - 10}' rx='3' "
-            f"fill='#2b6cb0' opacity='{0.45 + 0.55 * (i + 1) / len(stages):.2f}'/>"
+            f"fill='#2b6cb0' opacity='{0.45 + 0.55 * (i + 1) / len(stages):.2f}'>{title}</rect>"
         )
         parts.append(f"<text x='{label_w + w + 6}' y='{y + row_h / 2 + 4}' fill='#1a202c'>{count}</text>")
     parts.append("</svg>")
@@ -98,13 +111,14 @@ def funnel_chart(stages: list[tuple[str, int]]) -> str:
 def line_chart(
     points: list[float],
     *,
+    labels: list[str] | None = None,
     start_label: str = "",
     end_label: str = "",
     color: str = "#2b6cb0",
     height: int = 160,
     fmt: str = ",.0f",
 ) -> str:
-    """단일 시계열 라인 — 최소/최대/최종값 주석. 점이 2개 미만이면 결측 안내."""
+    """단일 시계열 라인 — 포인트 호버 툴팁(labels 제공 시)·세로 눈금·최소/최대/최종 주석."""
     if len(points) < 2:
         return "<svg viewBox='0 0 600 40' xmlns='http://www.w3.org/2000/svg' font-size='12'><text x='4' y='24' fill='#a0aec0'>관측 부족(2점 미만)</text></svg>"
     width, pad_l, pad_r, pad_y = 640, 8, 90, 16
@@ -119,10 +133,32 @@ def line_chart(
 
     poly = " ".join(xy(i, v) for i, v in enumerate(points))
     last_y = pad_y + (height - 2 * pad_y) * (1 - (points[-1] - lo) / span)
+
+    extras: list[str] = []
+    # 세로 눈금(최대 6개) — labels가 있으면 그 라벨로
+    if labels and len(labels) == n:
+        step = max(1, (n - 1) // 5)
+        for i in range(0, n, step):
+            gx = pad_l + (width - pad_l - pad_r) * i / (n - 1)
+            extras.append(
+                f"<line x1='{gx:.1f}' y1='{pad_y}' x2='{gx:.1f}' y2='{height - pad_y}' "
+                "stroke='#e2e8f0' stroke-width='1'/>"
+            )
+    # 포인트 원 + 호버 툴팁
+    for i, v in enumerate(points):
+        cx, cy = xy(i, v).split(",")
+        label = labels[i] if labels and len(labels) == n else str(i)
+        emph = i == n - 1
+        extras.append(
+            f"<circle cx='{cx}' cy='{cy}' r='{4 if emph else 3}' fill='{color}' "
+            f"opacity='{1.0 if emph else 0.35}'>"
+            f"<title>{html.escape(label)}: {v:{fmt}}</title></circle>"
+        )
     return (
         f"<svg viewBox='0 0 {width} {height}' xmlns='http://www.w3.org/2000/svg' "
         "font-family='sans-serif' font-size='11'>"
-        f"<polyline points='{poly}' fill='none' stroke='{color}' stroke-width='1.8'/>"
+        + "".join(extras)
+        + f"<polyline points='{poly}' fill='none' stroke='{color}' stroke-width='1.8'/>"
         f"<text x='{pad_l}' y='{height - 3}' fill='#5a6472'>{html.escape(start_label)}</text>"
         f"<text x='{width - pad_r}' y='{height - 3}' text-anchor='end' fill='#5a6472'>{html.escape(end_label)}</text>"
         f"<text x='{width - pad_r + 4}' y='{last_y + 4}' fill='{color}'>{points[-1]:{fmt}}</text>"
@@ -154,13 +190,16 @@ def dual_bar_chart(
     group_w = (width - pad_l * 2) / len(years)
     bar_w = group_w * 0.32
 
-    def bar(i: int, v: float | None, offset: float, color: str) -> str:
+    def bar(i: int, v: float | None, offset: float, color: str, series: str) -> str:
         if v is None:
             return ""
         h = abs(v) / span * (height - 2 * pad_y)
         x = pad_l + i * group_w + offset
         y = zero_y - h if v >= 0 else zero_y
-        return f"<rect x='{x:.1f}' y='{y:.1f}' width='{bar_w:.1f}' height='{max(h, 1):.1f}' fill='{color}' rx='2'/>"
+        return (
+            f"<rect x='{x:.1f}' y='{y:.1f}' width='{bar_w:.1f}' height='{max(h, 1):.1f}' "
+            f"fill='{color}' rx='2'><title>{html.escape(years[i])} {html.escape(series)}: {v:,.0f}</title></rect>"
+        )
 
     parts = [
         f"<svg viewBox='0 0 {width} {height}' xmlns='http://www.w3.org/2000/svg' "
@@ -170,8 +209,8 @@ def dual_bar_chart(
         f"<text x='{pad_l + 110}' y='12' fill='#975a16'>■ {html.escape(label_b)}</text>",
     ]
     for i, year in enumerate(years):
-        parts.append(bar(i, a[i], group_w * 0.12, "#2b6cb0"))
-        parts.append(bar(i, b[i], group_w * 0.12 + bar_w + 2, "#975a16"))
+        parts.append(bar(i, a[i], group_w * 0.12, "#2b6cb0", label_a))
+        parts.append(bar(i, b[i], group_w * 0.12 + bar_w + 2, "#975a16", label_b))
         parts.append(
             f"<text x='{pad_l + i * group_w + group_w / 2:.1f}' y='{height - 6}' "
             f"text-anchor='middle' fill='#5a6472'>{html.escape(year[2:])}</text>"
@@ -194,7 +233,10 @@ def phase_strip(items: list[tuple[str, str]]) -> str:
         x = pad + i * cell_w
         color = PHASE_COLOR.get(phase, "#a0aec0")
         label = _PHASE_SHORT.get(phase, phase[:2])
-        parts.append(f"<rect x='{x}' y='{pad}' width='{cell_w - 4}' height='22' rx='4' fill='{color}'/>")
+        parts.append(
+            f"<rect x='{x}' y='{pad}' width='{cell_w - 4}' height='22' rx='4' fill='{color}'>"
+            f"<title>{html.escape(year)}: {html.escape(label)}</title></rect>"
+        )
         parts.append(
             f"<text x='{x + (cell_w - 4) / 2}' y='{pad + 15}' text-anchor='middle' fill='#fff' "
             f"font-weight='700'>{html.escape(label)}</text>"
@@ -215,6 +257,51 @@ _PHASE_SHORT = {
 }
 
 
+def donut_chart(segments: list[tuple[str, int, str]], *, size: int = 170) -> str:
+    """도넛 — (라벨, 개수, 색). 조각 호버 툴팁, 중앙에 합계. 개수 0 조각은 생략."""
+    total = sum(c for _l, c, _col in segments)
+    if total == 0:
+        return "<svg/>"
+    cx = cy = size / 2
+    r = size / 2 - 16
+    parts = [
+        f"<svg viewBox='0 0 {size} {size}' xmlns='http://www.w3.org/2000/svg' "
+        "font-family='sans-serif' font-size='12'>"
+    ]
+
+    def pt(angle: float) -> str:
+        # 12시 방향 시작, 시계 방향
+        rad = math.radians(angle - 90)
+        return f"{cx + r * math.cos(rad):.2f} {cy + r * math.sin(rad):.2f}"
+
+    acc = 0.0
+    for label, count, color in segments:
+        if count == 0:
+            continue
+        frac = count / total
+        title = f"<title>{html.escape(label)}: {count}개 ({frac:.0%})</title>"
+        if frac >= 0.999:
+            parts.append(
+                f"<circle cx='{cx}' cy='{cy}' r='{r}' fill='none' stroke='{color}' "
+                f"stroke-width='26'>{title}</circle>"
+            )
+            acc += frac * 360
+            continue
+        a0, a1 = acc, acc + frac * 360
+        large = 1 if (a1 - a0) > 180 else 0
+        parts.append(
+            f"<path d='M {pt(a0)} A {r} {r} 0 {large} 1 {pt(a1)}' fill='none' "
+            f"stroke='{color}' stroke-width='26'>{title}</path>"
+        )
+        acc = a1
+    parts.append(
+        f"<text x='{cx}' y='{cy + 5}' text-anchor='middle' font-size='22' "
+        f"font-weight='700' fill='#1a202c'>{total}</text>"
+    )
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
 def progress_bar(current: float, target: float) -> str:
     """신선도 스트립용 미니 진행 바(HTML) — 목표 대비 진행률."""
     pct = min(current / target, 1.0) if target > 0 else 0.0
@@ -228,6 +315,7 @@ __all__ = [
     "BandRow",
     "PHASE_COLOR",
     "band_chart",
+    "donut_chart",
     "dual_bar_chart",
     "funnel_chart",
     "line_chart",
