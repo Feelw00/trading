@@ -134,6 +134,52 @@ def whitelist_groups() -> set[str]:
     return set(WHITELIST.values())
 
 
+def stock_names() -> dict[str, str]:
+    from trading.collectors.market import MarketStore
+    from trading.sectors import KRX_SOURCE
+
+    store = MarketStore()
+    try:
+        return store.sector_names(KRX_SOURCE)
+    finally:
+        store.close()
+
+
+def passed_delta() -> tuple[set[str], set[str]]:
+    """최근 2회차 통과 심볼 비교 — (신규 진입, 이탈). 회차 1개뿐이면 (∅, ∅)."""
+    path = Path("data") / "candidates.sqlite"
+    if not path.exists():
+        return set(), set()
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        return set(), set()
+    try:
+        as_ofs = [
+            str(r[0])
+            for r in conn.execute("SELECT DISTINCT as_of FROM candidates ORDER BY as_of DESC LIMIT 2")
+        ]
+        if len(as_ofs) < 2:
+            return set(), set()
+
+        def passed_at(as_of: str) -> set[str]:
+            return {
+                str(r[0])
+                for r in conn.execute(
+                    "SELECT symbol FROM candidates c WHERE as_of=? AND passed=1 "
+                    "AND version = (SELECT MAX(version) FROM candidates WHERE id = c.id)",
+                    (as_of,),
+                )
+            }
+
+        now, prev = passed_at(as_ofs[0]), passed_at(as_ofs[1])
+        return now - prev, prev - now
+    except sqlite3.OperationalError:
+        return set(), set()
+    finally:
+        conn.close()
+
+
 __all__ = [
     "Freshness",
     "freshness_rows",

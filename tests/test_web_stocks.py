@@ -85,3 +85,16 @@ def test_render_pages_survive_sparse_data(tmp_path: Path, monkeypatch: pytest.Mo
     detail = render_detail("011780")
     assert detail is not None and "밸류에이션" in detail and "R4 판정" in detail
     assert render_detail("999999") is None
+
+
+def test_list_splits_passed_section(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """V1 — 통과 종목이 상단 분리 테이블로, 전체 유니버스와 구분된다."""
+    monkeypatch.chdir(tmp_path)
+    _seed(tmp_path)
+    from trading.web.stocks import render_list
+
+    body = render_list()
+    assert "R4 통과" in body and "전체 평가 유니버스" in body
+    assert body.index("R4 통과") < body.index("전체 평가 유니버스")  # 통과가 위
+    assert "passed-row" in body and "ind-filter" in body            # 강조행 + 산업 필터
+    assert "data-tip=" in body                                       # 헤더 용어 설명

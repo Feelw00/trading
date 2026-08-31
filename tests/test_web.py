@@ -110,3 +110,26 @@ def test_policy_v13_curated_groups_sane() -> None:
     assert "096770" in CURATED_GROUPS["정유(큐레이션)"]
     assert "005930" in CURATED_GROUPS["반도체(큐레이션)"]
     assert "009540" in CURATED_GROUPS["조선(큐레이션)"]
+
+
+def test_glossary_tip_and_phase_pill() -> None:
+    from trading.contracts.longterm import CyclePhase
+    from trading.web.glossary import GLOSSARY, phase_pill, tip
+
+    t = tip("loss5y")
+    assert "data-tip=" in t and "적자" in t          # 호버 설명 포함
+    assert "5년 중 1년 적자" in GLOSSARY["loss5y"][1]  # 예시가 담긴 설명
+    pill = phase_pill(CyclePhase.BOTTOMING)
+    assert "ph-bott" in pill and "바닥 통과" in pill
+    assert "ph-over" in phase_pill(CyclePhase.OVERHEATED)
+
+
+def test_dashboard_v1_decision_cards(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """V1 — 첫 화면이 통과 종목·진입 존·변화 카드로 즉답한다(빈 스토어에서도 구조 유지)."""
+    monkeypatch.chdir(tmp_path)
+    from trading.web.dashboard import render_dashboard
+
+    body = render_dashboard()
+    assert "통과 종목" in body and "진입 존 산업" in body and "변화 (직전 산출 대비)" in body
+    assert "<details>" in body                      # 신선도는 접힘(관심 위계)
+    assert "data-tip=" in body                      # 용어 설명 존재

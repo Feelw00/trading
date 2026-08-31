@@ -35,6 +35,23 @@ CSS = """
   .pbar { display:inline-block; width:120px; height:9px; background:#e2e8f0;
           border-radius:5px; overflow:hidden; vertical-align:middle; margin-right:6px; }
   .pbar-fill { display:block; height:100%; background:#2b6cb0; }
+  /* 용어 툴팁(P-16 V1) — 점선 밑줄 + 호버 설명, JS 없음 */
+  .tip { border-bottom:1px dotted #94a3b8; cursor:help; position:relative; }
+  .tip:hover::after { content:attr(data-tip); position:absolute; left:0; top:135%; z-index:20;
+    background:#1a202c; color:#fff; padding:7px 11px; border-radius:7px; font-size:12px;
+    font-weight:400; line-height:1.5; width:max-content; max-width:300px; white-space:normal; }
+  /* 국면 5색 배지 — 전 페이지 공통 시각 언어 */
+  .ph { display:inline-block; font-size:11.5px; font-weight:700; padding:2px 9px;
+        border-radius:999px; color:#fff; }
+  .ph-bott { background:#2f855a; } .ph-reco { background:#2b6cb0; }
+  .ph-over { background:#c53030; } .ph-decl { background:#975a16; }
+  .ph-unkn { background:#a0aec0; }
+  .grid3 { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; }
+  @media (max-width:860px) { .grid3 { grid-template-columns:1fr; } }
+  .hero { border-left:5px solid #2f855a; }
+  .hero .big { font-size:17px; font-weight:800; }
+  details { margin:10px 0; } details summary { cursor:pointer; color:#5a6472; font-size:13px; }
+  tr.passed-row { background:#f0fff4; }
   svg { max-width:100%; height:auto; }
   .scroll { overflow-x:auto; }
   pre.md { background:#fff; border:1px solid #e2e8f0; border-radius:8px; padding:16px;

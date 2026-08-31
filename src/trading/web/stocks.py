@@ -3,6 +3,7 @@
 import html
 
 from trading.contracts.longterm import PHASE_LEGEND_KO, phase_ko
+from trading.web.glossary import phase_pill, tip
 from trading.web.layout import page
 from trading.web.stocks_data import StockDetail, StockRow, stock_detail, stock_rows
 from trading.web.svg import dual_bar_chart, line_chart
@@ -22,9 +23,13 @@ function sortBy(th) {
   });
   rows.forEach(r => table.tBodies[0].appendChild(r));
 }
-function toggleZone(cb) {
-  document.querySelectorAll('tbody tr').forEach(tr => {
-    tr.style.display = (!cb.checked || tr.dataset.wl === '1') ? '' : 'none';
+function applyFilters() {
+  const wlOnly = document.getElementById('wl-only').checked;
+  const ind = document.getElementById('ind-filter').value;
+  document.querySelectorAll('#all-table tbody tr').forEach(tr => {
+    const okWl = !wlOnly || tr.dataset.wl === '1';
+    const okInd = !ind || tr.dataset.ind === ind;
+    tr.style.display = (okWl && okInd) ? '' : 'none';
   });
 }
 </script>
@@ -40,37 +45,76 @@ def _num_td(v: float | None, spec: str = ".2f") -> str:
     return f"<td data-v='{raw}'>{_fmt(v, spec)}</td>"
 
 
+_HEADS = [
+    (None, "종목"), (None, "산업/업종"), ("pbr", None), ("per", None), ("psr", None),
+    ("roe", None), ("roe_median", None), ("debt", None), ("sector_pct", None),
+    ("loss5y", None), ("r4", None),
+]
+
+
+def _head_row() -> str:
+    cells = []
+    for key, label in _HEADS:
+        inner = tip(key) if key else html.escape(label or "")
+        cells.append(f"<th onclick='sortBy(this)' style='cursor:pointer'>{inner}</th>")
+    return "<tr>" + "".join(cells) + "</tr>"
+
+
+def _stock_tr(r: StockRow) -> str:
+    v = r.val
+    wl = "1" if r.industry else "0"
+    label = r.industry or r.val.sector_krx or "—"
+    if r.r4 == "통과":
+        r4_cell, r4_sort, row_cls = "<span class='ph ph-bott'>통과</span>", "통과", " class='passed-row'"
+    else:
+        r4_cell = r4_sort = html.escape(r.r4.split("(")[0])
+        row_cls = ""
+    return (
+        f"<tr data-wl='{wl}' data-ind='{html.escape(label)}'{row_cls}>"
+        f"<td data-v='{r.name}'><a href='/stocks/{r.symbol}'>{html.escape(r.name)}</a> "
+        f"<span class='meta'>{r.symbol}</span></td>"
+        f"<td data-v='{html.escape(label)}'>{html.escape(label)}{' ✓' if r.industry else ''}</td>"
+        f"{_num_td(v.pbr)}{_num_td(v.per, '.1f')}{_num_td(v.psr)}"
+        f"{_num_td(v.roe, '+.1%')}{_num_td(v.roe_median_5y, '+.1%')}{_num_td(v.debt_ratio)}"
+        f"{_num_td(v.sector_pbr_pct, '.0%')}"
+        f"<td data-v='{v.loss_years_5y if v.loss_years_5y is not None else ''}'>"
+        f"{v.loss_years_5y if v.loss_years_5y is not None else '—'}년/{v.loss_years_observed or 0}년</td>"
+        f"<td data-v='{r4_sort}'>{r4_cell}</td></tr>"
+    )
+
+
 def render_list(rows: list[StockRow] | None = None) -> str:
     rows = stock_rows() if rows is None else rows
+    passed = [r for r in rows if r.r4 == "통과"]
+    industries = sorted({r.industry or r.val.sector_krx or "—" for r in rows})
+    options = "".join(f"<option value='{html.escape(i)}'>{html.escape(i)}</option>" for i in industries)
+
     parts = [
         "<h1>종목</h1>",
-        f"<div class='meta'>밸류에이션 산출 {len(rows)}종목, 산업 내 PBR 위치 오름차순. "
-        "열 제목 클릭=정렬. <label><input type='checkbox' onchange='toggleZone(this)'> "
-        "화이트리스트만</label></div>",
-        "<div class='card scroll'><table><thead><tr>",
+        f"<div class='meta'>밸류에이션 산출 {len(rows)}종목. 열 제목 클릭=정렬, "
+        "지표 위에 마우스를 올리면 설명이 나옵니다.</div>",
+        f"<h2>{tip('r4', 'R4 통과')} ({len(passed)}) — 관찰 후보</h2>",
     ]
-    heads = ["종목", "산업/업종", "PBR", "PER", "PSR", "ROE", "ROE중앙5y", "부채비율",
-             "산업내PBR", "적자5y", "R4 판정"]
-    parts += [f"<th onclick='sortBy(this)' style='cursor:pointer'>{h}</th>" for h in heads]
-    parts.append("</tr></thead><tbody>")
-    for r in rows:
-        v = r.val
-        wl = "1" if r.industry else "0"
-        label = r.industry or r.val.sector_krx or "—"
-        r4 = "통과" if r.r4 == "통과" else html.escape(r.r4.split("(")[0])
-        r4_cell = f"<span class='pill'>{r4}</span>" if r.r4 == "통과" else r4
-        parts.append(
-            f"<tr data-wl='{wl}'>"
-            f"<td data-v='{r.name}'><a href='/stocks/{r.symbol}'>{html.escape(r.name)}</a> "
-            f"<span class='meta'>{r.symbol}</span></td>"
-            f"<td data-v='{html.escape(label)}'>{html.escape(label)}{' ✓' if r.industry else ''}</td>"
-            f"{_num_td(v.pbr)}{_num_td(v.per, '.1f')}{_num_td(v.psr)}"
-            f"{_num_td(v.roe, '+.1%')}{_num_td(v.roe_median_5y, '+.1%')}{_num_td(v.debt_ratio)}"
-            f"{_num_td(v.sector_pbr_pct, '.0%')}"
-            f"<td data-v='{v.loss_years_5y if v.loss_years_5y is not None else ''}'>"
-            f"{v.loss_years_5y if v.loss_years_5y is not None else '—'}/{v.loss_years_observed or 0}</td>"
-            f"<td data-v='{r4}'>{r4_cell}</td></tr>"
-        )
+    if passed:
+        parts.append("<div class='card hero scroll'><table><thead>")
+        parts.append(_head_row())
+        parts.append("</thead><tbody>")
+        parts += [_stock_tr(r) for r in passed]
+        parts.append("</tbody></table></div>")
+    else:
+        parts.append("<div class='card meta'>통과 종목 없음 — 정상 상태일 수 있습니다</div>")
+
+    parts += [
+        f"<h2>전체 평가 유니버스 ({len(rows)})</h2>",
+        "<div class='meta'><label><input type='checkbox' id='wl-only' "
+        "onchange='applyFilters()'> 화이트리스트만</label> &nbsp; 산업: "
+        "<select id='ind-filter' onchange='applyFilters()'>"
+        f"<option value=''>전체</option>{options}</select></div>",
+        "<div class='card scroll'><table id='all-table'><thead>",
+        _head_row(),
+        "</thead><tbody>",
+    ]
+    parts += [_stock_tr(r) for r in rows]
     parts.append("</tbody></table></div>")
     parts.append(_SORT_JS)
     return page("종목 — 트레이딩 v0.3", "\n".join(parts), active="/stocks")
@@ -94,12 +138,12 @@ def render_detail(symbol: str) -> str | None:
         f"<div class='meta'>{html.escape(d.row.industry or d.row.val.sector_krx or '')} · "
         f"재무 기준 {html.escape(v.fin_basis or '—')} · as_of {str(v.as_of)[:10]}</div>",
         "<h2>밸류에이션</h2><div class='card'><table><tr>",
-        f"<th>PBR</th><td>{_fmt(v.pbr)}</td><th>PER</th><td>{_fmt(v.per, '.1f')}</td>"
-        f"<th>PSR</th><td>{_fmt(v.psr)}</td><th>ROE</th><td>{_fmt(v.roe, '+.1%')}</td></tr><tr>"
-        f"<th>ROE 5y중앙</th><td>{_fmt(v.roe_median_5y, '+.1%')}</td>"
-        f"<th>부채비율</th><td>{_fmt(v.debt_ratio)}</td>"
-        f"<th>산업 내 PBR</th><td>하위 {_fmt(v.sector_pbr_pct, '.0%')}</td>"
-        f"<th>적자(5y)</th><td>{v.loss_years_5y if v.loss_years_5y is not None else '—'}년"
+        f"<th>{tip('pbr')}</th><td>{_fmt(v.pbr)}</td><th>{tip('per')}</th><td>{_fmt(v.per, '.1f')}</td>"
+        f"<th>{tip('psr')}</th><td>{_fmt(v.psr)}</td><th>{tip('roe')}</th><td>{_fmt(v.roe, '+.1%')}</td></tr><tr>"
+        f"<th>{tip('roe_median')}</th><td>{_fmt(v.roe_median_5y, '+.1%')}</td>"
+        f"<th>{tip('debt')}</th><td>{_fmt(v.debt_ratio)}</td>"
+        f"<th>{tip('sector_pct')}</th><td>하위 {_fmt(v.sector_pbr_pct, '.0%')}</td>"
+        f"<th>{tip('loss5y')}</th><td>{v.loss_years_5y if v.loss_years_5y is not None else '—'}년"
         f"/{v.loss_years_observed or 0}년 관측</td></tr></table></div>",
     ]
 
@@ -122,7 +166,8 @@ def render_detail(symbol: str) -> str | None:
     if d.band is not None:
         b = d.band
         cyc_line = (
-            f"국면 <b>{phase_ko(b.cycle.phase)}</b>, 온도 {b.cycle.temperature if b.cycle.temperature is not None else '—'}"
+            f"{tip('phase', '국면')} {phase_pill(b.cycle.phase)} 온도 "
+            f"{b.cycle.temperature if b.cycle.temperature is not None else '—'}"
             if b.cycle
             else "국면 미산출"
         )
@@ -131,7 +176,7 @@ def render_detail(symbol: str) -> str | None:
             f"<h2>산업 컨텍스트 — {html.escape(b.group)}</h2>",
             f"<div class='card'>{cyc_line}<br>"
             f"산업 PBR 밴드 {_fmt(b.pbr_lo)}~{_fmt(b.pbr_hi)} (현재 {_fmt(b.pbr_now)}) — "
-            f"<b>사이클 진폭 {amp}</b><br>"
+            f"<b>{tip('amplitude', '사이클 진폭')} {amp}</b><br>"
             f"산업 마진 범위 {_fmt(b.margin_lo, '.1%')}~{_fmt(b.margin_hi, '.1%')}"
             f"<div class='meta'>{html.escape(PHASE_LEGEND_KO)}</div></div>",
         ]

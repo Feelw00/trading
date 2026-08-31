@@ -10,6 +10,7 @@ from trading.cycle.bands import SectorYear, build_sector_years, discover_year_en
 from trading.cycle.engine import PROPOSED_PARAMS, assess
 from trading.cycle.policy import CURATED_GROUPS, FINANCIAL_PROFILE_GROUPS
 from trading.cycle.store import CycleStore
+from trading.web.glossary import phase_pill, tip
 from trading.web.layout import page
 from trading.web.stocks_data import GROUP_TO_INDUSTRY, stock_rows
 from trading.web.svg import dual_bar_chart, line_chart, phase_strip
@@ -54,15 +55,17 @@ def render_industries_list() -> str:
         "<h1>산업</h1>",
         f"<div class='meta'>밴드 그룹 {len(entries)}개, PBR 밴드 위치 오름차순. ✓=화이트리스트. "
         f"{html.escape(PHASE_LEGEND_KO)}</div>",
-        "<div class='card scroll'><table><thead><tr><th>산업 그룹</th><th>국면</th><th>온도</th>"
-        "<th>PBR밴드</th><th>마진밴드</th><th>사이클 진폭</th><th>구성</th></tr></thead><tbody>",
+        "<div class='card scroll'><table><thead><tr><th>산업 그룹</th>"
+        f"<th>{tip('phase', '국면')}</th><th>{tip('temp', '온도')}</th>"
+        f"<th>{tip('band_pct', 'PBR밴드')}</th><th>{tip('margin_band', '마진밴드')}</th>"
+        f"<th>{tip('amplitude', '사이클 진폭')}</th><th>구성</th></tr></thead><tbody>",
     ]
     for _key, group, cyc, amp, rows in entries:
         wl = " ✓" if group in GROUP_TO_INDUSTRY else ""
         n_now = next((r.n_pbr for r in rows if r.year == "current"), 0)
         parts.append(
             f"<tr><td><a href='/industries/{quote(group)}'>{html.escape(group)}</a>{wl}</td>"
-            f"<td>{phase_ko(cyc.phase) if cyc else '—'}</td>"
+            f"<td>{phase_pill(cyc.phase) if cyc else '—'}</td>"
             f"<td>{cyc.temperature if cyc and cyc.temperature is not None else '—'}</td>"
             f"<td>{_fmt(cyc.axes_primary.sector_pbr_band_pct if cyc else None, '.0%')}</td>"
             f"<td>{_fmt(cyc.axes_primary.sector_margin_band_pct if cyc else None, '.0%')}</td>"
@@ -95,7 +98,7 @@ def render_industry_detail(group: str) -> str | None:
     industry_label = GROUP_TO_INDUSTRY.get(group)
     parts = [
         f"<h1>{html.escape(group)}{' ✓ ' + html.escape(industry_label) if industry_label else ''}</h1>",
-        f"<div class='meta'>현재 국면 <b>{phase_ko(now.phase)}</b>"
+        f"<div class='meta'>현재 국면 {phase_pill(now.phase)}"
         f"{f', 온도 {now.temperature}' if now.temperature is not None else ''} · "
         f"PBR밴드 {_fmt(now.pbr_band_pct, '.0%')} · 마진밴드 {_fmt(now.margin_band_pct, '.0%')} · "
         f"매출z {_fmt(now.rev_cycle_z)}</div>",
