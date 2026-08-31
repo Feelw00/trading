@@ -102,6 +102,11 @@ def collect_year(
 ) -> YearResult:
     res = YearResult(year=year, ok=[])
     for sym in symbols:
+        if sym.startswith("9"):
+            # 외국법인(KDR, 9xxxxx) — 2020 검증 실측: DART 발행주식총수와 상장주식수가
+            # 구조적으로 불일치(950160 오차 80%). 파생 시총 신뢰 불가 → 정직 제외.
+            res.no_shares += 1
+            continue
         corp = corp_map.get(sym)
         if corp is None:
             res.no_shares += 1
