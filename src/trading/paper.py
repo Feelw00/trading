@@ -5,6 +5,8 @@
 결정론으로 판정해 제시한다. 원장의 100단위는 **정규화 단위(100 = 비중 100%)**이며 실투자
 수량이 아니다(v2.8 부기) — 얼마를 살지는 이 모듈이 정하지 않는다(R5 §6 결재 전).
 
+- **시작가 불변**(운영자 2026-09-02): 추가 매수로 평단이 낮아져도 시작가를 옮기지 않는다 —
+  "손해가 발생했으면 그것도 데이터". ``rebase``는 입력 오류 정정 전용(``--correction <사유>`` 필수).
 - **실주문 없음** — EXEC와 완전 무관한 페이퍼 원장(절대금지 3과 무관). 계측·학습 전용.
 - 규칙(PaperParams)은 가치투자·사이클투자 문헌 조사로 캘리브레이션(POLICY §7 v2.5~).
 - 트리거는 **등록 시점에 전부 박제**된다: 매수 상한 = 기준가→정리가의 1/3 지점
@@ -505,6 +507,12 @@ def main() -> int:
 
         if args and args[0] == "rebase" and len(args) >= 3:
             sym, new_base = args[1], float(args[2])
+            if "--correction" not in args or args.index("--correction") + 1 >= len(args):
+                print("시작가 불변(운영자 2026-09-02): 추가 매수로 평단이 낮아져도 시작가를 옮기지 "
+                      "않는다 — 손실도 데이터. 입력 오류 정정만 "
+                      "`rebase <심볼> <가> --correction <사유>`로.")
+                return 2
+            print(f"정정 사유: {args[args.index('--correction') + 1]}")
             pos = next((p for p in store.latest_positions() if p.symbol == sym), None)
             if pos is None:
                 print(f"{sym}: 포지션 없음")

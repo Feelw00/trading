@@ -40,10 +40,14 @@ def render_paper() -> str:
 
     today = now_kst().date()
     last_dt = max((v.last_dt for v in views if v.last_dt), default="—")
+    from trading.guide_orders import account_view, short_label
+
+    acct, plans = account_view()  # EXEC-12: 토스 실보유 스냅샷 + 가이드 매도 예약(08:40 갱신)
     parts.append(
         f"<div class='card scroll'><table><tr><th>종목</th><th>시작가</th>"
         f"<th>현재가 <span class='meta'>{last_dt}</span></th><th>수익률</th>"
-        "<th class='hl'>매수</th><th class='hl'>매도</th><th>정리</th></tr>"
+        "<th class='hl'>매수</th><th class='hl'>매도</th><th>정리</th>"
+        "<th>실보유</th><th>예약</th></tr>"
     )
     for v in sorted(views, key=lambda x: x.symbol):
         if v.status != "open" or v.buy_ceiling is None:
@@ -70,13 +74,31 @@ def render_paper() -> str:
         tag = "" if v.status == "open" else " <span class='meta'>청산</span>"
         if v.cycle:
             tag += f" <span class='meta'>사이클 {v.cycle + 1}</span>"
+        hold = acct.get(v.symbol)
+        if hold is None:
+            real = "—"
+        elif hold.avg_price:
+            real = f"{hold.quantity}주 <span class='meta'>평단 {hold.avg_price:,.0f}</span>"
+        else:
+            real = f"{hold.quantity}주"
+        pl = plans.get(v.symbol)
+        if pl is None:
+            resv = "—"
+        elif pl.event == "skip":
+            resv = "없음 <span class='meta'>매도선 소진</span>"
+        else:
+            state = {"intent": "dry-run", "sent": "등록", "keep": "유지"}.get(pl.event, pl.event)
+            if pl.event == "keep" and pl.mode != "live":
+                state = "dry-run"
+            resv = (f"{short_label(pl.leg_label)} {pl.quantity or 0}주 @{(pl.trigger_price or 0):,} "
+                    f"<span class='meta'>{state}</span>")
         parts.append(
             f"<tr><td><a href='/stocks/{v.symbol}'>{name}</a>{tag}</td>"
             f"<td>{v.base_price:,.0f}</td>"
             f"<td>{f'{v.last_price:,.0f}' if v.last_price else '—'}</td>"
             f"<td><b>{pr}</b></td>"
             f"<td class='hl'>{buy}</td><td class='hl'>{sell}</td>"
-            f"<td>{fin}</td></tr>"
+            f"<td>{fin}</td><td>{real}</td><td>{resv}</td></tr>"
         )
     parts.append("</table></div>")
 
@@ -94,7 +116,9 @@ def render_paper() -> str:
         "(비중은 전체 포지션 대비 — 추가 매수 시 갱신). 정리 = 목표가 150% 도달가, "
         "~연월은 등록일+3년 시한(미수렴 청산). 수익률 = (실현+평가) ÷ 투입 − 1"
         "(정규화 단위 기준 — 시작가 대비, 실투자 수량과 무관) · "
-        "체결 내역은 CLI(python -m trading.paper) 참조.</div>"
+        "체결 내역은 CLI(python -m trading.paper) 참조. "
+        "실보유·예약 = 토스 실계좌 스냅샷과 가이드 매도 조건주문(EXEC-12, 평일 08:40 갱신 — "
+        "수량 변경 시에만 재등록). 시작가는 추가 매수로 평단이 낮아져도 불변.</div>"
     )
     return page("매매 가이드", "".join(parts), active="/paper")
 

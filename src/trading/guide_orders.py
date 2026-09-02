@@ -1,20 +1,25 @@
-"""가이드 매도 예약(EXEC-12, 운영자 결정 2026-09-02) — 실계좌 감시 + 조건주문 재등록.
+"""가이드 매도 예약(EXEC-12, 운영자 결정 2026-09-02) — 실계좌 감시 + 조건주문 관리.
 
 `python -m trading.guide_orders [--mode off|dry-run|live]` · cron 라운드 ``guide-orders``.
 
 - **매수는 운영자 수동.** 이 모듈은 토스 실보유 중 가이드(`trading.paper`) open 종목의
   **다음 매도선**에 실보유 기준 수량을 **조건주문(SINGLE·SELL·지정가)** 으로 건다.
-  스케줄마다 우리 조건주문을 전량 취소하고 다시 건다(운영자 지시: "취소 후 다시 걸고").
+- **재등록은 변경이 있을 때만**(운영자 2차 지시 2026-09-02): 살아 있는 우리 조건주문이 현재
+  계획(매도선·수량·감시가)과 같고 등록 당시 보유 수량과 지금 보유가 같으면 **유지**. 추가
+  매수·예약 체결·수동 매도로 수량이 바뀌었거나 주문이 소멸(체결·만료·외부 취소)했거나 만료
+  ``RENEW_WITHIN_DAYS`` 이내면 기존 것을 취소하고 다시 건다.
 - 수량 = int(실보유 × 사다리 비중) — 가이드 엔진(`paper.mark`)과 동일한 정수 내림.
   0이면 그 선은 건너뛰고 다음 선으로(1~2주 보유는 120%/150%선에서만 매도가 성립).
 - 사다리 진행 = **우리 조건주문의 실체결**(COMPLETED, triggeredOrderId) 누적 — 페이퍼
   시뮬레이션(종가 교차)과 분리. 운영자 수동 매도는 진행으로 치지 않고 이벤트로 남긴다.
 - 가격: 감시가 = 주문가 = 가이드 매도선을 **호가단위로 올림**(가이드선 아래로 팔지 않는다).
+- **시작가(기준가)는 불변**(운영자 2026-09-02): 추가 매수로 평단이 낮아져도 가이드 시작가를
+  옮기지 않는다 — 손실도 데이터. 이 모듈은 페이퍼 원장에 쓰지 않는다.
 - 모드 ``GUIDE_ORDERS_MODE`` = off | dry-run(기본 — 조회·계획·저널만, 브로커 쓰기 없음) | live.
   킬 스위치 ``.runtime/exec/KILL`` 공유(EXEC-1). live 전환은 dry-run 5거래일 후 운영자가 .env.
-- 저널 ``data/broker.sqlite`` append-only: 보유 스냅샷 · 조건주문 이벤트(intent/sent/cancel/
-  filled/expired/canceled/rejected/triggered_unfilled) · 계좌 이벤트(가이드 밖 보유·수량 증감·
-  수동 매도 감지). UPDATE/DELETE 없음.
+- 저널 ``data/broker.sqlite`` append-only: 보유 스냅샷 · 조건주문 이벤트(intent/sent/keep/
+  cancel/filled/expired/canceled/rejected/triggered_unfilled/skip) · 계좌 이벤트(신규 보유·수량
+  증감·소멸·수동 매도). 행 UPDATE/DELETE 없음(스키마 컬럼 추가만 마이그레이션).
 - 절대금지 #3: 지정가만 — 브로커 어댑터가 orderType=LIMIT을 하드코딩한다. 시장가 경로 없음.
 - **이익 보호·3년 시한·심사 veto 청산은 여기서 자동화하지 않는다**(하락 시 매도 = 스탑 —
   운영자 결정: P0 알림 후 수동).
@@ -26,7 +31,7 @@ import sqlite3
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -36,7 +41,8 @@ from trading.paper import PaperStore, PositionRow
 DEFAULT_DB = Path("data") / "broker.sqlite"
 KILL_FILE = Path(".runtime") / "exec" / "KILL"   # EXEC-1 킬 스위치 공유
 CLIENT_PREFIX = "guide-"
-EXPIRE_DAYS = 7          # 롤링 만료 — 스케줄이 죽어도 7일 뒤 자동 소멸
+EXPIRE_DAYS = 7          # 조건주문 만료 — 스케줄이 죽어도 7일 뒤 자동 소멸
+RENEW_WITHIN_DAYS = 2    # 만료가 이 안이면 변경 없어도 갱신(취소 후 재등록)
 MODES = ("off", "dry-run", "live")
 
 # KRX 호가가격단위(원) — 2023-01 개정 공개 규정(executor.tick_size와 동일 표, 동결 모듈 미import).
@@ -160,6 +166,14 @@ def _float(v: Any) -> float | None:
         return None
 
 
+def short_label(label: str | None) -> str:
+    """'목표가 80% 매도' → '80%', '정리(목표가 150%)' → '정리 150%' — 표시용."""
+    if not label:
+        return "—"
+    s = label.replace("목표가 ", "").replace(" 매도", "")
+    return s.replace("정리(", "정리 ").replace(")", "")
+
+
 # --- 저널(append-only) -------------------------------------------------------------------------
 
 DDL = """
@@ -173,7 +187,7 @@ CREATE TABLE IF NOT EXISTS guide_orders (
   ts TEXT NOT NULL, event TEXT NOT NULL, symbol TEXT NOT NULL, cycle INTEGER NOT NULL,
   cond_id TEXT, client_order_id TEXT, leg_index INTEGER, leg_label TEXT,
   trigger_price INTEGER, order_price INTEGER, quantity INTEGER, expire_date TEXT,
-  mode TEXT NOT NULL, note TEXT
+  mode TEXT NOT NULL, note TEXT, holding_qty INTEGER
 );
 CREATE TABLE IF NOT EXISTS events (
   row_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -184,14 +198,37 @@ CREATE INDEX IF NOT EXISTS idx_go_cond ON guide_orders(cond_id);
 CREATE INDEX IF NOT EXISTS idx_go_sym ON guide_orders(symbol, cycle);
 """
 
+_CLOSING_EVENTS = ("cancel", "filled", "expired", "canceled", "triggered_unfilled", "lost")
+
 
 @dataclass(frozen=True)
 class OpenOrder:
+    """우리가 보낸 조건주문(저널 기준 미종결)."""
+
     cond_id: str
     symbol: str
     cycle: int
     leg_index: int
     quantity: int
+    trigger_price: int
+    holding_qty: int
+    expire_date: str
+
+
+@dataclass(frozen=True)
+class PlanRow:
+    """종목별 마지막 계획 행(intent/sent/keep/skip) — 유지 판정·표시용."""
+
+    event: str
+    leg_index: int | None
+    leg_label: str | None
+    trigger_price: int | None
+    quantity: int | None
+    holding_qty: int | None
+    expire_date: str | None
+    cond_id: str | None
+    mode: str
+    ts: str
 
 
 class BrokerStore:
@@ -201,6 +238,11 @@ class BrokerStore:
         self._conn = sqlite3.connect(str(path))
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(DDL)
+        # 컬럼 추가 마이그레이션(행 무변경) — 2026-09-02 holding_qty 도입
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(guide_orders)")}
+        if "holding_qty" not in cols:
+            self._conn.execute("ALTER TABLE guide_orders ADD COLUMN holding_qty INTEGER")
+            self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()
@@ -231,35 +273,52 @@ class BrokerStore:
         ).fetchall()
         return {str(s): int(q) for s, q in rows}
 
+    def latest_holdings(self) -> dict[str, Holding]:
+        """최신 스냅샷 전체(웹 표시용)."""
+        row = self._conn.execute("SELECT MAX(as_of) FROM holdings_snapshots").fetchone()
+        if row is None or row[0] is None:
+            return {}
+        rows = self._conn.execute(
+            "SELECT symbol, name, quantity, avg_price, last_price FROM holdings_snapshots "
+            "WHERE as_of = ? AND symbol != ''",
+            (row[0],),
+        ).fetchall()
+        return {str(s): Holding(str(s), str(n or ""), int(q), a, lp) for s, n, q, a, lp in rows}
+
     # 조건주문 이벤트
     def append_order(
         self, *, ts: datetime, event: str, symbol: str, cycle: int, mode: str,
         cond_id: str | None = None, client_order_id: str | None = None,
         leg: Leg | None = None, expire_date: str | None = None, note: str = "",
+        holding_qty: int | None = None,
     ) -> None:
         self._conn.execute(
             "INSERT INTO guide_orders (ts, event, symbol, cycle, cond_id, client_order_id, "
-            "leg_index, leg_label, trigger_price, order_price, quantity, expire_date, mode, note)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "leg_index, leg_label, trigger_price, order_price, quantity, expire_date, mode, note, "
+            "holding_qty) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 ts.isoformat(), event, symbol, cycle, cond_id, client_order_id,
                 leg.index if leg else None, leg.label if leg else None,
                 leg.trigger_price if leg else None, leg.order_price if leg else None,
-                leg.quantity if leg else None, expire_date, mode, note,
+                leg.quantity if leg else None, expire_date, mode, note, holding_qty,
             ),
         )
         self._conn.commit()
 
     def open_orders(self) -> list[OpenOrder]:
         """우리가 보낸(sent) 조건주문 중 종결 이벤트가 없는 것."""
+        marks = ",".join("?" for _ in _CLOSING_EVENTS)
         rows = self._conn.execute(
-            "SELECT cond_id, symbol, cycle, leg_index, quantity FROM guide_orders "
-            "WHERE event = 'sent' AND cond_id IS NOT NULL AND cond_id NOT IN ("
-            "  SELECT cond_id FROM guide_orders WHERE cond_id IS NOT NULL AND event IN "
-            "  ('cancel', 'filled', 'expired', 'canceled', 'triggered_unfilled', 'lost'))"
-            " ORDER BY row_id",
+            "SELECT cond_id, symbol, cycle, leg_index, quantity, trigger_price, holding_qty, "
+            "expire_date FROM guide_orders WHERE event = 'sent' AND cond_id IS NOT NULL "
+            f"AND cond_id NOT IN (SELECT cond_id FROM guide_orders WHERE cond_id IS NOT NULL "
+            f"AND event IN ({marks})) ORDER BY row_id",
+            _CLOSING_EVENTS,
         ).fetchall()
-        return [OpenOrder(str(c), str(s), int(cy), int(li), int(q)) for c, s, cy, li, q in rows]
+        return [
+            OpenOrder(str(c), str(s), int(cy), int(li), int(q), int(tp or 0), int(hq or 0), str(ex or ""))
+            for c, s, cy, li, q, tp, hq, ex in rows
+        ]
 
     def done_legs(self, symbol: str, cycle: int) -> int:
         """이 사이클에서 실체결된 마지막 사다리 인덱스 + 1 (없으면 0)."""
@@ -270,6 +329,31 @@ class BrokerStore:
         ).fetchone()
         return 0 if row is None or row[0] is None else int(row[0]) + 1
 
+    def last_plan(self, symbol: str) -> PlanRow | None:
+        """종목의 마지막 계획 행(intent/sent/keep/skip)."""
+        row = self._conn.execute(
+            "SELECT event, leg_index, leg_label, trigger_price, quantity, holding_qty, "
+            "expire_date, cond_id, mode, ts FROM guide_orders WHERE symbol = ? "
+            "AND event IN ('intent', 'sent', 'keep', 'skip') ORDER BY row_id DESC LIMIT 1",
+            (symbol,),
+        ).fetchone()
+        if row is None:
+            return None
+        ev, li, ll, tp, q, hq, ex, cid, mode, ts = row
+        return PlanRow(
+            str(ev), None if li is None else int(li), ll, None if tp is None else int(tp),
+            None if q is None else int(q), None if hq is None else int(hq), ex, cid, str(mode), str(ts),
+        )
+
+    def latest_plans(self) -> dict[str, PlanRow]:
+        syms = [str(r[0]) for r in self._conn.execute("SELECT DISTINCT symbol FROM guide_orders")]
+        out: dict[str, PlanRow] = {}
+        for s in syms:
+            p = self.last_plan(s)
+            if p is not None:
+                out[s] = p
+        return out
+
     def append_event(self, ts: datetime, kind: str, symbol: str | None, detail: str) -> None:
         self._conn.execute(
             "INSERT INTO events (ts, kind, symbol, detail) VALUES (?,?,?,?)",
@@ -277,19 +361,17 @@ class BrokerStore:
         )
         self._conn.commit()
 
-    def latest_plan(self) -> dict[str, dict[str, Any]]:
-        """종목별 마지막 intent/sent 행(웹·CLI 표시용)."""
-        rows = self._conn.execute(
-            "SELECT symbol, event, leg_label, trigger_price, quantity, mode, ts FROM guide_orders "
-            "WHERE event IN ('intent', 'sent', 'skip') ORDER BY row_id",
-        ).fetchall()
-        out: dict[str, dict[str, Any]] = {}
-        for sym, ev, label, px, q, mode, ts in rows:
-            out[str(sym)] = {
-                "event": ev, "label": label, "trigger_price": px, "quantity": q,
-                "mode": mode, "ts": ts,
-            }
-        return out
+
+def account_view(db_path: Path | None = None) -> tuple[dict[str, Holding], dict[str, PlanRow]]:
+    """웹/CLI 표시용 — 저널이 없으면 빈 값(파일을 만들지 않는다)."""
+    path = db_path if db_path is not None else DEFAULT_DB
+    if not path.exists():
+        return {}, {}
+    store = BrokerStore(path)
+    try:
+        return store.latest_holdings(), store.latest_plans()
+    finally:
+        store.close()
 
 
 # --- 실행 ------------------------------------------------------------------------------------
@@ -301,6 +383,7 @@ class RunSummary:
     holdings: int = 0
     guided: int = 0
     placed: int = 0
+    kept: int = 0
     skipped: int = 0
     canceled: int = 0
     filled: int = 0
@@ -315,6 +398,24 @@ def _cond_list(raw: Any) -> list[dict[str, Any]]:
     return [x for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
 
 
+def _days_left(expire_date: str | None, today: date) -> int:
+    try:
+        return (date.fromisoformat(str(expire_date)) - today).days
+    except ValueError:
+        return -1
+
+
+def _same_plan(
+    prior: PlanRow | OpenOrder, leg: Leg, holding_qty: int, today: date
+) -> bool:
+    """유지 조건: 매도선·수량·감시가 동일 + 등록 당시 보유 = 현재 보유 + 만료 여유."""
+    same = (
+        prior.leg_index == leg.index and prior.quantity == leg.quantity
+        and prior.trigger_price == leg.trigger_price and prior.holding_qty == holding_qty
+    )
+    return same and _days_left(prior.expire_date, today) > RENEW_WITHIN_DAYS
+
+
 def run(
     client: BrokerClient,
     *,
@@ -324,11 +425,12 @@ def run(
     now: datetime | None = None,
     alert: Any | None = None,
 ) -> RunSummary:
-    """1회 실행: 보유 스냅샷·이상 감지 → 우리 조건주문 상태 정산·취소 → 다음 매도선 재등록.
+    """1회 실행: 보유 스냅샷·이상 감지 → 우리 조건주문 정산 → 변경 시에만 취소·재등록.
 
     ``alert``: P1 적재 콜백(what) — 라운드 보고 꼬리에 실린다. None이면 print만.
     """
     ts = now or now_kst()
+    today = ts.date()
     s = RunSummary(mode=mode, anomalies=[], lines=[])
     assert s.anomalies is not None and s.lines is not None
     if mode == "off":
@@ -355,17 +457,18 @@ def run(
         if sym not in held:
             store.append_event(ts, "holding_gone", sym, f"{q}주 → 0")
 
-    # 2. 우리 조건주문 정산 — 브로커 상태 대조(체결/만료/취소/발동 미체결) → 잔존은 취소
-    broker_open = {str(o.get("conditionalOrderId")): o for o in _cond_list(client.conditional_orders("OPEN"))}
+    # 2. 우리 조건주문 정산 — 브로커에 없는 것은 상태 조회(체결/만료/외부 취소/발동 미체결).
+    #    살아 있는 것은 4단계에서 유지/교체를 정한다(매번 취소하지 않는다 — 운영자 2차 지시).
+    broker_open = {
+        str(o.get("conditionalOrderId")): o for o in _cond_list(client.conditional_orders("OPEN"))
+    }
     ours = store.open_orders()
     our_ids = {o.cond_id for o in ours}
+    alive: dict[str, list[OpenOrder]] = {}
     filled_syms: set[str] = set()
     for o in ours:
         if o.cond_id in broker_open:
-            if mode == "live":
-                client.cancel_conditional(o.cond_id)
-                store.append_order(ts=ts, event="cancel", symbol=o.symbol, cycle=o.cycle, mode=mode, cond_id=o.cond_id, note="재등록 전 취소")
-                s.canceled += 1
+            alive.setdefault(o.symbol, []).append(o)
             continue
         detail = client.conditional_order(o.cond_id)
         status = str(detail.get("status") or "")
@@ -378,20 +481,32 @@ def run(
                 ex = od.get("execution") if isinstance(od, dict) else None
                 if isinstance(ex, dict) and ex.get("filledQuantity") is not None:
                     fq = _int(ex.get("filledQuantity"))
-            store.append_order(ts=ts, event="filled", symbol=o.symbol, cycle=o.cycle, mode=mode, cond_id=o.cond_id, note=f"triggeredOrderId={trig_id} filled={fq}", leg=Leg(o.leg_index, "", 0.0, 0, 0, fq))
+            store.append_order(
+                ts=ts, event="filled", symbol=o.symbol, cycle=o.cycle, mode=mode, cond_id=o.cond_id,
+                note=f"triggeredOrderId={trig_id} filled={fq}", leg=Leg(o.leg_index, "", 0.0, 0, 0, fq),
+            )
             store.append_event(ts, "filled", o.symbol, f"leg{o.leg_index} {fq}주")
             filled_syms.add(o.symbol)
             s.filled += 1
         elif status in ("ORDERED", "ORDERING"):
-            store.append_order(ts=ts, event="triggered_unfilled", symbol=o.symbol, cycle=o.cycle, mode=mode, cond_id=o.cond_id, note=f"status={status} triggeredOrderId={trig_id}")
+            store.append_order(
+                ts=ts, event="triggered_unfilled", symbol=o.symbol, cycle=o.cycle, mode=mode,
+                cond_id=o.cond_id, note=f"status={status} triggeredOrderId={trig_id}",
+            )
             _p1(f"가이드 매도 발동 후 미체결: {o.symbol} leg{o.leg_index} — 재등록됨(status={status})")
         elif status == "EXPIRED":
             store.append_order(ts=ts, event="expired", symbol=o.symbol, cycle=o.cycle, mode=mode, cond_id=o.cond_id)
         elif status:
-            store.append_order(ts=ts, event="canceled", symbol=o.symbol, cycle=o.cycle, mode=mode, cond_id=o.cond_id, note=f"status={status}")
+            store.append_order(
+                ts=ts, event="canceled", symbol=o.symbol, cycle=o.cycle, mode=mode, cond_id=o.cond_id,
+                note=f"status={status}",
+            )
             _p1(f"가이드 조건주문이 외부에서 종료됨: {o.symbol} leg{o.leg_index} status={status}")
         else:
-            store.append_order(ts=ts, event="lost", symbol=o.symbol, cycle=o.cycle, mode=mode, cond_id=o.cond_id, note="상세 조회 실패/빈 응답")
+            store.append_order(
+                ts=ts, event="lost", symbol=o.symbol, cycle=o.cycle, mode=mode, cond_id=o.cond_id,
+                note="상세 조회 실패/빈 응답",
+            )
             _p1(f"가이드 조건주문 상태 불명: {o.symbol} {o.cond_id}")
     foreign = [o for cid, o in broker_open.items() if cid not in our_ids]
     if foreign:
@@ -405,7 +520,7 @@ def run(
             store.append_event(ts, "manual_sell", sym, f"{q}→{cur.quantity}주 (가이드 체결 없음)")
             _p1(f"수동 매도 감지: {sym} {q}→{cur.quantity}주 — 사다리 진행에 미반영")
 
-    # 4. 가이드 open 종목별 다음 매도선 재등록
+    # 4. 가이드 open 종목별 — 계획 산출 → 유지 / (취소 후) 등록
     positions = {p.symbol: p for p in paper.latest_positions() if p.status == "open"}
     for sym, h in held.items():
         if sym not in positions:
@@ -413,22 +528,59 @@ def run(
                 _p1(f"가이드 밖 보유 종목: {sym} {h.name} {h.quantity}주 — 심사·등록 여부 확인")
             s.lines.append(f"{sym} {h.name} {h.quantity}주 — 가이드 밖(미등록)")
     expire = (ts + timedelta(days=EXPIRE_DAYS)).strftime("%Y-%m-%d")
+
+    def _cancel_alive(sym: str, cycle: int, why: str) -> None:
+        for o in alive.get(sym, []):
+            if mode == "live":
+                client.cancel_conditional(o.cond_id)
+            store.append_order(
+                ts=ts, event="cancel", symbol=sym, cycle=cycle, mode=mode, cond_id=o.cond_id, note=why,
+            )
+            s.canceled += 1
+
     for sym in sorted(positions):
         pos = positions[sym]
         hold = held.get(sym)
         if hold is None or hold.quantity <= 0:
+            if alive.get(sym):
+                _cancel_alive(sym, pos.cycle, "보유 0")
             s.lines.append(f"{sym} 보유 0 — 등록 없음")
             continue
         s.guided += 1
         done = store.done_legs(sym, pos.cycle)
         leg = plan_next_leg(hold.quantity, ladder_of(pos), done)
         if leg is None:
-            store.append_order(ts=ts, event="skip", symbol=sym, cycle=pos.cycle, mode=mode, note="사다리 소진/수량 0")
+            _cancel_alive(sym, pos.cycle, "남은 매도선 없음")
+            store.append_order(ts=ts, event="skip", symbol=sym, cycle=pos.cycle, mode=mode, note="사다리 소진/수량 0", holding_qty=hold.quantity)
             s.skipped += 1
             s.lines.append(f"{sym} {hold.name} {hold.quantity}주 — 남은 매도선 없음(건너뜀)")
             continue
+        desc = f"{short_label(leg.label)} {leg.quantity}주 @{leg.trigger_price:,}"
+
+        # 유지 판정 — live: 살아 있는 우리 주문 1건이 계획과 동일 · dry-run: 마지막 intent/keep 동일
+        prior: OpenOrder | PlanRow | None
+        if mode == "live":
+            live_alive = alive.get(sym, [])
+            prior = live_alive[0] if len(live_alive) == 1 else None
+        else:
+            lp = store.last_plan(sym)
+            prior = lp if lp is not None and lp.event in ("intent", "keep") and lp.mode != "live" else None
+        if prior is not None and _same_plan(prior, leg, hold.quantity, today):
+            ex_date = prior.expire_date
+            cid = prior.cond_id
+            store.append_order(
+                ts=ts, event="keep", symbol=sym, cycle=pos.cycle, mode=mode, cond_id=cid, leg=leg,
+                expire_date=ex_date, holding_qty=hold.quantity, note="변경 없음",
+            )
+            s.kept += 1
+            s.lines.append(f"= {sym} {hold.name} {hold.quantity}주 — 유지({desc}, 만료 {ex_date})")
+            continue
+
+        why = "변경" if (alive.get(sym) or (mode != "live" and prior is not None)) else "신규"
+        if alive.get(sym):
+            _cancel_alive(sym, pos.cycle, f"재등록({why}: 보유 {hold.quantity}주 / {desc})")
         coid = f"{CLIENT_PREFIX}{sym}-{leg.index}-{pos.cycle}-{ts:%Y%m%d}"[:36]
-        tag = f"{sym} {hold.name} {hold.quantity}주 → {leg.label} {leg.quantity}주 @{leg.trigger_price:,} (만료 {expire})"
+        tag = f"{sym} {hold.name} {hold.quantity}주 → {desc} (만료 {expire})"
         if mode == "live":
             try:
                 res = client.place_sell_conditional(
@@ -436,23 +588,32 @@ def run(
                     expire_date=expire, client_order_id=coid,
                 )
             except Exception as exc:  # noqa: BLE001 — 거부는 저널+P1, 다음 종목 계속
-                store.append_order(ts=ts, event="rejected", symbol=sym, cycle=pos.cycle, mode=mode, client_order_id=coid, leg=leg, expire_date=expire, note=repr(exc)[:200])
+                store.append_order(
+                    ts=ts, event="rejected", symbol=sym, cycle=pos.cycle, mode=mode, client_order_id=coid,
+                    leg=leg, expire_date=expire, note=repr(exc)[:200], holding_qty=hold.quantity,
+                )
                 _p1(f"가이드 매도 등록 거부: {tag} — {exc!r}"[:300])
                 s.lines.append(f"❌ {tag} — 거부")
                 continue
-            cid = str(res.get("conditionalOrderId") or "") if isinstance(res, dict) else ""
-            store.append_order(ts=ts, event="sent", symbol=sym, cycle=pos.cycle, mode=mode, cond_id=cid or None, client_order_id=coid, leg=leg, expire_date=expire)
-            if not cid:
+            cid_new = str(res.get("conditionalOrderId") or "") if isinstance(res, dict) else ""
+            store.append_order(
+                ts=ts, event="sent", symbol=sym, cycle=pos.cycle, mode=mode, cond_id=cid_new or None,
+                client_order_id=coid, leg=leg, expire_date=expire, holding_qty=hold.quantity,
+            )
+            if not cid_new:
                 _p1(f"가이드 매도 등록 응답에 conditionalOrderId 없음: {tag}")
             s.placed += 1
-            s.lines.append(f"✅ {tag}")
+            s.lines.append(f"✅ {tag} [{why}]")
         else:
-            store.append_order(ts=ts, event="intent", symbol=sym, cycle=pos.cycle, mode=mode, client_order_id=coid, leg=leg, expire_date=expire)
+            store.append_order(
+                ts=ts, event="intent", symbol=sym, cycle=pos.cycle, mode=mode, client_order_id=coid,
+                leg=leg, expire_date=expire, holding_qty=hold.quantity,
+            )
             s.placed += 1
-            s.lines.append(f"[dry-run] {tag}")
+            s.lines.append(f"[dry-run] {tag} [{why}]")
     s.lines.insert(0, (
         f"가이드 매도 예약 [{mode}] 보유 {s.holdings}종목 · 가이드 {s.guided} · 등록 {s.placed} · "
-        f"건너뜀 {s.skipped} · 취소 {s.canceled} · 체결 정산 {s.filled}"
+        f"유지 {s.kept} · 건너뜀 {s.skipped} · 취소 {s.canceled} · 체결 정산 {s.filled}"
     ))
     return s
 
@@ -473,6 +634,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("TOSS 키 미설정 — 가이드 매도 예약 불가(blocked)")
         return 1
     alert_fn: Any = None
+    d: Any = None
     try:
         from trading.alerts import Alert, AlertDispatcher, Severity
 
@@ -502,8 +664,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
-    "BrokerClient", "BrokerStore", "Holding", "Leg", "RunSummary", "guide_orders_mode",
-    "ladder_of", "parse_holdings", "plan_next_leg", "round_up_to_tick", "run", "tick_size",
+    "BrokerClient", "BrokerStore", "Holding", "Leg", "PlanRow", "RunSummary", "account_view",
+    "guide_orders_mode", "ladder_of", "parse_holdings", "plan_next_leg", "round_up_to_tick",
+    "run", "short_label", "tick_size",
 ]
 
 
