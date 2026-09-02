@@ -175,5 +175,6 @@ def test_paper_page_renders(tmp_path: Path) -> None:
     out = render_paper()
     assert "매매 가이드" in out and "실주문 없음" in out
     if "선정 종목 없음" not in out:  # 표 1 열 구성(운영자 지시 2026-09-02) — 비중·'부터' 미노출
-        assert "<th class='hl'>매도선</th><th class='hl'>다음 매도선</th>" in out
+        assert "<th>목표가</th><th>매수 상한</th><th>매도선</th><th>다음 매도선</th>" in out
+        assert "class='hl'" not in out  # 운영자 지시 2026-09-02: 가이드·예약 표 색 강조 없음
         assert "부터" not in out and "까지 매수" not in out and "dry-run" not in out

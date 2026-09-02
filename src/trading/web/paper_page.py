@@ -5,10 +5,11 @@
 가이드로 — 표는 지시형 문구, 가이드 표가 주인공이고 성과는 아래에 병기.
 
 표 구성(운영자 지시 2026-09-02 오후 — "데이터를 마구잡이로 넣지 말 것"):
-- 표 1 가이드: 종목 · 시작가 · 현재가 · 수익률 · 목표가 · 추정 목표가(⚠ 괴리) · 매수 상한(숫자만)
-  · 매도선 · 다음 매도선(가까운 두 선, 금액 뒤 목표가 대비 %) · 정리(금액만). 전체 사다리는 매도선 호버.
+- 표 1 가이드: 종목 · 시작가 · 현재가 · 수익률 · 목표가(호버: 추정 목표가·괴리 %, ±15% ⚠) ·
+  매수 상한(숫자만) · 매도선 · 다음 매도선(가까운 두 선, 금액 뒤 목표가 대비 %) · 정리(금액만).
+  전체 사다리는 매도선 호버. 색 강조 없음(운영자 지시 2026-09-02 "빡빡하다").
 - 표 2 실계좌·예약(EXEC-12): 표 1과 분리. 종목 · 실보유 · 평단 · 예약 매도 · 수량 · 상태
-  (신규/유지/거부/없음/가이드 밖). 모드(모의·주문 미전송 / 실주문)는 제목 옆에 한 번.
+  (신규/유지/거부/없음/가이드 밖). 모드(모의·주문 미전송 / 실주문)는 제목 옆에 한 번. 색 강조 없음.
 
 편입 원칙(운영자 지시 2026-09-02): 페이퍼 = 실투자(guide-orders 실보유 자동 편입) ∨ 명시 이동
 (`paper register`). 보유 종목의 예상치(추정 목표가)는 밸류에이션 갱신에 따라 움직이므로
@@ -55,19 +56,20 @@ def _sell_cells(v: PositionView) -> tuple[str, str]:
     return first, second
 
 
-def _est_cell(v: PositionView, drift: TargetDrift | None) -> str:
-    """추정 목표가 셀 — 값 + 등록 목표 대비 괴리 %(항상, 매도선 셀의 '금액 (%)' 관례) + 임계 초과 ⚠.
+def _target_cell(v: PositionView, drift: TargetDrift | None) -> str:
+    """목표가 셀 — 등록 목표가 하나만 보이고, 호버 툴팁에 오늘 추정 목표가와 괴리 %. 임계 초과 ⚠.
 
-    운영자 요청(2026-09-02): 괴리가 얼마나 났는지 가이드에서 바로 보이게.
+    운영자 지시(2026-09-02): 추정 목표가 열은 빡빡해서 제거, 목표가 호버로.
     """
     if v.status != "open":
         return "—"
     if drift is None:
-        return "— <span class='meta'>결측</span>"
-    cell = f"{drift.estimated:,.0f} <span class='meta'>({drift.pct:+.0f}%)</span>"
-    if drift.alert:
-        cell += (f" <span class='pill warn tip' data-tip='등록 목표 대비 {drift.pct:+.0f}% — "
-                 "반영은 paper retarget'>⚠</span>")
+        tip = "추정 목표가 결측(밸류에이션·시세)"
+    else:
+        tip = f"오늘 추정 목표가 {drift.estimated:,.0f} · 등록 대비 {drift.pct:+.0f}%"
+    cell = f"<span class='tip' data-tip='{tip}'>{v.target_price:,.0f}</span>"
+    if drift is not None and drift.alert:
+        cell += " <span class='pill warn'>⚠</span>"
     return cell
 
 
@@ -79,9 +81,7 @@ def _guide_table(
     rows = [
         f"<div class='card scroll'><table><tr><th>종목</th><th>시작가</th>"
         f"<th>현재가 <span class='meta'>{last_dt}</span></th><th>수익률</th>"
-        "<th>목표가</th><th>추정 목표가</th>"
-        "<th class='hl'>매수 상한</th><th class='hl'>매도선</th><th class='hl'>다음 매도선</th>"
-        "<th>정리</th></tr>"
+        "<th>목표가</th><th>매수 상한</th><th>매도선</th><th>다음 매도선</th><th>정리</th></tr>"
     ]
     for v in sorted(views, key=lambda x: x.symbol):
         if v.status != "open" or v.buy_ceiling is None:
@@ -99,14 +99,13 @@ def _guide_table(
             tag += " <span class='pill warn'>2년 경과</span>"
         if v.status == "open" and approved is not None and v.symbol not in approved:
             tag += " <span class='pill warn'>심사 외</span>"
-        target = f"{v.target_price:,.0f}" if v.status == "open" else "—"
         rows.append(
             f"<tr><td><a href='/stocks/{v.symbol}'>{name}</a>{tag}</td>"
             f"<td>{v.base_price:,.0f}</td>"
             f"<td>{f'{v.last_price:,.0f}' if v.last_price else '—'}</td>"
             f"<td><b>{pr}</b></td>"
-            f"<td>{target}</td><td>{_est_cell(v, drifts.get(v.symbol))}</td>"
-            f"<td class='hl'>{buy}</td><td class='hl'>{sell1}</td><td class='hl'>{sell2}</td>"
+            f"<td>{_target_cell(v, drifts.get(v.symbol))}</td>"
+            f"<td>{buy}</td><td>{sell1}</td><td>{sell2}</td>"
             f"<td>{fin}</td></tr>"
         )
     rows.append("</table></div>")
@@ -131,7 +130,7 @@ def _account_table(names: dict[str, str], guided: set[str]) -> str:
     rows = [
         f"<h2>실계좌 · 예약 <span class='meta'>{mode_lbl}{ts_lbl}</span></h2>",
         "<div class='card scroll'><table><tr><th>종목</th><th>실보유</th><th>평단</th>"
-        "<th class='hl'>예약 매도</th><th class='hl'>수량</th><th>상태</th></tr>",
+        "<th>예약 매도</th><th>수량</th><th>상태</th></tr>",
     ]
     for sym, h in sorted(acct.items(), key=lambda kv: names.get(kv[0], kv[1].name or kv[0])):
         pl = plans.get(sym)
@@ -148,7 +147,7 @@ def _account_table(names: dict[str, str], guided: set[str]) -> str:
             state = _STATE.get(pl.event, pl.event)
         rows.append(
             f"<tr><td>{link}</td><td>{h.quantity}주</td><td>{avg}</td>"
-            f"<td class='hl'>{resv}</td><td class='hl'>{qty}</td><td>{state}</td></tr>"
+            f"<td>{resv}</td><td>{qty}</td><td>{state}</td></tr>"
         )
     rows.append("</table></div>")
     return "".join(rows)
@@ -211,9 +210,9 @@ def render_paper() -> str:
     )
     parts.append(
         "<div class='meta'>시작가 = 실제 투자 시작 가격(불변 — 추가 매수로 평단이 낮아져도 "
-        "그대로). 목표가 = 편입 시점 회귀 목표(매도선의 앵커). 추정 목표가 = 오늘 밸류에이션 "
-        "기준 회귀 목표(주간 갱신·시세 일간), 괄호 = 등록 목표 대비 괴리 % — "
-        f"±{TARGET_DRIFT_ALERT_PCT:.0f}% 이상이면 ⚠, 반영은 <code>paper retarget</code> 명령"
+        "그대로). 목표가 = 편입 시점 회귀 목표(매도선의 앵커) — 호버하면 오늘 밸류에이션 기준 "
+        "추정 목표가(주간 갱신·시세 일간)와 등록 대비 괴리 %, "
+        f"±{TARGET_DRIFT_ALERT_PCT:.0f}% 이상이면 ⚠. 반영은 <code>paper retarget</code> 명령"
         "(자동 갱신 없음). "
         "매도선·다음 매도선 = 목표가 대비 % 선(호버: 전체 사다리). "
         "정리 = 목표가 150% 도달가(등록 후 3년 경과 시 시한 청산). "

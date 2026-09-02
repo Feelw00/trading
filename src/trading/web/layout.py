@@ -63,6 +63,9 @@ CSS = """
   tr.passed-row { background:#f0fff4; }
   svg { max-width:100%; height:auto; }
   .scroll { overflow-x:auto; }
+  /* 표 컨테이너의 overflow-x:auto는 세로도 잘라 마지막 행 툴팁이 끊긴다(운영자 2026-09-02).
+     툴팁 호버 중에만 클리핑 해제 — 표가 화면에 들어오면 레이아웃 변화 없음. */
+  .scroll:has(.tip:hover) { overflow:visible; }
   pre.md { background:#fff; border:1px solid #e2e8f0; border-radius:8px; padding:16px;
            white-space:pre-wrap; word-break:break-word; font-size:13px;
            font-family:"SF Mono",Menlo,monospace; }
