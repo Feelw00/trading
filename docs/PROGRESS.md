@@ -115,3 +115,9 @@ EXEC-9 시간손절 창, EXEC-10 아침 규율·모멘텀, EXEC-11 저잔고·�
   운영자 명시 전환. 상세 → [archive](../history/work/archive/2026-08-28-v03-pivot-phase3-web.md)
 - **P-16 웹 가시성 개편(8/29~31)** — 용어 호버·국면 배지·결정 카드·차트 툴팁·도넛/히트맵·
   보고서 변화 중심 재설계, 포트 80 도메인 접속. 상세 → [archive](../history/work/archive/2026-08-31-p16-web-visibility.md)
+- **코어 v2 · 심사 원장 · 매매 가이드 · 실투자 개시(9/1~2, policy v1.7~v2.10)** —
+  스크리너 8축(안정·환원·이익질·이익방향·역성장)·국면 v2·지배주주 PBR·DART 환원 수집기·
+  /picks·심사 원장(자동 심사 rule-v1)·페이퍼(100주·5단 매도·이익 보호·사이클 재등록)·
+  /paper 매매 가이드 전환. **실투자 병행 개시(승인 5종 각 100주)** — 집행은 여전히 수동,
+  자동 매매 없음. 검증: pytest 62·mypy 137 clean.
+  상세 → [archive](../history/work/archive/2026-09-02-core-v2-review-paper-guide.md)
