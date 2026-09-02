@@ -334,7 +334,8 @@ class BrokerStore:
         row = self._conn.execute(
             "SELECT event, leg_index, leg_label, trigger_price, quantity, holding_qty, "
             "expire_date, cond_id, mode, ts FROM guide_orders WHERE symbol = ? "
-            "AND event IN ('intent', 'sent', 'keep', 'skip') ORDER BY row_id DESC LIMIT 1",
+            "AND event IN ('intent', 'sent', 'keep', 'skip', 'rejected') "
+            "ORDER BY row_id DESC LIMIT 1",
             (symbol,),
         ).fetchone()
         if row is None:
