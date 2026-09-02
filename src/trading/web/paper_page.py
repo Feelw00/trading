@@ -56,12 +56,15 @@ def _sell_cells(v: PositionView) -> tuple[str, str]:
 
 
 def _est_cell(v: PositionView, drift: TargetDrift | None) -> str:
-    """추정 목표가 셀 — 값 하나 + 괴리 임계 초과 시 ⚠ 배지(호버: 등록 대비 %)."""
+    """추정 목표가 셀 — 값 + 등록 목표 대비 괴리 %(항상, 매도선 셀의 '금액 (%)' 관례) + 임계 초과 ⚠.
+
+    운영자 요청(2026-09-02): 괴리가 얼마나 났는지 가이드에서 바로 보이게.
+    """
     if v.status != "open":
         return "—"
     if drift is None:
         return "— <span class='meta'>결측</span>"
-    cell = f"{drift.estimated:,.0f}"
+    cell = f"{drift.estimated:,.0f} <span class='meta'>({drift.pct:+.0f}%)</span>"
     if drift.alert:
         cell += (f" <span class='pill warn tip' data-tip='등록 목표 대비 {drift.pct:+.0f}% — "
                  "반영은 paper retarget'>⚠</span>")
@@ -209,8 +212,9 @@ def render_paper() -> str:
     parts.append(
         "<div class='meta'>시작가 = 실제 투자 시작 가격(불변 — 추가 매수로 평단이 낮아져도 "
         "그대로). 목표가 = 편입 시점 회귀 목표(매도선의 앵커). 추정 목표가 = 오늘 밸류에이션 "
-        f"기준 회귀 목표(주간 갱신·시세 일간) — 등록 목표 대비 ±{TARGET_DRIFT_ALERT_PCT:.0f}% "
-        "이상이면 ⚠, 반영은 <code>paper retarget</code> 명령(자동 갱신 없음). "
+        "기준 회귀 목표(주간 갱신·시세 일간), 괄호 = 등록 목표 대비 괴리 % — "
+        f"±{TARGET_DRIFT_ALERT_PCT:.0f}% 이상이면 ⚠, 반영은 <code>paper retarget</code> 명령"
+        "(자동 갱신 없음). "
         "매도선·다음 매도선 = 목표가 대비 % 선(호버: 전체 사다리). "
         "정리 = 목표가 150% 도달가(등록 후 3년 경과 시 시한 청산). "
         "수익률 = (실현+평가) ÷ 투입 − 1(정규화 단위, 시작가 대비). "
