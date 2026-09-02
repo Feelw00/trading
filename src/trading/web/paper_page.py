@@ -80,22 +80,20 @@ def render_paper() -> str:
         )
     parts.append("</table></div>")
 
-    total_in = sum(v.invested for v in views)
-    total_out = sum(v.realized + v.value for v in views)
     pnls = [v.pnl_pct for v in views if v.pnl_pct is not None]
     avg = sum(pnls) / len(pnls) if pnls else 0.0
-    wtd = (total_out / total_in - 1) if total_in else 0.0
-    # 기준은 %(운영자 지시): 100주 가정 → 종목별 투입액 상이 → 균등가중 평균이 헤드라인
+    # 헤드라인 = 종목 균등가중 평균만(운영자 2026-09-02: 총액 기준 폐지 — 원장 100단위는
+    # 정규화 단위라 총액 %는 고가주 편중 지표)
     parts.append(
         f"<div class='card hero'><span class='big'>평균 수익률 {avg:+.2%}</span> "
-        f"<span class='meta'>(종목 균등가중 · 포지션 {len(views)}건 · "
-        f"총액 기준 {wtd:+.2%})</span></div>"
+        f"<span class='meta'>(종목 균등가중 · {len(views)}종목)</span></div>"
     )
     parts.append(
         "<div class='meta'>시작가 = 실제 투자 시작 가격(기준가) — 수익률·매수 상한의 앵커. "
         "매도 열에 마우스를 올리면 남은 매도 계획 전체가 보인다"
         "(비중은 전체 포지션 대비 — 추가 매수 시 갱신). 정리 = 목표가 150% 도달가, "
-        "~연월은 등록일+3년 시한(미수렴 청산). 수익률 = (실현+평가) ÷ 투입 − 1 · "
+        "~연월은 등록일+3년 시한(미수렴 청산). 수익률 = (실현+평가) ÷ 투입 − 1"
+        "(정규화 단위 기준 — 시작가 대비, 실투자 수량과 무관) · "
         "체결 내역은 CLI(python -m trading.paper) 참조.</div>"
     )
     return page("매매 가이드", "".join(parts), active="/paper")

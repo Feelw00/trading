@@ -1,7 +1,9 @@
 """페이퍼 투자(v2.5 — 운영자 지시 2026-09-01) — `python -m trading.paper`.
 
-실제 투자 전 테스트: 심사 승인 종목을 100주 일괄 보유로 등록하고(v2.8), 분할
-매도(상승 시)·정리 규칙을 EOD 종가로 결정론 시뮬레이션한다.
+**매매 가이드**(운영자 정정 2026-09-02): 심사 승인 종목이 자동 등록되면 그날 종가가
+시작가(기준가)가 되고, 이후 EOD 종가로 현재가·수익률·매수 상한·매도 타이밍·정리 타이밍을
+결정론으로 판정해 제시한다. 원장의 100단위는 **정규화 단위(100 = 비중 100%)**이며 실투자
+수량이 아니다(v2.8 부기) — 얼마를 살지는 이 모듈이 정하지 않는다(R5 §6 결재 전).
 
 - **실주문 없음** — EXEC와 완전 무관한 페이퍼 원장(절대금지 3과 무관). 계측·학습 전용.
 - 규칙(PaperParams)은 가치투자·사이클투자 문헌 조사로 캘리브레이션(POLICY §7 v2.5~).
@@ -39,7 +41,8 @@ class PaperParams:
     time_horizon_days: 가치 실현 대기 상한 — 초과 시 정리 표기(강제 청산은 운영자 몫).
     """
 
-    # v2.8(운영자 지시 2026-09-02): 등록 시 100주 일괄 보유 — 분할 매수 사다리 폐지.
+    # v2.8(운영자 지시 2026-09-02): 등록 시 100단위 일괄 — 분할 매수 사다리 폐지.
+    # 100 = 정규화 단위(비중 100%), 실투자 수량 아님(v2.8 부기) — 표시는 비중(%)로.
     # 매수 상한(진행률 1/3 지점)은 실매수 규율 지표로 유지(가격 < 상한 = 추가 매수 가능).
     initial_qty: float = 100.0
     # (기준가 대비 하락률, 매수 주수) — v2.8: 빈 사다리(일괄 보유)
@@ -518,15 +521,11 @@ def main() -> int:
         if not views:
             print("포지션 없음 — python -m trading.paper register [심볼...]")
             return 0
-        total_in = sum(v.invested for v in views)
-        total_out = sum(v.realized + v.value for v in views)
         pnls = [v.pnl_pct for v in views if v.pnl_pct is not None]
         avg = sum(pnls) / len(pnls) if pnls else 0.0
-        wtd = (total_out / total_in - 1) if total_in else 0.0
-        # 기준은 %(운영자 2026-09-01): 100주 가정이라 종목별 투입액이 달라
-        # 총액 %는 고가주 편중 — 균등가중 평균이 헤드라인
-        print(f"페이퍼 포지션 {len(views)}건 · 평균 수익률(균등가중) {avg:+.2%} "
-              f"[총액 기준 {wtd:+.2%} · 투입 {total_in:,.0f}원]")
+        # 가이드 헤드라인 = 종목 균등가중 평균만(운영자 2026-09-02: 총액 기준 폐지 —
+        # 정규화 단위에서 총액 %는 고가주 편중 지표라 의미 없음). 주수·투입액 미노출.
+        print(f"매매 가이드 {len(views)}종목 · 평균 수익률(균등가중) {avg:+.2%}")
         for v in views:
             if v.buy_ceiling is None or v.status != "open":
                 nb = "—"
@@ -534,9 +533,9 @@ def main() -> int:
                 nb = f"상한 {v.buy_ceiling:,.0f} 초과 — 중단"
             else:
                 nb = f"상한 {v.buy_ceiling:,.0f} 이하 가능"
-            ns = (f"{v.next_sell[0]} @{v.next_sell[1]:,.0f}"
-                  + (f"({v.next_sell_qty:,.0f}주)" if v.next_sell_qty else "")
-                  if v.next_sell else "—")
+            share = (f"({v.next_sell_qty / v.total_bought:.0%})"
+                     if v.next_sell_qty and v.total_bought > 0 else "")
+            ns = f"{v.next_sell[0]} @{v.next_sell[1]:,.0f}{share}" if v.next_sell else "—"
             cyc = f"·사이클{v.cycle + 1}" if v.cycle else ""
             print(f"  {v.symbol} [{v.status}{cyc}] 현재 {v.last_price or 0:,.0f}({v.last_dt}) · "
                   f"수익률 {v.pnl_pct if v.pnl_pct is not None else 0:+.1%} · "
