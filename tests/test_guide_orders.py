@@ -250,3 +250,28 @@ def test_mode_env_and_kill(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     assert go.guide_orders_mode(kill_file=tmp_path / "KILL") == "off"
     monkeypatch.setenv("GUIDE_ORDERS_MODE", "bogus")
     assert go.guide_orders_mode(kill_file=tmp_path / "nokill") == "dry-run"
+
+
+def test_enroll_callback_registers_real_holding_and_plans(tmp_path: Path) -> None:
+    """운영자 지시(2026-09-02): 가이드 밖 실보유는 실평단으로 편입 → 같은 실행에서 매도 예약."""
+    from trading.paper import enroll_holding
+
+    b = FakeBroker([_item("000001", "A", 13, 2720, 2770), _item("999999", "Z", 5, 100, 100)])
+    store = BrokerStore(tmp_path / "b.sqlite")
+    paper = _paper(tmp_path)                                          # 비어 있음
+    targets = {"000001": ("20260902", 2770.0, 4000.0)}                # Z는 밸류 결측 → 편입 불가
+
+    def _enroll(sym: str, _name: str, avg: float | None) -> str | None:
+        return enroll_holding(paper, sym, avg, targets=targets)
+
+    s = run(b, mode="dry-run", store=store, paper=paper, now=T0, enroll=_enroll)
+    pos = {p.symbol: p for p in paper.latest_positions()}
+    assert pos["000001"].base_price == 2720.0 and pos["000001"].target_price == 4000.0
+    assert "999999" not in pos
+    assert s.guided == 1 and s.placed == 1                            # 편입 즉시 80% 매도선 계획
+    assert any("가이드 편입" in ln for ln in s.lines or [])
+    assert any("999999" in a and "편입 불가" in a for a in s.anomalies or [])
+    # 다음 실행: 재편입 없음 · 유지
+    s2 = run(b, mode="dry-run", store=store, paper=paper, now=T0 + timedelta(days=1), enroll=_enroll)
+    assert s2.kept == 1 and s2.placed == 0 and len(paper.latest_positions()) == 1
+    paper.close()

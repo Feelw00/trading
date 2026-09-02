@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from trading.collectors.base import now_kst
+from trading.paper import MIN_UPSIDE_PCT
 
 DEFAULT_DB = Path("data") / "reviews.sqlite"
 
@@ -139,8 +140,9 @@ class ReviewStore:
 def auto_review(store: ReviewStore, year: str) -> tuple[int, int]:
     """무판정 코어 종목을 결정론 규칙으로 자동 판정 — (approved 수, hold 수) 반환.
 
-    approve = 영업 이익방향 ≥ 0 ∧ 매출급감 없음 ∧ 여력 정상 대역(≤ +150%) ∧ 리츠 아님.
-    아니면 hold(확인 조건 명시). 이미 유효 판정(수동·자동 불문)이 있으면 스킵 —
+    approve = 영업 이익방향 ≥ 0 ∧ 매출급감 없음 ∧ 여력 정상 대역(**+30% ≤** … ≤ +150%) ∧ 리츠 아님.
+    아니면 hold(확인 조건 명시). 여력 하한은 운영자 지시(2026-09-02): 실현 예상 수익 < +30%는
+    승인 종목에 나오지 않는다 — 노출 게이트(picks.effective_verdict)와 같은 상수. 이미 유효 판정(수동·자동 불문)이 있으면 스킵 —
     만료(새 연간)되면 다음 실행이 재판정한다.
     """
     from trading.web.picks import _build_picks
@@ -160,6 +162,8 @@ def auto_review(store: ReviewStore, year: str) -> tuple[int, int]:
             cond = "이익방향(영업) 양전 확인"
         elif pk.upside_pct is None or pk.upside_pct > MAX_SANE_UPSIDE_PCT:
             cond = "극단 회귀 여력 — 버킷 이질성·구조 할인 원인 확인"
+        elif pk.upside_pct < MIN_UPSIDE_PCT:
+            cond = f"회귀 여력 +{MIN_UPSIDE_PCT:.0f}% 회복(현재 {pk.upside_pct:+.0f}% — 실현 예상 수익 부족)"
         if cond is None:
             store.decide(
                 pk.rec.symbol, "approved", basis_year=year,
@@ -223,6 +227,18 @@ def main() -> int:
             return 0
 
         symbol, verdict = args[0], args[1] if len(args) > 1 else ""
+        if verdict == "approved":
+            # 운영자 지시(2026-09-02): 실현 예상 수익(회귀 여력) < +30%는 승인 종목 제외 —
+            # 수동 승인도 같은 하한. 노출 게이트가 어차피 보류시키므로 모순 기록을 막는다.
+            from trading.web.picks import _build_picks
+
+            pk = next((p for p in _build_picks() if p.rec.symbol == symbol), None)
+            if pk is not None and not pk.upside_ok:
+                cur = "결측" if pk.upside_pct is None else f"{pk.upside_pct:+.0f}%"
+                print(f"{symbol}: 회귀 여력 {cur} < +{MIN_UPSIDE_PCT:.0f}% — 승인 불가(실현 예상 "
+                      "수익 부족). `hold --condition '회귀 여력 +30% 회복'`으로 남겨라.",
+                      file=sys.stderr)
+                return 2
         tags: list[str] = []
         note = condition = None
         it = iter(args[2:])

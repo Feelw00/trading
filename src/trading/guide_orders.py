@@ -2,7 +2,8 @@
 
 `python -m trading.guide_orders [--mode off|dry-run|live]` · cron 라운드 ``guide-orders``.
 
-- **매수는 운영자 수동.** 이 모듈은 토스 실보유 중 가이드(`trading.paper`) open 종목의
+- **매수는 운영자 수동.** 이 모듈은 토스 실보유를 가이드(`trading.paper`)에 편입(실평단=시작가,
+  운영자 지시 2026-09-02)하고, open 종목의
   **다음 매도선**에 실보유 기준 수량을 **조건주문(SINGLE·SELL·지정가)** 으로 건다.
 - **재등록은 변경이 있을 때만**(운영자 2차 지시 2026-09-02): 살아 있는 우리 조건주문이 현재
   계획(매도선·수량·감시가)과 같고 등록 당시 보유 수량과 지금 보유가 같으면 **유지**. 추가
@@ -29,14 +30,14 @@ import math
 import os
 import sqlite3
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
 from trading.collectors.base import now_kst
-from trading.paper import PaperStore, PositionRow
+from trading.paper import PaperStore, PositionRow, enroll_holding
 
 DEFAULT_DB = Path("data") / "broker.sqlite"
 KILL_FILE = Path(".runtime") / "exec" / "KILL"   # EXEC-1 킬 스위치 공유
@@ -425,10 +426,13 @@ def run(
     paper: PaperStore,
     now: datetime | None = None,
     alert: Any | None = None,
+    enroll: Callable[[str, str, float | None], str | None] | None = None,
 ) -> RunSummary:
     """1회 실행: 보유 스냅샷·이상 감지 → 우리 조건주문 정산 → 변경 시에만 취소·재등록.
 
     ``alert``: P1 적재 콜백(what) — 라운드 보고 꼬리에 실린다. None이면 print만.
+    ``enroll``: 가이드 밖 실보유 편입 콜백(symbol, name, avg_price) → 편입 줄 또는 None(불가).
+    운영자 지시(2026-09-02): 페이퍼는 실투자·명시 이동만 — 실보유가 곧 편입 사유다.
     """
     ts = now or now_kst()
     today = ts.date()
@@ -523,11 +527,22 @@ def run(
 
     # 4. 가이드 open 종목별 — 계획 산출 → 유지 / (취소 후) 등록
     positions = {p.symbol: p for p in paper.latest_positions() if p.status == "open"}
-    for sym, h in held.items():
-        if sym not in positions:
-            if sym not in prev:
-                _p1(f"가이드 밖 보유 종목: {sym} {h.name} {h.quantity}주 — 심사·등록 여부 확인")
-            s.lines.append(f"{sym} {h.name} {h.quantity}주 — 가이드 밖(미등록)")
+    # 4a. 실보유 자동 편입 — 가이드 밖 실보유는 실평단을 시작가로 편입해 같은 실행에서 매도
+    #     예약까지 잇는다. 편입 불가(평단·밸류에이션·시세 결측)는 신규 보유일 때만 P1.
+    for sym, h in sorted(held.items()):
+        if sym in positions or h.quantity <= 0:
+            continue
+        line = enroll(sym, h.name, h.avg_price) if enroll is not None else None
+        if line:
+            store.append_event(ts, "enrolled", sym, line)
+            s.lines.append(line)
+            continue
+        if sym not in prev:
+            _p1(f"가이드 밖 보유 종목: {sym} {h.name} {h.quantity}주 — 편입 불가"
+                "(평단·밸류에이션·시세 결측) 확인")
+        s.lines.append(f"{sym} {h.name} {h.quantity}주 — 가이드 밖(미등록)")
+    if enroll is not None:
+        positions = {p.symbol: p for p in paper.latest_positions() if p.status == "open"}
     expire = (ts + timedelta(days=EXPIRE_DAYS)).strftime("%Y-%m-%d")
 
     def _cancel_alive(sym: str, cycle: int, why: str) -> None:
@@ -653,7 +668,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         d = None
     store, paper = BrokerStore(), PaperStore()
     try:
-        summary = run(client, mode=mode, store=store, paper=paper, alert=alert_fn)
+        summary = run(
+            client, mode=mode, store=store, paper=paper, alert=alert_fn,
+            enroll=lambda sym, _name, avg: enroll_holding(paper, sym, avg),
+        )
     finally:
         store.close()
         paper.close()

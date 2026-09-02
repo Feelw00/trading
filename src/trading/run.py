@@ -399,19 +399,6 @@ def _review_auto_v3() -> int:
         store.close()
 
 
-def _paper_register_v3() -> int:
-    """승인 ∧ 여력 ≥30% 신규 종목 자동 등록(멱등) — 페이퍼 원장."""
-    import sys as _sys
-
-    argv, _sys.argv = _sys.argv, ["trading.paper", "register"]
-    try:
-        from trading.paper import main as paper_main
-
-        return paper_main()
-    finally:
-        _sys.argv = argv
-
-
 def _weekly_v3() -> int:
     """v0.3 주간 계측 체인(§5 토요일) — R2 밸류에이션 → R3 온도계 → R4 페이퍼 → 다이제스트."""
     from trading.cycle.__main__ import main as cycle_main
@@ -421,14 +408,14 @@ def _weekly_v3() -> int:
 
     for name, step in (
         # v2.6: 판정·유니버스 추종은 주간 — 지배주주지분/환원 증분(멱등) →
-        # 계측 → 자동 심사 → 페이퍼 자동 등록 → 다이제스트
+        # 계측 → 자동 심사 → 다이제스트. 페이퍼 자동 등록은 폐지(운영자 지시 2026-09-02:
+        # 페이퍼는 실투자(guide-orders 실보유 편입)·명시 이동만).
         ("owner-equity", _owner_equity_v3),
         ("valuation", valuation_main),
         ("cycle", cycle_main),
         ("screen", screen_main),
         ("returns", _returns_v3),
         ("review-auto", _review_auto_v3),
-        ("paper-register", _paper_register_v3),
         ("digest", digest_main),
     ):
         rc = step()

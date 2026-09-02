@@ -78,11 +78,14 @@ def test_auto_review_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         _Pick(_Rec("A00004", "화학"), None, 2.0, 400.0),                 # → hold(극단 여력)
         _Pick(_Rec("A00005", "유통"), None, 2.0, 60.0, ["⚠매출급감 -12%"]),  # → hold(급감)
         _Pick(_Rec("A00006", "화학"), "approved", -9.0, 50.0),           # 수동 존재 → 스킵
+        _Pick(_Rec("A00007", "화학"), None, 1.0, 20.0),                  # → hold(여력 <30%, LF 사례)
     ]
     monkeypatch.setattr("trading.web.picks._build_picks", lambda: picks)
     store = review_mod.ReviewStore(tmp_path / "r.sqlite")
     n_appr, n_hold = auto_review(store, "2025")
-    assert (n_appr, n_hold) == (1, 4)
+    assert (n_appr, n_hold) == (1, 5)
+    low = store.current("A00007", "2025")
+    assert low is not None and low["verdict"] == "hold" and "회귀 여력 +30% 회복" in str(low["condition"])
     assert store.current("A00001", "2025")["verdict"] == "approved"  # type: ignore[index]
     assert store.current("A00002", "2025")["verdict"] == "hold"  # type: ignore[index]
     assert store.current("A00006", "2025") is None                   # 자동이 안 건드림

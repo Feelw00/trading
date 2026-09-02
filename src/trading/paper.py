@@ -20,6 +20,7 @@
 import json
 import sqlite3
 import sys
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -31,6 +32,10 @@ DEFAULT_DB = Path("data") / "paper.sqlite"
 # 회귀 여력 ≥ +30% — 안전마진 원칙(Tweedy Browne는 내재가치 60~70%에서 매수 = 여력
 # 43%+, 실무 플레이북 -30% 기준의 보수적 하한).
 MIN_UPSIDE_PCT = 30.0
+# 보유 종목 목표가 괴리 표기 임계(운영자 지시 2026-09-02 "예상치가 바뀌면 표기"): 등록 목표가 대비
+# 현재 추정 목표가(종가 × (1 + 회귀 여력))가 ±15% 이상 벌어지면 /paper ⚠ + eod 실행 보고 줄.
+# 반영은 명시 명령(retarget)만 — 자동 갱신은 매도 사다리·조건주문(EXEC-12)을 흔든다(GUIDE-1).
+TARGET_DRIFT_ALERT_PCT = 15.0
 
 
 @dataclass(frozen=True)
@@ -454,15 +459,139 @@ def mark(store: PaperStore, market_db: Path = Path("data") / "market.sqlite") ->
     return views
 
 
+def _last_close(mconn: sqlite3.Connection, symbol: str) -> tuple[str, float] | None:
+    row = mconn.execute(
+        "SELECT bas_dt, clpr FROM daily_quotes WHERE srtn_cd=? ORDER BY bas_dt DESC LIMIT 1",
+        (symbol,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return str(row[0]), float(row[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def current_targets(
+    symbols: Iterable[str], *, market_db: Path = Path("data") / "market.sqlite",
+    upside: Mapping[str, float | None] | None = None,
+) -> dict[str, tuple[str, float, float] | None]:
+    """심볼 → (최근 종가일, 종가, 현재 추정 목표가 = 종가 × (1 + 회귀 여력)). 결측은 None.
+
+    회귀 여력은 /picks와 같은 산식(섹터 중앙 PBR ÷ 현재 PBR − 1, 주간 밸류에이션 + 일간 시세).
+    실보유 편입 목표가와 보유 종목 목표가 괴리 표기가 쓴다. ``upside`` 주입은 테스트·재사용용.
+    """
+    syms = list(symbols)
+    if upside is None:
+        from trading.web.picks import current_upside
+
+        upside = current_upside(syms)
+    mconn = sqlite3.connect(f"file:{market_db}?mode=ro", uri=True)
+    try:
+        out: dict[str, tuple[str, float, float] | None] = {}
+        for sym in syms:
+            u = upside.get(sym)
+            last = _last_close(mconn, sym)
+            if u is None or last is None:
+                out[sym] = None
+            else:
+                out[sym] = (last[0], last[1], last[1] * (1 + u / 100))
+        return out
+    finally:
+        mconn.close()
+
+
+def enroll_holding(
+    store: PaperStore, symbol: str, avg_price: float | None, *,
+    targets: Mapping[str, tuple[str, float, float] | None] | None = None,
+    market_db: Path = Path("data") / "market.sqlite",
+) -> str | None:
+    """실보유 편입 — 페이퍼는 실투자·명시 이동만(운영자 지시 2026-09-02).
+
+    시작가 = 실평단(불변 원칙 그대로), 목표가 = 편입 시점 추정 목표. 승인·여력 하한을 묻지
+    않는다 — 이미 산 종목의 사실 기록이며, 심사 외 보유는 /paper가 표기한다.
+    편입 불가(평단·밸류에이션·시세 결측)면 None — 호출자가 P1로 올린다.
+    """
+    if avg_price is None or avg_price <= 0:
+        return None
+    tg = (targets if targets is not None else current_targets([symbol], market_db=market_db)).get(symbol)
+    if tg is None:
+        return None
+    bas_dt, _close, target = tg
+    if any(p.symbol == symbol and p.status == "open" for p in store.latest_positions()):
+        return None
+    store.open_position(symbol, bas_dt, float(avg_price), target, PROPOSED_PAPER)
+    return (f"{symbol} 가이드 편입 — 시작가 {avg_price:,.0f}(실평단) · "
+            f"목표 {target:,.0f}({target / avg_price - 1:+.0%})")
+
+
+@dataclass(frozen=True)
+class TargetDrift:
+    """등록 목표가 vs 현재 추정 목표가 — 표기용 순수 산출(반영은 retarget 명령만)."""
+
+    symbol: str
+    registered: float
+    estimated: float
+
+    @property
+    def pct(self) -> float:
+        return (self.estimated / self.registered - 1) * 100
+
+    @property
+    def alert(self) -> bool:
+        return abs(self.pct) >= TARGET_DRIFT_ALERT_PCT
+
+
+def target_drift(
+    views: Iterable[PositionView], targets: Mapping[str, tuple[str, float, float] | None],
+) -> list[TargetDrift]:
+    out: list[TargetDrift] = []
+    for v in views:
+        if v.status != "open" or v.target_price <= 0:
+            continue
+        tg = targets.get(v.symbol)
+        if tg is not None:
+            out.append(TargetDrift(v.symbol, v.target_price, tg[2]))
+    return out
+
+
+def _print_drift(views: list[PositionView]) -> None:
+    """보유 종목 목표가 괴리 — 최상위 줄은 eod-v3 실행 보고(ALERT-1 요약)에 실린다."""
+    open_syms = [v.symbol for v in views if v.status == "open"]
+    if not open_syms:
+        return
+    try:
+        targets = current_targets(open_syms)
+    except Exception as exc:  # noqa: BLE001 — 표기 실패가 마킹을 막지 않는다(정직 표기)
+        print(f"목표가 괴리 산출 불가: {exc!r}")
+        return
+    hot = [d for d in target_drift(views, targets) if d.alert]
+    if not hot:
+        return
+    print(f"⚠ 목표가 괴리 {len(hot)}종(등록 대비 ±{TARGET_DRIFT_ALERT_PCT:.0f}% 이상) — 반영은 "
+          "`python -m trading.paper retarget <심볼> auto --reason <사유>`")
+    for d in hot:
+        print(f"  {d.symbol} 등록 {d.registered:,.0f} → 추정 {d.estimated:,.0f} ({d.pct:+.0f}%)")
+
+
 def main() -> int:
     args = sys.argv[1:]
     store = PaperStore()
     try:
         if args and args[0] == "register":
-            from trading.web.picks import _build_picks, approved_picks
+            # 운영자 지시(2026-09-02): 페이퍼 편입은 실투자(guide-orders 실보유 자동 편입) 또는
+            # 명시 이동만 — 승인 일괄 자동 등록 폐지. 명시 이동은 등록 자격(승인 ∧ 여력 ≥ +30%) 유지.
+            syms = [a for a in args[1:] if not a.startswith("--")]
+            if not syms:
+                print("페이퍼 편입은 실투자 자동 편입 또는 명시 이동만: "
+                      "`register <심볼>...` (승인 일괄 자동 등록 폐지 — 운영자 지시 2026-09-02)")
+                return 2
+            from trading.web.picks import _build_picks
 
-            picks = approved_picks(_build_picks())
-            allow = set(args[1:]) or {p.rec.symbol for p in picks}
+            allow = set(syms)
+            picks = [p for p in _build_picks() if p.rec.symbol in allow]
+            for miss in sorted(allow - {p.rec.symbol for p in picks}):
+                print(f"  {miss}: 후보·원장에 없음 — 편입 불가(지어내지 않음)")
             mconn = sqlite3.connect("data/market.sqlite")
             # v2.10: 열려 있는 포지션만 차단 — 청산 종목은 신규 후보와 동일 게이트로
             # 재등록(새 사이클). 과거 실현이익은 가점도 감점도 아니다(운영자 원칙).
@@ -472,6 +601,9 @@ def main() -> int:
             for p in picks:
                 sym = p.rec.symbol
                 if sym not in allow or sym in existing:
+                    continue
+                if p.verdict != "approved":
+                    print(f"  {p.name}({sym}): 심사 승인 아님({p.verdict or '대기'}) — 편입 불가")
                     continue
                 row = mconn.execute(
                     "SELECT bas_dt, clpr FROM daily_quotes WHERE srtn_cd=? "
@@ -505,6 +637,37 @@ def main() -> int:
             print(f"{sym} 등록 철회(포지션·체결 삭제)")
             return 0
 
+        if args and args[0] == "retarget" and len(args) >= 2:
+            # 운영자 지시(2026-09-02): 보유 종목 예상치 변경은 표기하고, 반영은 명시 명령만.
+            sym = args[1]
+            if "--reason" not in args or args.index("--reason") + 1 >= len(args):
+                print("목표가 반영은 명시 명령만: `retarget <심볼> [가격|auto] --reason <사유>` "
+                      "(자동 갱신 없음 — 매도 사다리·조건주문 안정. OPEN_QUESTIONS GUIDE-1)")
+                return 2
+            reason = args[args.index("--reason") + 1]
+            pos = next((p for p in store.latest_positions()
+                        if p.symbol == sym and p.status == "open"), None)
+            if pos is None:
+                print(f"{sym}: open 포지션 없음")
+                return 1
+            spec = args[2] if len(args) > 2 and not args[2].startswith("--") else "auto"
+            if spec == "auto":
+                tg = current_targets([sym]).get(sym)
+                if tg is None:
+                    print(f"{sym}: 추정 목표가 결측(밸류에이션·시세) — 반영 불가(지어내지 않음)")
+                    return 1
+                new_target = tg[2]
+            else:
+                new_target = float(spec)
+            print(f"반영 사유: {reason}")
+            # 시작가 불변 — 목표가만 새 버전으로(append-only), 현 사이클 체결 재생
+            store.reset_fills(sym, pos.cycle)
+            store.open_position(sym, pos.opened_bas_dt, pos.base_price, new_target, pos.params)
+            print(f"{sym} 목표가 {pos.target_price:,.0f} → {new_target:,.0f} "
+                  f"(시작가 {pos.base_price:,.0f} 불변) — 체결 재생됨")
+            mark(store)
+            return 0
+
         if args and args[0] == "rebase" and len(args) >= 3:
             sym, new_base = args[1], float(args[2])
             if "--correction" not in args or args.index("--correction") + 1 >= len(args):
@@ -527,7 +690,8 @@ def main() -> int:
 
         views = mark(store)
         if not views:
-            print("포지션 없음 — python -m trading.paper register [심볼...]")
+            print("포지션 없음 — 실투자(guide-orders 자동 편입) 또는 "
+                  "python -m trading.paper register <심볼>")
             return 0
         pnls = [v.pnl_pct for v in views if v.pnl_pct is not None]
         avg = sum(pnls) / len(pnls) if pnls else 0.0
@@ -548,12 +712,16 @@ def main() -> int:
             print(f"  {v.symbol} [{v.status}{cyc}] 현재 {v.last_price or 0:,.0f}({v.last_dt}) · "
                   f"수익률 {v.pnl_pct if v.pnl_pct is not None else 0:+.1%} · "
                   f"매수 {nb} · 다음 매도 {ns}")
+        _print_drift(views)
         return 0
     finally:
         store.close()
 
 
-__all__ = ["Fill", "MIN_UPSIDE_PCT", "PROPOSED_PAPER", "PaperParams", "PaperStore", "PositionView", "mark"]
+__all__ = [
+    "Fill", "MIN_UPSIDE_PCT", "PROPOSED_PAPER", "TARGET_DRIFT_ALERT_PCT", "PaperParams", "PaperStore",
+    "PositionView", "TargetDrift", "current_targets", "enroll_holding", "mark", "target_drift",
+]
 
 
 if __name__ == "__main__":

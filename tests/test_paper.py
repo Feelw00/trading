@@ -3,7 +3,16 @@
 import sqlite3
 from pathlib import Path
 
-from trading.paper import PaperParams, PaperStore, mark
+import pytest
+
+from trading.paper import (
+    PaperParams,
+    PaperStore,
+    current_targets,
+    enroll_holding,
+    mark,
+    target_drift,
+)
 
 
 def _market(tmp_path: Path, closes: list[tuple[str, float]]) -> Path:
@@ -157,3 +166,39 @@ def test_time_ladder_stops_above_buy_zone(tmp_path: Path) -> None:
     db2 = _market(tmp_path / "m2", [("20260101", 1000), ("20260901", 1400)])
     mark(store2, market_db=db2)
     assert [f.trigger for f in store2.fills("000001")] == ["1차 매수(초기)", "2차 매수(-10%)"]
+
+
+def test_enroll_holding_uses_avg_price_and_estimated_target(tmp_path: Path) -> None:
+    """운영자 지시(2026-09-02): 페이퍼 편입은 실투자 — 시작가 = 실평단, 목표 = 편입 시점 추정."""
+    store = PaperStore(tmp_path / "p.sqlite")
+    targets = {"000001": ("20260901", 1000.0, 1500.0)}
+    line = enroll_holding(store, "000001", 950.0, targets=targets)
+    assert line is not None and "시작가 950" in line and "1,500" in line
+    pos = store.latest_positions()[0]
+    assert (pos.base_price, pos.target_price, pos.opened_bas_dt) == (950.0, 1500.0, "20260901")
+    # 이미 open → 중복 편입 없음 · 평단/추정 목표 결측 → 편입 불가(None, 호출자가 P1)
+    assert enroll_holding(store, "000001", 950.0, targets=targets) is None
+    assert enroll_holding(store, "000002", None, targets=targets) is None
+    assert enroll_holding(store, "000002", 900.0, targets={"000002": None}) is None
+    assert len(store.latest_positions()) == 1
+    store.close()
+
+
+def test_current_targets_and_drift_alert(tmp_path: Path) -> None:
+    """추정 목표가 = 최근 종가 × (1 + 회귀 여력) · 등록 목표 대비 ±15% 이상이면 ⚠(표기만)."""
+    db = _market(tmp_path, [("20260101", 1000), ("20260102", 1100)])
+    tg = current_targets(["000001", "000009"], market_db=db,
+                         upside={"000001": 50.0, "000009": 20.0})
+    got = tg["000001"]
+    assert got is not None and got[0] == "20260102" and got[1] == 1100.0
+    assert got[2] == pytest.approx(1650.0)
+    assert tg["000009"] is None                        # 시세 없음 → 결측(지어내지 않음)
+    store = PaperStore(tmp_path / "p.sqlite")
+    store.open_position("000001", "20260101", 1000.0, 1400.0, PaperParams())
+    views = mark(store, market_db=db)
+    (d,) = target_drift(views, tg)
+    assert d.registered == 1400.0 and d.pct == pytest.approx(17.857, abs=0.01) and d.alert
+    (d2,) = target_drift(views, {"000001": ("20260102", 1100.0, 1500.0)})
+    assert d2.pct == pytest.approx(7.143, abs=0.01) and not d2.alert
+    assert target_drift(views, {"000001": None}) == []
+    store.close()

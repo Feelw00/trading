@@ -20,16 +20,24 @@
    ``QUEUE_N``. 심사한 종목은 캡 자리를 차지하지 않으므로 큐가 자연 순환한다.
 3. 큐 **선발**은 기존 순위(국면 → 산업 내 PBR 깊이 → ROE 품질, rank.shortlist), **표시**는
    위험조정수익률 내림차순(운영자 결재 2026-09-01).
-`_build_picks()` = 원장 + 큐 — 자동 심사(review.auto_review)·페이퍼 자동 등록(paper register)·
-대시보드가 같은 목록을 소비한다. 코어 판정 로직은 `screen/__main__.py`와 동일 기준.
+**승인 노출 하한(운영자 지시 2026-09-02):** "실현 예상 수익이 30% 미만인 종목은 승인 종목에
+나오지 않는다". 실현 예상 수익 = 회귀 여력. 심사 판정(질)은 원장에 그대로 두고, 노출은
+``approved ∧ 여력 ≥ MIN_UPSIDE_PCT``의 **파생 게이트**(`Pick.effective_verdict`)로 곱한다 —
+여력은 주가 함수라 매일 움직이므로 판정 자체에 넣으면 원장이 가격 잡음을 기록하게 된다.
+미달 승인 종목은 "⏸승인 보류"로 조건부 표에 내려가고, 여력이 회복되면 자동 복귀한다.
+
+`_build_picks()` = 원장 + 큐 — 자동 심사(review.auto_review)·대시보드·페이퍼(실보유 편입
+목표가)가 같은 목록/산식을 소비한다. 코어 판정 로직은 `screen/__main__.py`와 동일 기준.
 """
 
 import html
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from trading.collectors.fins import FinStore
 from trading.collectors.returns import ReturnsStore
-from trading.contracts.longterm import CandidateRecord, CyclePhase, phase_ko
+from trading.contracts.longterm import CandidateRecord, CyclePhase, ValuationRecord, phase_ko
+from trading.paper import MIN_UPSIDE_PCT, PaperStore
 from trading.screen.quality import (
     dividend_streak,
     earnings_quality_flag,
@@ -41,7 +49,7 @@ from trading.screen.quality import (
     roe_cv,
     stability_metrics,
 )
-from trading.screen.rank import PHASE_PRIORITY, high_per, shortlist, value_depth
+from trading.screen.rank import PHASE_PRIORITY, high_per, shortlist
 from trading.screen.store import CandidateStore
 from trading.valuation.store import ValuationStore
 from trading.web.glossary import phase_pill
@@ -74,6 +82,51 @@ class Pick:
     core_ok: bool = True          # 코어 6축 충족 여부(원장 종목의 '코어 이탈' 배지)
     screen_ok: bool = True        # 최신 심사 통과 여부(원장 종목의 '심사 탈락' 배지)
     core_fail: list[str] = field(default_factory=list)  # 미충족 축 이름
+    held: bool = False            # 페이퍼(매매 가이드) open 포지션 존재 — 실보유·명시 편입
+
+    @property
+    def upside_ok(self) -> bool:
+        """승인 노출 가격 조건 — 회귀 여력 ≥ +30%(결측은 불충족)."""
+        return self.upside_pct is not None and self.upside_pct >= MIN_UPSIDE_PCT
+
+    @property
+    def effective_verdict(self) -> str | None:
+        """표시 판정 — 승인이라도 여력 하한 미달이면 'approved_blocked'(승인 보류). 원장 불변."""
+        if self.verdict == "approved" and not self.upside_ok:
+            return "approved_blocked"
+        return self.verdict
+
+
+def sector_median_pbr(latest: list[ValuationRecord]) -> dict[str, float]:
+    """섹터 중앙 PBR(전 상장 기준, 표본 ≥5) — 회귀 여력의 분모."""
+    by_sector: dict[str, list[float]] = {}
+    for v in latest:
+        if v.pbr is not None and v.sector_krx:
+            by_sector.setdefault(v.sector_krx, []).append(v.pbr)
+    return {s: sorted(ps)[len(ps) // 2] for s, ps in by_sector.items() if len(ps) >= 5}
+
+
+def regression_upside(v: ValuationRecord | None, median: dict[str, float]) -> float | None:
+    """회귀 여력(%) = 섹터 중앙 PBR ÷ 현재 PBR − 1. 산술이지 예측이 아니다."""
+    if v is None or not v.pbr or v.pbr <= 0:
+        return None
+    med = median.get(v.sector_krx or "")
+    return (med / v.pbr - 1) * 100 if med else None
+
+
+def current_upside(symbols: Iterable[str]) -> dict[str, float | None]:
+    """심볼 → 현재 회귀 여력(%) — 밸류에이션 최신본만 읽는 경량 경로.
+
+    페이퍼 실보유 편입 목표가·보유 종목 목표가 괴리 표기가 쓴다(/picks와 같은 산식).
+    """
+    vs = ValuationStore()
+    try:
+        latest = vs.all_latest()
+    finally:
+        vs.close()
+    med = sector_median_pbr(latest)
+    vals = {v.symbol: v for v in latest}
+    return {s: regression_upside(vals.get(s), med) for s in symbols}
 
 
 def _build_picks() -> list[Pick]:
@@ -100,20 +153,19 @@ def _build_picks() -> list[Pick]:
     ledger_syms = {s for s in verdicts if s in rec_by_sym}
     syms = {r.symbol for r in records} | ledger_syms
 
+    pstore = PaperStore()
+    try:
+        held = {p.symbol for p in pstore.latest_positions() if p.status == "open"}
+    finally:
+        pstore.close()
+
     vs = ValuationStore()
     try:
         latest = vs.all_latest()
     finally:
         vs.close()
     vals = {v.symbol: v for v in latest}
-    # 섹터 중앙 PBR(전 상장 기준) — 회귀 여력 분모
-    by_sector: dict[str, list[float]] = {}
-    for v in latest:
-        if v.pbr is not None and v.sector_krx:
-            by_sector.setdefault(v.sector_krx, []).append(v.pbr)
-    sector_median = {
-        s: sorted(ps)[len(ps) // 2] for s, ps in by_sector.items() if len(ps) >= 5
-    }
+    sector_median = sector_median_pbr(latest)  # 회귀 여력 분모(전 상장 기준)
 
     fin_store = FinStore()
     try:
@@ -184,8 +236,7 @@ def _build_picks() -> list[Pick]:
         for r in recs:
             val = vals.get(r.symbol)
             pbr = val.pbr if val else None
-            med = sector_median.get(val.sector_krx or "") if val else None
-            upside = (med / pbr - 1) * 100 if (pbr and med and pbr > 0) else None
+            upside = regression_upside(val, sector_median)
             # v2.2(운영자 결재 2026-09-01): 이익 방향은 영업이익/자본 기준 — 영업외 스파이크가
             # 중앙값을 부풀려 회복 종목이 음수로 보이던 왜곡(신세계I&C·슈피겐 사례) 제거
             od = op_dirs.get(r.symbol)
@@ -208,6 +259,17 @@ def _build_picks() -> list[Pick]:
             tr = trends[r.symbol]
             if tr.sharp_drop:
                 flags.append(f"⚠매출급감 {tr.yoy_latest:+.0%}")
+            verdict = (verdicts.get(r.symbol) or {}).get("verdict")
+            if verdict == "approved" and not (upside is not None and upside >= MIN_UPSIDE_PCT):
+                # 운영자 지시(2026-09-02): 실현 예상 수익 < +30%는 승인 종목에서 제외 — 판정은
+                # 원장에 남고 노출만 보류. 여력이 하한을 넘으면 자동 복귀(저장 없음).
+                why_blocked = (
+                    "여력 결측" if upside is None
+                    else f"여력 {upside:+.0f}% < +{MIN_UPSIDE_PCT:.0f}%"
+                )
+                flags.append(f"⏸승인 보류({why_blocked} — 회복 시 자동 복귀)")
+            if r.symbol in held:
+                flags.append("보유 중(가이드)")
             picks.append(
                 Pick(
                     rec=r, name=names.get(r.symbol, r.symbol), pbr=pbr,
@@ -222,6 +284,7 @@ def _build_picks() -> list[Pick]:
                     verdict_note=(verdicts.get(r.symbol) or {}).get("note")
                     or (verdicts.get(r.symbol) or {}).get("condition"),
                     tier=tier, core_ok=not fails, screen_ok=bool(r.passed), core_fail=fails,
+                    held=r.symbol in held,
                 )
             )
     # 정렬: 국면 → 회귀 여력 내림차순(결측은 뒤) — 소비자(자동 심사 등)의 기본 순서
@@ -249,22 +312,23 @@ def approved_picks(picks: list[Pick]) -> list[Pick]:
     노출 자격은 산식이 아니라 **심사 원장의 approved 판정**이다 — 기계는 후보·분해
     지표를 대고 노출은 판정이, 순서는 위험조정수익률이 결정한다(운영자 지시 2026-09-01).
     원장은 캡과 무관하므로 승인 종목이 순위에 밀려 사라지지 않는다(2026-09-02).
+    단 **회귀 여력 < +30%는 제외**(운영자 지시 2026-09-02: "실현 예상 수익 30% 미만은
+    승인 종목에 안 나왔으면") — `Pick.effective_verdict` 파생 게이트.
     """
     return sorted(
-        (p for p in picks if p.verdict == "approved"),
+        (p for p in picks if p.effective_verdict == "approved"),
         key=lambda p: -(p.risk_adj if p.risk_adj is not None else -999.0),
     )
 
 
 _VERDICT_BADGE = {
-    "approved": "✔승인", "vetoed": "✖veto", "hold": "⏸조건부",
+    "approved": "✔승인", "approved_blocked": "⏸승인 보류", "vetoed": "✖veto", "hold": "⏸조건부",
 }
 # 원장 표 정렬 순서(운영자 지시 2026-09-01): 승인 → 조건부 (거부는 접힘)
 _VERDICT_ORDER = {"approved": 0, "hold": 1, "pending": 2, "vetoed": 3}
+# 표 열(운영자 지시 2026-09-02 "열이 너무 많다"): 결정 열만 — 분해 지표 전체는 종목 상세(/stocks).
 _TABLE_HEAD = (
-    "<table><tr><th>종목</th><th>산업</th><th>국면</th>"
-    "<th>PBR</th><th>깊이</th><th>회귀 여력</th><th>배당수익률</th><th class='hl'>이익수익률</th>"
-    "<th>연속배당</th><th>이익방향(영업)</th><th>매출YoY(최근/직전)</th><th class='hl'>ROE변동계수</th>"
+    "<table><tr><th>종목</th><th>산업</th><th>국면</th><th>회귀 여력</th>"
     "<th class='hl'>위험조정수익률</th><th>심사</th><th>표기</th></tr>"
 )
 
@@ -275,22 +339,13 @@ def _fmt(v: float | None, suffix: str = "%") -> str:
 
 def _row(p: Pick) -> str:
     r = p.rec
-    ret_s = f"{p.div_streak}y" + (" · 소각" if p.cancelled else "")
     return (
         f"<tr><td><a href='/stocks/{r.symbol}'>{html.escape(p.name)}</a> "
         f"<span class='meta'>{r.symbol}</span></td>"
         f"<td>{html.escape(r.industry)}</td><td>{phase_ko(r.phase)}</td>"
-        f"<td>{f'{p.pbr:.2f}' if p.pbr is not None else '—'}</td>"
-        f"<td>{value_depth(r):.0%}</td>"
         f"<td>{_fmt(p.upside_pct)}</td>"
-        f"<td>{f'{p.div_yield:.1f}%' if p.div_yield else '—'}</td>"
-        f"<td class='hl'>{f'{p.earn_yield:.1f}%' if p.earn_yield else '—'}</td>"
-        f"<td>{ret_s}</td><td>{_fmt(p.roe_delta, '%p')}</td>"
-        f"<td>{_fmt(p.yoy_latest * 100 if p.yoy_latest is not None else None)}"
-        f" / {_fmt(p.yoy_prev * 100 if p.yoy_prev is not None else None)}</td>"
-        f"<td class='hl'>{f'{p.roe_cv5:.2f}' if p.roe_cv5 is not None else '—'}</td>"
         f"<td class='hl'><b>{f'{p.risk_adj:.1f}%' if p.risk_adj is not None else '—'}</b></td>"
-        f"<td>{_VERDICT_BADGE.get(p.verdict or '', '대기')}</td>"
+        f"<td>{_VERDICT_BADGE.get(p.effective_verdict or '', '대기')}</td>"
         f"<td class='meta'>{' '.join(p.flags) or '—'}</td></tr>"
     )
 
@@ -316,12 +371,15 @@ def render_picks() -> str:
     ledger = [p for p in picks if p.tier == "ledger"]
     queue = [p for p in picks if p.tier == "queue"]
     approved = approved_picks(ledger)
-    holds = _by_risk_adj([p for p in ledger if p.verdict == "hold"])
+    # 조건부 표 = 원장 hold + 승인이나 여력 하한 미달(승인 보류, 파생)
+    holds = _by_risk_adj([p for p in ledger if p.effective_verdict in ("hold", "approved_blocked")])
+    blocked = [p for p in holds if p.effective_verdict == "approved_blocked"]
     vetoed = _by_risk_adj([p for p in ledger if p.verdict == "vetoed"])
 
     # 승인 종목 카드 — 원장 기준(캡 무관). 코어 이탈·심사 탈락은 배지로.
     parts.append(
-        f"<h2>승인 종목 <span class='meta'>심사 원장 ✔ {len(approved)}종 · 조건부 {len(holds)} · "
+        f"<h2>승인 종목 <span class='meta'>심사 승인 ∧ 회귀 여력 ≥ +{MIN_UPSIDE_PCT:.0f}% "
+        f"✔ {len(approved)}종 · 조건부 {len(holds)}(승인 보류 {len(blocked)}) · "
         f"거부 {len(vetoed)} · 심사 대기 큐 {len(queue)} — 매수 지시 아님</span></h2>"
     )
     if approved:
@@ -362,7 +420,8 @@ def render_picks() -> str:
 
     # 1. 심사 원장 표 — 승인 → 조건부(위험조정수익률 내림차순), 거부는 접힘
     parts.append(f"<h2>심사 원장 <span class='meta'>승인 {len(approved)} · 조건부 {len(holds)} "
-                 "— 판정이 있는 종목 전부, 순위·캡 무관</span></h2>")
+                 "— 판정이 있는 종목 전부, 순위·캡 무관. ⏸승인 보류 = 심사는 승인이나 회귀 여력이 "
+                 f"+{MIN_UPSIDE_PCT:.0f}% 미만(실현 예상 수익 부족) — 여력 회복 시 승인으로 자동 복귀</span></h2>")
     if approved or holds:
         parts.append("<div class='card scroll'>" + _TABLE_HEAD
                      + "".join(_row(p) for p in [*approved, *holds]) + "</table></div>")
@@ -388,8 +447,11 @@ def render_picks() -> str:
         parts.append("<div class='card meta'>대기 종목 없음 — 코어 풀이 전부 판정됨</div>")
     parts.append(
         "<div class='meta'>산식: 회귀 여력 = 섹터 중앙 PBR ÷ 현재 PBR − 1 "
-        "(섹터 표본 ≥5 전 상장 기준). 이익방향(영업) = 최신 연간 영업이익/자본 − 5년 중앙(v2.2 — 순이익 기준은 영업외 스파이크가 중앙값을 부풀려 폐기). "
-        "모든 값은 EOD·연간 재무의 as-of 기준 — 실시간 아님. <b>강조 열</b>: 이익수익률=1/PER(밸류 불변 가정의 장기 기대수익 근사) · ROE변동계수=5년 ROE 표준편차÷평균(낮을수록 수익 안정, 평균≤0·관측<4년 결측) · <b>위험조정수익률=이익수익률÷(1+변동계수)</b> — 표 정렬 키. "
+        "(섹터 표본 ≥5 전 상장 기준) = 실현 예상 수익. "
+        "<b>위험조정수익률</b> = 이익수익률(1/PER) ÷ (1 + 5년 ROE 변동계수) — 표 정렬 키. "
+        "모든 값은 EOD·연간 재무의 as-of 기준 — 실시간 아님. "
+        "PBR·깊이·배당·연속배당·이익방향(영업)·매출YoY·ROE변동계수 등 분해 지표 전체는 "
+        "종목 이름을 눌러 종목 상세에서. "
         "<b>회귀 여력 +100% 초과는 실현 기대치가 아니라 극단 저PBR의 산술</b> — "
         "지주·연결 구조 할인(자본 대비 시총 괴리)이 원인일 수 있으며, 그 할인은 "
         "지배구조 이벤트 없이 좀처럼 해소되지 않는다.</div>"
@@ -397,4 +459,7 @@ def render_picks() -> str:
     return page("선정 후보", "".join(parts), active="/picks")
 
 
-__all__ = ["Pick", "QUEUE_INDUSTRY_CAP", "QUEUE_N", "approved_picks", "render_picks"]
+__all__ = [
+    "Pick", "QUEUE_INDUSTRY_CAP", "QUEUE_N", "approved_picks", "current_upside",
+    "regression_upside", "render_picks", "sector_median_pbr",
+]
