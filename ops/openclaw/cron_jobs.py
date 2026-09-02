@@ -49,6 +49,12 @@ JOBS: tuple[CronJob, ...] = (
             comment="미발화 감시: 18:00 eod-v3 실행 기록 부재/미완료 → 텔레그램 1통"),
     CronJob("weekly-v3-check", "0 10 * * 6", "check-weekly-v3",
             comment="미발화 감시: 09:30 weekly-v3 실행 기록 부재/미완료 → 텔레그램 1통"),
+    # --- EXEC-12 가이드 매도 예약 (운영자 결정 2026-09-02) ---
+    # 매수는 운영자 수동. 실보유 조회 → 가이드 open 종목의 다음 매도선에 실보유 기준 수량을
+    # 조건주문(SINGLE·SELL·지정가)으로 재등록(우리 것 취소 후). 모드 GUIDE_ORDERS_MODE(.env,
+    # 기본 dry-run) · KILL 파일. 장전 08:40 — 토스 장전 접수 여부는 첫 live 실측으로 확인.
+    CronJob("guide-orders", "40 8 * * 1-5", "guide-orders",
+            comment="실계좌 감시 + 가이드 다음 매도선 조건주문 재등록(취소 후 재등록, 지정가 SELL만)"),
 )
 
 

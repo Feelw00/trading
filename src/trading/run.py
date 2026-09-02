@@ -441,7 +441,7 @@ def _weekly_v3() -> int:
 # --- ALERT-1(운영자 결정 2026-09-02): 실행 보고 + 미발화 감시 ---------------------------
 # v0.3 체인은 끝나면 성공/실패 1통(텔레그램)을 보내고 적체 P1을 같은 메시지 꼬리에 싣는다.
 # openclaw 트리거 턴 자체의 실패(Python 미기동)는 check-* 슬롯이 RunStore 부재로 잡는다.
-REPORTED_ROUNDS: frozenset[str] = frozenset({"eod-v3", "weekly-v3"})
+REPORTED_ROUNDS: frozenset[str] = frozenset({"eod-v3", "weekly-v3", "guide-orders"})
 _SUMMARY_MAX_LINES = 14
 
 
@@ -574,6 +574,22 @@ def _check_eod_v3() -> int:
     return _check_run("eod-v3")
 
 
+def _guide_orders() -> int:
+    """EXEC-12(운영자 결정 2026-09-02): 실계좌 감시 + 가이드 다음 매도선 조건주문 재등록.
+
+    순수 코드. 모드는 GUIDE_ORDERS_MODE(기본 dry-run)·KILL 파일. argv 가드(체인 인자 차단).
+    """
+    import sys as _sys
+
+    argv, _sys.argv = _sys.argv, ["trading.guide_orders"]
+    try:
+        from trading.guide_orders import main as guide_main
+
+        return guide_main()
+    finally:
+        _sys.argv = argv
+
+
 def _check_weekly_v3() -> int:
     return _check_run("weekly-v3")
 
@@ -586,6 +602,7 @@ ROUNDS: dict[str, Callable[[], int]] = {
     "toss-facts-v3": _collect_toss_facts_v3,
     "check-eod-v3": _check_eod_v3,        # ALERT-1 미발화 감시(18:30)
     "check-weekly-v3": _check_weekly_v3,  # ALERT-1 미발화 감시(토 10:00)
+    "guide-orders": _guide_orders,        # EXEC-12 가이드 매도 예약(평일 08:40)
     "collect-macro": _collect_macro,
     "collect-market": _collect_market,
     "collect-flows": _collect_flows,

@@ -200,4 +200,4 @@ def test_check_run_alerts_when_unfinished(
 def test_check_rounds_registered_and_pure() -> None:
     assert {"check-eod-v3", "check-weekly-v3"} <= set(run.ROUNDS)
     assert not ({"check-eod-v3", "check-weekly-v3"} & run._LLM_ROUNDS)
-    assert run.REPORTED_ROUNDS == {"eod-v3", "weekly-v3"}
+    assert run.REPORTED_ROUNDS == {"eod-v3", "weekly-v3", "guide-orders"}

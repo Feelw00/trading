@@ -13,8 +13,10 @@
   429는 지수 백오프 재시도.
 
 **절대금지 #3 집행:** 이 모듈에 시장가 경로는 존재하지 않는다 — 주문 생성은
-``place_limit_order``/``place_stop_sell_conditional`` 뿐이고 두 함수 모두 요청 본문의
-``orderType`` 을 ``"LIMIT"`` 으로 하드코딩한다(호출자가 바꿀 파라미터 자체가 없음).
+``place_limit_order``/``place_sell_conditional``(+ 위임 래퍼 ``place_stop_sell_conditional``)/
+``place_oco_sell`` 뿐이고 전부 요청 본문의 ``orderType`` 을 ``"LIMIT"`` 으로 하드코딩한다
+(호출자가 바꿀 파라미터 자체가 없음). EXEC-12(2026-09-02): 가이드 매도 예약은
+``place_sell_conditional``(SINGLE·SELL, 상방 감시가) 경로만 쓴다.
 ``confirmHighValueOrder`` 도 두지 않는다 — 집행 하드캡(EXEC-1, 종목당 100만원)이
 1억 원 문턱을 구조적으로 넘지 못하게 하는 이중벽이다.
 """
@@ -325,7 +327,7 @@ class TossClient:
 
     # --- 조건부 청산 (SINGLE 매도 — 손절 전용) ---
 
-    def place_stop_sell_conditional(
+    def place_sell_conditional(
         self,
         symbol: str,
         quantity: int,
@@ -335,9 +337,11 @@ class TossClient:
         expire_date: str,
         client_order_id: str,
     ) -> dict[str, Any]:
-        """손절 조건주문(SINGLE·SELL) — 감시가 도달 시 지정가 매도. orderType=LIMIT 하드코딩.
+        """SELL 조건주문(SINGLE) — 감시가(``triggerPrice``) 도달 시 지정가 매도 생성.
 
-        ``expire_date`` = YYYY-MM-DD (초안 TTL 만료일과 정렬).
+        스펙(ConditionRequest): 감시 방향 필드 없음 — "현재가가 이 값에 닿으면" 생성. 상방
+        감시가(가이드 매도선, EXEC-12)와 하방 감시가(손절, v0.2 동결) 모두 같은 본문이다.
+        orderType=LIMIT 하드코딩(절대금지 #3). ``expire_date`` = YYYY-MM-DD.
         """
         if quantity <= 0 or trigger_price <= 0 or order_price <= 0:
             raise ValueError("quantity/trigger_price/order_price는 양수")
@@ -356,6 +360,22 @@ class TossClient:
         }
         out = self._call("POST", "/api/v1/conditional-orders", body=body, need_account=True)
         return dict(out) if isinstance(out, dict) else {}
+
+    def place_stop_sell_conditional(
+        self,
+        symbol: str,
+        quantity: int,
+        *,
+        trigger_price: int,
+        order_price: int,
+        expire_date: str,
+        client_order_id: str,
+    ) -> dict[str, Any]:
+        """손절 조건주문(v0.2 executor 호환 래퍼 — 동결 경로). ``place_sell_conditional`` 위임."""
+        return self.place_sell_conditional(
+            symbol, quantity, trigger_price=trigger_price, order_price=order_price,
+            expire_date=expire_date, client_order_id=client_order_id,
+        )
 
     def place_oco_sell(
         self,
@@ -405,6 +425,14 @@ class TossClient:
         self._call(
             "DELETE", f"/api/v1/conditional-orders/{conditional_order_id}", need_account=True
         )
+
+    def conditional_order(self, conditional_order_id: str) -> dict[str, Any]:
+        """조건주문 상세(ConditionalOrderDetailResponse — status WATCHING|PAUSED|ORDERING|
+        ORDERED|COMPLETED|EXPIRED, first.triggeredOrderId). EXEC-12 정산이 소비."""
+        out = self._call(
+            "GET", f"/api/v1/conditional-orders/{conditional_order_id}", need_account=True
+        )
+        return dict(out) if isinstance(out, dict) else {}
 
     def conditional_orders(self, status: str = "OPEN") -> Any:
         """조건주문 목록 — ``status`` 필수(OPEN|CLOSED, 2026-07-14 실호출 관측: 무파라미터는 400).
