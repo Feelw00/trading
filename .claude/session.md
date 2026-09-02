@@ -15,12 +15,18 @@
 ### state
 - 헌법 = `docs/trading-system-design.md` **v0.3**(2026-08-26 비준) · 최종 기준 = `docs/OPEN_QUESTIONS.md`(PIVOT-1~8)
 - 환경 프로비저닝 여부 한 줄: poetry / `.env` / `~/.openclaw` 유무 (Phase 0 완료 전엔 없음이 정상. DB는 SQLite 파일 — docker/PostgreSQL 불필요, PIVOT-8)
-- **동결 확인**: openclaw cron 미등록·장중 상주 프로세스 없음 = 정상(PIVOT-1). 스윙 잡이 살아 있으면 그게 사고다
+- **cron 정상 상태 = v0.3 5잡**(eod-v3 18:00 · weekly-v3 토 09:30 · check 2 · guide-orders 08:40)
+  — `cron list`로 확인. 스윙 잡(v0.2 16잡)이 살아 있으면 그게 사고다(PIVOT-1). 장중 상주 없음
+- **⚠️ 실주문 경로 가동 중(EXEC-12 live, 2026-09-02)**: guide-orders가 토스 조건주문(SELL·지정가)을
+  실등록. `.runtime/exec/KILL` 없음 = 가동. 토스 OPEN 조건주문 = 저널(data/broker.sqlite) 대조
 
 ### gotchas
 - **v0.2 스윙 계열(watch/·selector/·executor 브래킷·arm-check·approve 스킬) = ❄️ 동결** — 수정·재가동·cron 등록 금지
 - **운영자 답변·결정은 바로 인코딩하지 말 것** — 판정(합당/반대)+근거+대안 먼저, 합의 후 반영 (2026-08-26 지시 ×2)
 - 판단 라운드(R1~R5·논제 가드)에 LLM 금지 — LLM은 R0 수집(하네스)·서술(R4.5/R7)만
+- 알림은 ALERT-1: 체인 종료 시 텔레그램 1통(P1 동봉) — 별도 다이제스트 슬롯 없음. 조건부 주문은
+  EXEC-12(가이드 매도 SELL·상방 감시)만 허용, 손절·OCO·브래킷은 동결
+- 시작가(가이드 기준가)는 불변 — `paper rebase`는 `--correction <사유>` 정정 전용
 - **브로커 대사 미완(PIVOT-6)**: 7/15 이후 방치된 보유(피에스케이 5주·S-Oil 4주)+조건주문 — Phase 0에서 실측 대사 전까지 브로커 상태 추측 금지
 - 국내 EOD는 +1영업일 공개. 정책 파라미터(부록 B)는 운영자 결재 전 임의 기본값 금지
 - 지시 인코딩 시 **결과를 지시자 언어로 에코백**(7/14 규칙)

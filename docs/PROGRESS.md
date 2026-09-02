@@ -121,3 +121,9 @@ EXEC-9 시간손절 창, EXEC-10 아침 규율·모멘텀, EXEC-11 저잔고·�
   /paper 매매 가이드 전환. **실투자 병행 개시(승인 5종 각 100주)** — 집행은 여전히 수동,
   자동 매매 없음. 검증: pytest 62·mypy 137 clean.
   상세 → [archive](../history/work/archive/2026-09-02-core-v2-review-paper-guide.md)
+- **ALERT-1 · EXEC-12 — 실행 보고·미발화 감시 + 가이드 매도 예약 live(9/2)** — cron 5잡
+  (eod/weekly + check 2 + guide-orders 08:40), 체인 종료 시 텔레그램 1통(P1 동봉), 토스 조건주문
+  (SELL·지정가·상방 감시가만 — 헌법 금지 3 부분 해제) 5건 실등록·수량 변경 시에만 재등록·
+  시작가 불변. **Phase 4 매도 선행 — 매수는 수동, 진입 자동화(DCA)는 §6 결재 후.** /paper·
+  /picks 재구성(원장·대기 큐 분리). 검증: pytest 전체·mypy 208 clean.
+  상세 → [archive](../history/work/archive/2026-09-02-alert1-exec12-guide-orders.md)

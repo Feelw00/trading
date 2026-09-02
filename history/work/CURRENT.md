@@ -45,9 +45,15 @@
   `trading-reports`(웹 :80) — **재부팅 시 두 스크립트 수동 재기동**(start-gateway·
   start-report-site). ⚠️ .env 변경 = 게이트웨이 재기동.
 - **⏳ 운영자 대기**: PIVOT-10 멤버십 구성 목록(원유정제·조선사·은행·종합반도체) ·
-  TELEGRAM 토큰(P0 알림 재개 시) · §6 결재(비중·DCA·거부권 창 — 페이퍼 관찰 후 세션이 제안).
+  §6 결재(비중·DCA·거부권 창 — 페이퍼 관찰 후 세션이 제안). (텔레그램은 9/2 실발송 가동.)
+- **⚠️ 실주문 경로 가동(EXEC-12 live, 9/2 14:57)**: `guide-orders` 평일 08:40이 토스 조건주문
+  (SELL·지정가)을 실등록한다. 긴급 정지 = `.runtime/exec/KILL` 생성 또는 `.env` GUIDE_ORDERS_MODE=off
+  + 게이트웨이 재기동. 매수는 여전히 운영자 수동.
 
 ## 최근 완료
+- 2026-09-02 — **ALERT-1 실행 보고·미발화 감시(cron 4잡) + EXEC-12 가이드 매도 예약 live(조건주문
+  5건 실등록·수량 변경 시에만 재등록·시작가 불변) + 페이퍼=가이드 정합 + /paper·/picks 재구성
+  (원장·대기 큐 분리, 대한약품 캡 결함 해소)** → [archive](archive/2026-09-02-alert1-exec12-guide-orders.md)
 - 2026-09-01~02 — **코어 v2 결재 체인 완결(policy v1.7~v2.10): 스크리너 8축(안정·환원·
   이익질·이익방향·역성장)·국면 v2(SLOWING·전이 규율)·지배주주 PBR(COLLECT-6)·DART 환원
   수집기·/picks 기대 분해·심사 원장(만료·태그 승격)·전면 자동화·페이퍼 100주 5단 매도·
@@ -107,9 +113,7 @@
 > v0.3 §10 로드맵.
 
 **운영자 몫 (짧은 것)**
-1. openclaw OAuth 로그인 1회(TTY): `OPENCLAW_STATE_DIR=<repo>/.runtime/openclaw ~/.openclaw/bin/openclaw models auth login --provider openai --method oauth`
-2. `TELEGRAM_BOT_TOKEN/CHAT_ID` — 알림 재개 원할 때 .env에 추가.
-3. 맥북 `~/Downloads/env.example.txt` 삭제(키 평문 잔존).
+1. 맥북 `~/Downloads/env.example.txt` 삭제(키 평문 잔존). (OAuth·텔레그램 토큰은 9/2 확인 — 완료)
 
 **Phase 2 — 구현 완료(2026-08-27), 운영자 결재 대기**
 4. ~~R3 국면 판정 엔진~~ → **완료**: `cycle/engine.py`(bottoming=하단+개선·unknown 스키마
