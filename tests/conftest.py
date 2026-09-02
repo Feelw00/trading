@@ -128,6 +128,17 @@ def _no_real_round_alerts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_run, "_alert_round_failure", lambda name, detail: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_run_reports(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """ALERT-1 실행 보고·RunStore가 운영 DB/Telegram에 닿지 않게 전역 차단.
+    검증하려는 테스트는 위에 recorder를 다시 monkeypatch한다."""
+    import trading.run as _run
+    import trading.runs as _runs
+
+    monkeypatch.setattr(_runs, "DEFAULT_RUNS_DB", tmp_path / "runs-isolated.sqlite")
+    monkeypatch.setattr(_run, "_send_run_report", lambda name, **kw: None)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _scrub_live_secrets() -> None:
     """실키·실계정 env 제거 — 운영 셸(.env 소싱)에서 pytest를 돌려도 테스트가 실제

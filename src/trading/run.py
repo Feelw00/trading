@@ -7,6 +7,11 @@
 
 import sys
 from collections.abc import Callable
+from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from trading.alerts import AlertDispatcher
 
 
 def _collect_macro() -> int:
@@ -433,12 +438,154 @@ def _weekly_v3() -> int:
     return 0
 
 
+# --- ALERT-1(운영자 결정 2026-09-02): 실행 보고 + 미발화 감시 ---------------------------
+# v0.3 체인은 끝나면 성공/실패 1통(텔레그램)을 보내고 적체 P1을 같은 메시지 꼬리에 싣는다.
+# openclaw 트리거 턴 자체의 실패(Python 미기동)는 check-* 슬롯이 RunStore 부재로 잡는다.
+REPORTED_ROUNDS: frozenset[str] = frozenset({"eod-v3", "weekly-v3"})
+_SUMMARY_MAX_LINES = 14
+
+
+def _summarize(lines: list[str], *, limit: int = _SUMMARY_MAX_LINES) -> list[str]:
+    """체인 stdout에서 최상위(비들여쓰기) 줄만 — 종목·산업별 상세는 들여쓰기라 자연 제외."""
+    top = [ln.rstrip() for ln in lines if ln.strip() and not ln.startswith((" ", "\t"))]
+    if len(top) > limit:
+        return [*top[:limit], f"…(+{len(top) - limit}줄)"]
+    return top
+
+
+def _run_reported(name: str, handler: Callable[[], int]) -> int:
+    """실행 사실(RunStore) 박제 + stdout 요약 + 실행 보고 1통. 보고 실패는 rc에 영향 없음."""
+    import contextlib
+    import io
+    from typing import TextIO
+
+    from trading.collectors.base import now_kst
+    from trading.runs import RunStore
+
+    class _Tee(io.StringIO):
+        """stdout 통과 + 캡처 — 잡 로그(.runtime/logs/cron)는 그대로, 요약만 추가로 얻는다."""
+
+        def __init__(self, real: TextIO) -> None:
+            super().__init__()
+            self._real = real
+
+        def write(self, s: str) -> int:
+            self._real.write(s)
+            return super().write(s)
+
+    started = now_kst()
+    store = RunStore()
+    try:
+        run_id = store.start(name, at=started)
+    finally:
+        store.close()
+    tee = _Tee(sys.stdout)
+    failure: str | None = None
+    with contextlib.redirect_stdout(tee):
+        try:
+            rc = handler()
+        except Exception as exc:  # noqa: BLE001 — 라운드 전체의 마지막 방어선(§9)
+            print(f"round {name} crashed: {exc!r}", file=sys.stderr)
+            _alert_round_failure(name, repr(exc))
+            failure, rc = repr(exc), 1
+    if rc not in (0, GUARD_SKIP_RC) and failure is None:
+        _alert_round_failure(name, f"rc={rc}")
+        failure = f"rc={rc}"
+    finished = now_kst()
+    summary = _summarize(tee.getvalue().splitlines())
+    store = RunStore()
+    try:
+        store.finish(name, run_id, rc=rc, summary="\n".join(summary), at=finished)
+    finally:
+        store.close()
+    _send_run_report(
+        name, ok=failure is None, started_at=started, finished_at=finished,
+        summary_lines=summary, failure=failure,
+    )
+    return rc
+
+
+def _send_run_report(
+    name: str, *, ok: bool, started_at: datetime, finished_at: datetime,
+    summary_lines: list[str], failure: str | None,
+) -> None:
+    """실행 보고 발송(ALERT-1) — 테스트는 conftest가 무효화."""
+    try:
+        from trading.alerts import AlertDispatcher
+
+        d = AlertDispatcher()
+        try:
+            res = d.send_run_report(
+                round_name=name, ok=ok, started_at=started_at, finished_at=finished_at,
+                summary_lines=summary_lines, failure=failure,
+            )
+        finally:
+            d.store.close()
+        print(f"실행 보고: {res}")
+    except Exception as exc:  # noqa: BLE001 — 보고 실패가 라운드 rc를 바꾸면 안 된다
+        print(f"실행 보고 발송 실패(무시): {exc!r}", file=sys.stderr)
+
+
+def _check_run(name: str, *, dispatcher: "AlertDispatcher | None" = None) -> int:
+    """미발화 감시 — 오늘(KST) 해당 라운드의 완료 기록이 없으면 ❌/⏳ 1통 즉시 발송.
+
+    완료 기록이 있으면(실패 rc여도) 침묵 — 실패 보고는 실행 보고가 이미 보냈다.
+    """
+    from trading.alerts import Alert, AlertDispatcher, Severity
+    from trading.collectors.base import now_kst
+    from trading.runs import RunStore
+
+    now = now_kst()
+    store = RunStore()
+    try:
+        st = store.latest_on(name, now.date())
+    finally:
+        store.close()
+    if st is not None and st.finished:
+        print(f"감시: {name} 오늘 완료 확인(rc={st.rc}) — 무발송")
+        return 0
+    if st is None:
+        header = f"❌ {name} 미발화"
+        what = f"{name} 미발화 — 오늘({now:%Y-%m-%d}) 실행 기록 없음(openclaw 트리거 턴 실패 가능)"
+    else:
+        elapsed = (now - st.started_at).total_seconds() / 60
+        header = f"⏳ {name} 미완료"
+        what = f"{name} 미완료 — {st.started_at:%H:%M} 시작 후 {elapsed:.0f}분, 종료 기록 없음"
+    d = dispatcher if dispatcher is not None else AlertDispatcher()
+    try:
+        d.notify(Alert(
+            severity=Severity.P1,
+            what=what,
+            rule="ALERT-1 미발화 감시(운영자 결정 2026-09-02)",
+            action=(f"openclaw cron list 상태·.runtime/logs/cron/{name}.log 확인 → "
+                    f"수동 실행: python -m trading.run {name}"),
+            deadline="다음 동일 슬롯 전",
+            created_at=now,
+        ))
+        n = d.flush_digest(header=header)
+    finally:
+        if dispatcher is None:
+            d.store.close()
+    print(f"감시: {header} — 발송 {n}건")
+    return 0
+
+
+def _check_eod_v3() -> int:
+    return _check_run("eod-v3")
+
+
+def _check_weekly_v3() -> int:
+    return _check_run("weekly-v3")
+
+
 ROUNDS: dict[str, Callable[[], int]] = {
     # --- v0.3 장기 사이클 라운드(전부 순수 코드) ---
     "eod-v3": _eod_v3,
     "weekly-v3": _weekly_v3,
     "flows-v3": _collect_flows_v3,
     "toss-facts-v3": _collect_toss_facts_v3,
+    "check-eod-v3": _check_eod_v3,        # ALERT-1 미발화 감시(18:30)
+    "check-weekly-v3": _check_weekly_v3,  # ALERT-1 미발화 감시(토 10:00)
     "collect-macro": _collect_macro,
     "collect-market": _collect_market,
     "collect-flows": _collect_flows,
@@ -529,6 +676,8 @@ def main(argv: list[str] | None = None) -> int:
     skipped = _guard_llm_round(name)
     if skipped is not None:
         return skipped
+    if name in REPORTED_ROUNDS:
+        return _run_reported(name, handler)  # ALERT-1: 실행 기록 + 성공/실패 보고 1통
     try:
         rc = handler()
     except Exception as exc:  # noqa: BLE001 — 라운드 전체의 마지막 방어선(§9)
