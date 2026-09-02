@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS valuations (
   as_of TEXT NOT NULL, payload TEXT NOT NULL, appended_at TEXT NOT NULL,
   UNIQUE(id, version)
 );
+-- all_latest 상관 서브쿼리용 — 인덱스 부재 시 배치 누적(1.2만행+)에서 O(N²) 풀스캔
+-- (실측 2026-09-01: /stocks 렌더 23.5초의 원인)
+CREATE INDEX IF NOT EXISTS idx_valuations_symbol ON valuations(symbol, as_of, version);
 """
 
 

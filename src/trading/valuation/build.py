@@ -27,6 +27,7 @@ class BuildSummary:
     with_pbr: int
     with_per: int
     with_sector_pct: int
+    skipped_fx: int = 0  # 외화 재무 제외(외국 상장 — 환산 어댑터 전까지 산출 안 함)
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,8 @@ def build_valuation_records(
     sector_map = market_store.sector_map(KRX_SOURCE)
 
     rows: list[_Row] = []
+    skipped_fx: list[str] = []
+    records_fx: list[ValuationRecord] = []
     for srtn_cd in sorted(fin_store.symbols()):
         quote = market_store.latest_quote(srtn_cd)
         if quote is None:
@@ -85,6 +88,24 @@ def build_valuation_records(
         cap = parse_amount(quote[3])
         snap = fin_store.snapshot_for(srtn_cd)
         if snap is None:
+            continue
+        # 외국 상장(주로 9xxxxx) 외화 재무 — 원화 시총과 혼합 시 지표가 무의미
+        # (실측 2026-09-01: 코오롱티슈진 USD 재무로 PBR 12,006 산출). 환산 어댑터
+        # 도입 전까지 지표 없는 **제외 레코드**를 박제한다 — append-only에서 구 배치의
+        # 오염 레코드를 최신 뷰에서 밀어내는 유일한 경로이자, 제외 사실의 전수 기록.
+        if snap.currency not in (None, "", "KRW"):
+            skipped_fx.append(srtn_cd)
+            records_fx.append(
+                ValuationRecord(
+                    id=f"val.{bas_dt}.{srtn_cd}",
+                    as_of=_as_of_close(bas_dt),
+                    fetched_at=fetched,
+                    source="derived:fins+market",
+                    symbol=srtn_cd,
+                    sector_krx=next(iter(sector_map.get(srtn_cd) or []), None),
+                    fin_basis=f"외화재무({snap.currency}) — 원화 시총과 혼합 불가, 산출 제외",
+                )
+            )
             continue
         annual = (
             snap
@@ -98,12 +119,15 @@ def build_valuation_records(
             annual_net_income=annual.net_income if annual else None,
             annual_revenue=annual.revenue if annual else None,
             annual_equity=annual.equity if annual else None,
+            owner_equity=snap.owner_equity,  # COLLECT-6: PBR만 지배주주지분 우선
         )
         annuals = fin_store.annual_series(srtn_cd)
         losses, observed = loss_years([vals["net_income"] for _year, vals in annuals])
         roe_median, roe_observed = _roe_median(annuals)
         sectors = sector_map.get(srtn_cd, [])
         basis = f"BS {snap.bsns_year}/{snap.reprt_code}"
+        if snap.owner_equity is not None:
+            basis += " · 지배주주지분"  # COLLECT-6: PBR 분모 표기(폴백=자본총계, 미표기)
         if annual is not None and annual is not snap:
             basis += f" · IS {annual.bsns_year}/{annual.reprt_code}"
         rows.append(
@@ -160,11 +184,13 @@ def build_valuation_records(
             )
         )
 
+    records += records_fx  # 제외 레코드도 박제(최신 뷰에서 구 오염 레코드를 대체)
     summary = BuildSummary(
         total=len(records),
         with_pbr=sum(1 for x in records if x.pbr is not None),
         with_per=sum(1 for x in records if x.per is not None),
         with_sector_pct=sum(1 for x in records if x.sector_pbr_pct is not None),
+        skipped_fx=len(skipped_fx),
     )
     return records, summary
 
@@ -181,7 +207,7 @@ def main() -> int:
             store.append(rec)
         print(
             f"밸류에이션 산출: {s.total}종목 · PBR {s.with_pbr} · PER(연간) {s.with_per} · "
-            f"섹터상대 {s.with_sector_pct} → {DEFAULT_DB}"
+            f"섹터상대 {s.with_sector_pct} · 외화재무 제외 {s.skipped_fx} → {DEFAULT_DB}"
         )
         if not records:
             print("산출 0건 — fins/market 스토어 적재 여부를 확인하라(수집 선행).")

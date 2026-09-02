@@ -30,11 +30,19 @@ def derive_metrics(
     annual_net_income: float | None,
     annual_revenue: float | None,
     annual_equity: float | None,
+    owner_equity: float | None = None,
 ) -> Metrics:
-    """시총 + BS(최신) + 연간 IS → 지표. 분모가 무의미한 경우 None."""
+    """시총 + BS(최신) + 연간 IS → 지표. 분모가 무의미한 경우 None.
+
+    COLLECT-6(운영자 결재 2026-09-01): PBR 분모는 **지배기업 소유주지분 우선**
+    (owner_equity, 결측 시 자본총계 폴백). 시총은 지배주주 몫만 반영하므로 비지배지분
+    포함 자본총계와 비교하면 지주형 기업의 PBR이 과소된다(실측: KG케미칼 연결 자본
+    3.94조 중 비지배 2.94조 — PBR 0.08→0.32). 부채비율·ROE는 자본총계 유지
+    (연결 순이익·부채가 비지배 포함이라 내부 정합)."""
     pbr = None
-    if mrkt_tot_amt is not None and equity is not None and equity > 0:
-        pbr = mrkt_tot_amt / equity
+    pbr_equity = owner_equity if owner_equity is not None else equity
+    if mrkt_tot_amt is not None and pbr_equity is not None and pbr_equity > 0:
+        pbr = mrkt_tot_amt / pbr_equity
 
     debt_ratio = None
     if liabilities is not None and equity is not None and equity > 0:
