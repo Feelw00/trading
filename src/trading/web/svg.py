@@ -8,7 +8,8 @@ PHASE_COLOR = {
     "bottoming": "#2f855a",
     "recovering": "#2b6cb0",
     "overheated": "#c53030",
-    "declining": "#975a16",
+    "slowing": "#b7791f",     # v2: 둔화(과열 조정)
+    "declining": "#975a16",   # v1 레거시
     "unknown": "#a0aec0",
 }
 

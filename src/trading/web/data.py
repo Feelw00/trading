@@ -135,12 +135,15 @@ def whitelist_groups() -> set[str]:
 
 
 def stock_names() -> dict[str, str]:
+    """KRX 공식명 우선 + 소스 무관 폴백 — 외국 상장(9xxxxx) 등 KRX 태깅 밖도 이름 표시."""
     from trading.collectors.market import MarketStore
     from trading.sectors import KRX_SOURCE
 
     store = MarketStore()
     try:
-        return store.sector_names(KRX_SOURCE)
+        names = store.names_any()
+        names.update(store.sector_names(KRX_SOURCE))
+        return names
     finally:
         store.close()
 

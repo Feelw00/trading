@@ -67,7 +67,9 @@ def stock_rows() -> list[StockRow]:
     try:
         vals = vstore.all_latest()
         cands = {c.symbol: c for c in cstore.latest_run()}
-        names = market.sector_names(KRX_SOURCE)
+        # KRX 공식명 우선 + 소스 무관 폴백 — 외국 상장(9xxxxx)도 이름 표시
+        names = market.names_any()
+        names.update(market.sector_names(KRX_SOURCE))
     finally:
         vstore.close()
         cstore.close()

@@ -24,7 +24,11 @@ class WebHandler(BaseHTTPRequestHandler):
             elif route == "/stocks":
                 from trading.web.stocks import render_list
 
-                self._html(render_list())
+                try:
+                    page_no = int(query.get("page", "1"))
+                except ValueError:
+                    page_no = 1
+                self._html(render_list(page_no=page_no))
             elif route.startswith("/stocks/"):
                 from trading.web.stocks import render_detail
 
@@ -38,6 +42,14 @@ class WebHandler(BaseHTTPRequestHandler):
 
                 group = unquote(route.removeprefix("/industries/"))
                 self._html_or_404(render_industry_detail(group), "산업 그룹 없음")
+            elif route == "/paper":
+                from trading.web.paper_page import render_paper
+
+                self._html(render_paper())
+            elif route == "/picks":
+                from trading.web.picks import render_picks
+
+                self._html(render_picks())
             elif route == "/reports":
                 from trading.web.reports_page import render_reports
 

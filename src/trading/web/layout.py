@@ -4,6 +4,8 @@ import html
 
 NAV = (
     ("/", "대시보드"),
+    ("/picks", "선정 후보"),
+    ("/paper", "매매 가이드"),
     ("/stocks", "종목"),
     ("/industries", "산업"),
     ("/reports", "보고서"),
@@ -50,7 +52,9 @@ CSS = """
         border-radius:999px; color:#fff; }
   .ph-bott { background:#2f855a; } .ph-reco { background:#2b6cb0; }
   .ph-over { background:#c53030; } .ph-decl { background:#975a16; }
-  .ph-unkn { background:#a0aec0; }
+  .ph-slow { background:#b7791f; } .ph-unkn { background:#a0aec0; }
+  td.hl, th.hl { background:#fdf6dc; }  /* 강조 열: 이익수익률·ROE변동계수(2026-09-01) */
+  th.hl { font-weight:800; }
   .grid3 { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; }
   @media (max-width:860px) { .grid3 { grid-template-columns:1fr; } }
   .hero { border-left:5px solid #2f855a; }

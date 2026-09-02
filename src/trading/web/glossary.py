@@ -23,13 +23,14 @@ GLOSSARY: dict[str, tuple[str, str]] = {
     "improving": ("개선", "마진 또는 매출 증감률이 직전 연도보다 좋아졌는가 — 바닥 통과 판정의 필수 조건(위치≠반전)"),
     "secular": ("사양", "산업 매출의 장기(8년) 추세가 하향인가 — 하향이면 아무리 싸도 편입하지 않음(구조적 쇠퇴)"),
     "amplitude": ("사이클 진폭", "산업 PBR 밴드의 역사적 최고 ÷ 최저 — 사이클의 크기. 4배면 바닥에서 고점까지 4배 재평가된 역사"),
-    "phase": ("국면", "바닥 통과=하단+개선 시작(진입 존) · 회복=중간+개선(진입 존) · 과열=상단 · 하강=개선 없음 · 판정 불가=관측 부족"),
+    "phase": ("국면", "v2: 바닥 통과=밴드 하단(진입 존) · 회복=중간·밴드 상승 중(진입 존) · 과열=상단 · 둔화=중간·밴드 하락 중(과열 조정) · 하강(구)=v1 레거시 · 판정 불가=관측 부족. 개선(마진·매출)은 별도 보조 지표"),
 }
 
 PHASE_CLASS = {
     CyclePhase.BOTTOMING: "ph-bott",
     CyclePhase.RECOVERING: "ph-reco",
     CyclePhase.OVERHEATED: "ph-over",
+    CyclePhase.SLOWING: "ph-slow",
     CyclePhase.DECLINING: "ph-decl",
     CyclePhase.UNKNOWN: "ph-unkn",
 }

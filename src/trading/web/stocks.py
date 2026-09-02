@@ -83,7 +83,10 @@ def _stock_tr(r: StockRow) -> str:
     )
 
 
-def render_list(rows: list[StockRow] | None = None) -> str:
+PAGE_SIZE = 200  # 전체 유니버스 표 페이지 크기 — 2,600행 일괄 렌더가 페이지를 죽였음(2026-09-01)
+
+
+def render_list(rows: list[StockRow] | None = None, *, page_no: int = 1) -> str:
     rows = stock_rows() if rows is None else rows
     passed = [r for r in rows if r.r4 == "통과"]
     industries = sorted({r.industry or r.val.sector_krx or "—" for r in rows})
@@ -104,18 +107,33 @@ def render_list(rows: list[StockRow] | None = None) -> str:
     else:
         parts.append("<div class='card meta'>통과 종목 없음 — 정상 상태일 수 있습니다</div>")
 
+    # 전체 유니버스 — 서버측 페이지네이션(200/페이지). 필터·정렬은 현재 페이지 내 동작.
+    total_pages = max(1, -(-len(rows) // PAGE_SIZE))
+    page_no = min(max(1, page_no), total_pages)
+    lo, hi = (page_no - 1) * PAGE_SIZE, page_no * PAGE_SIZE
+    nav = []
+    if page_no > 1:
+        nav.append(f"<a href='/stocks?page={page_no - 1}'>← 이전</a>")
+    nav.append(f"{page_no}/{total_pages} 페이지")
+    if page_no < total_pages:
+        nav.append(f"<a href='/stocks?page={page_no + 1}'>다음 →</a>")
+    pager = "<div class='meta'>" + " &nbsp; ".join(nav) + "</div>"
+
     parts += [
-        f"<h2>전체 평가 유니버스 ({len(rows)})</h2>",
+        f"<h2>전체 평가 유니버스 ({len(rows)} — {lo + 1}~{min(hi, len(rows))} 표시)</h2>",
+        pager,
         "<div class='meta'><label><input type='checkbox' id='wl-only' "
         "onchange='applyFilters()'> 화이트리스트만</label> &nbsp; 산업: "
         "<select id='ind-filter' onchange='applyFilters()'>"
-        f"<option value=''>전체</option>{options}</select></div>",
+        f"<option value=''>전체</option>{options}</select> "
+        "<span class='meta'>(필터·정렬은 현재 페이지 내에서 동작)</span></div>",
         "<div class='card scroll'><table id='all-table'><thead>",
         _head_row(),
         "</thead><tbody>",
     ]
-    parts += [_stock_tr(r) for r in rows]
+    parts += [_stock_tr(r) for r in rows[lo:hi]]
     parts.append("</tbody></table></div>")
+    parts.append(pager)
     parts.append(_SORT_JS)
     return page("종목 — 트레이딩 v0.3", "\n".join(parts), active="/stocks")
 
@@ -149,8 +167,26 @@ def render_detail(symbol: str) -> str | None:
 
     if d.closes:
         pairs = _downsample(d.closes)
+        # 미수정 종가(금융위 EOD clpr) — 액면분할·증자 권리락이 반영되지 않아 수정주가
+        # 차트(증권 앱)와 다르다. 가격제한폭(±30%)을 넘는 단일일 단절 = 시장에서 불가능한
+        # 움직임이므로 권리락류 이벤트로 감지·표기만 한다(원인 판정은 안 함 — 추측 금지.
+        # 사례: KG케미칼 2023-08 5:1 액면분할 -81%). 상한가·하한가(±30% 이내)는 미표기.
+        gaps = [
+            (dt, cur / prev - 1)
+            for (_, prev), (dt, cur) in zip(d.closes, d.closes[1:])
+            if prev > 0 and abs(cur / prev - 1) > 0.31
+        ]
+        gap_note = (
+            " · ⚠ 가격 단절 감지: "
+            + ", ".join(f"{dt}({chg:+.0%})" for dt, chg in gaps[-3:])
+            + " — 분할·증자 권리락 가능성(미수정 데이터라 그대로 표시됨)"
+            if gaps
+            else ""
+        )
         parts += [
             "<h2>주가 (2021~)</h2>",
+            f"<div class='meta'>미수정 종가(금융위 EOD) — 액면분할·증자 권리락 미반영, "
+            f"증권 앱의 수정주가 차트와 다를 수 있음{gap_note}</div>",
             f"<div class='card scroll'>{line_chart([c for _dt, c in pairs], labels=[dt for dt, _c in pairs], start_label=d.closes[0][0], end_label=d.closes[-1][0])}</div>",
         ]
 

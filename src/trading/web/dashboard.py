@@ -48,7 +48,7 @@ def render_dashboard() -> str:
     # --- 핵심 카드 1: 가치 후보(P-18 — 국면 우선순위 정렬, 상위 10 + 전수 카운트) ---
     prio = {
         CyclePhase.BOTTOMING: 0, CyclePhase.RECOVERING: 1, CyclePhase.UNKNOWN: 2,
-        CyclePhase.DECLINING: 3, CyclePhase.OVERHEATED: 4,
+        CyclePhase.SLOWING: 3, CyclePhase.DECLINING: 3, CyclePhase.OVERHEATED: 4,
     }
     passed = sorted(
         passed,
@@ -76,6 +76,31 @@ def render_dashboard() -> str:
         if len(passed) > 10:
             card1.append(f"<div class='meta'>상위 10만 표시 — 전수 {len(passed)}종은 "
                          "<a href='/stocks'>종목</a>에서</div>")
+        # 심사 승인 종목 요약(v2.4 심사 원장) — 노출 자격은 approved 판정(구 바스켓 폐지)
+        try:
+            from trading.web.picks import _build_picks, _direction_tier, approved_picks
+
+            picks = _build_picks()
+            approved = approved_picks(picks)
+            n_pending = sum(1 for p in picks if p.verdict is None)
+            if approved:
+                items = " · ".join(
+                    ("✅" if _direction_tier(p) == 0 else "⏳") + html.escape(p.name)
+                    for p in approved
+                )
+                card1.append(
+                    f"<div><b>심사 승인 종목</b> <span class='meta'>({len(approved)}종 · "
+                    f"심사 대기 {n_pending}종 · ✅=이익방향 양전)</span></div>"
+                    f"<div class='meta'>{items} — "
+                    "<a href='/picks'>선정 후보</a>에서 분해 지표·심사 배지</div>"
+                )
+            else:
+                card1.append(
+                    f"<div class='meta'>심사 승인 종목 없음 (대기 {n_pending}종) — "
+                    "<a href='/picks'>선정 후보</a></div>"
+                )
+        except Exception as exc:  # 수집 선행 전 등 — 대시보드 본체는 살린다(정직 표기)
+            card1.append(f"<div class='meta'>바스켓 요약 불가: {html.escape(str(exc)[:80])}</div>")
     else:
         card1.append("<div class='meta'>없음 — 가치·건전성 통과 종목 없음</div>")
     card1.append("</div>")
@@ -104,16 +129,30 @@ def render_dashboard() -> str:
     card2.append("</div>")
 
     # --- 핵심 카드 3: 이번 주 변화 ---
+    # P-18 전 상장 확장 후 회차 간 진입·이탈이 수십~수백 건 — 전 종목 나열은 가독성을
+    # 죽이므로(운영자 피드백 2026-09-01) 카운트 + 상위 일부만 표시, 전수는 종목 페이지로.
+    _CHANGE_MAX = 8
     card3 = ["<div class='card'><h2 style='margin-top:0'>변화 (직전 산출 대비)</h2>"]
     changed = False
     for industry, prev, cur in transitions:
         card3.append(f"<div>{html.escape(industry)}: {prev} → <b>{cur}</b></div>")
         changed = True
-    for sym in sorted(new_passed):
-        card3.append(f"<div>후보 진입: <a href='/stocks/{sym}'>{html.escape(names.get(sym, sym))}</a></div>")
+    if new_passed:
+        card3.append(f"<div><b>후보 진입 {len(new_passed)}종</b></div>")
+        for sym in sorted(new_passed)[:_CHANGE_MAX]:
+            card3.append(
+                f"<div class='meta'>· <a href='/stocks/{sym}'>{html.escape(names.get(sym, sym))}</a></div>"
+            )
+        if len(new_passed) > _CHANGE_MAX:
+            card3.append(f"<div class='meta'>… 외 {len(new_passed) - _CHANGE_MAX}종 — "
+                         "전수는 <a href='/stocks'>종목</a>에서</div>")
         changed = True
-    for sym in sorted(dropped):
-        card3.append(f"<div>후보 이탈: {html.escape(names.get(sym, sym))}</div>")
+    if dropped:
+        card3.append(f"<div><b>후보 이탈 {len(dropped)}종</b></div>")
+        for sym in sorted(dropped)[:_CHANGE_MAX]:
+            card3.append(f"<div class='meta'>· {html.escape(names.get(sym, sym))}</div>")
+        if len(dropped) > _CHANGE_MAX:
+            card3.append(f"<div class='meta'>… 외 {len(dropped) - _CHANGE_MAX}종</div>")
         changed = True
     if not changed:
         card3.append("<div class='meta'>변화 없음 — 대부분의 주는 이 상태가 정상입니다</div>")

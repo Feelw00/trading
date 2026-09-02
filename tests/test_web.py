@@ -156,3 +156,19 @@ def test_dashboard_v2_donut_heatmap_funnel_titles(
     body = render_dashboard()
     assert "국면 분포와 히트맵" in body
     assert len(_FUNNEL_TITLES) == 5 and "관찰 후보" in _FUNNEL_TITLES[-1]
+
+
+def test_picks_page_renders() -> None:
+    """선정 후보 페이지 — 데이터 유무와 무관하게 렌더링(산식·면책 문구 포함)."""
+    from trading.web.picks import render_picks
+
+    out = render_picks()
+    assert "선정 후보" in out and "예측이 아니라" in out
+
+
+def test_paper_page_renders(tmp_path) -> None:
+    """매매 가이드 페이지 — 포지션 유무와 무관하게 렌더링(실주문 없음 명시)."""
+    from trading.web.paper_page import render_paper
+
+    out = render_paper()
+    assert "매매 가이드" in out and "실주문 없음" in out
