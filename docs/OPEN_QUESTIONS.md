@@ -80,6 +80,9 @@
   - **모드** `GUIDE_ORDERS_MODE` off|dry-run(기본)|live + `.runtime/exec/KILL` 공유. dry-run
     5거래일 후 운영자가 live 전환(.env + 게이트웨이 재기동). 토스 장전(08:40) 조건주문 접수
     여부는 첫 live 실측으로 확인 — 거부 시 슬롯 이동.
+  - **live 전환(운영자 지시 2026-09-02 14:57, dry-run 관찰 생략):** 장중 첫 실등록 5건(에이스침대
+    80% 1주 @35,850 · 원림 80% 1주 @18,590 · 대한약품 80% 1주 @47,350 · 신세계I&C 80% 1주 @26,650 ·
+    아이퀘스트 80% 7주 @4,475, 만료 09-09) → 토스 OPEN/WATCHING 실측 일치, 2회차 "유지 5·쓰기 0".
 - **구현:** `trading.guide_orders`(저널 `data/broker.sqlite` append-only: holdings_snapshots ·
   guide_orders 이벤트 · events) · `TossClient.place_sell_conditional/conditional_order` ·
   `run.py` 라운드(ALERT-1 보고 대상) · 테스트 10건.
