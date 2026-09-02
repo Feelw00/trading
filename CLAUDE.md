@@ -35,8 +35,9 @@
    입력으로 배선하는 것도 같은 위반이다.
    (openclaw cron이 스크립트를 exec하기 위한 "트리거"로서의 LLM 에이전트 턴만 허용 — 데이터엔 접근하지 않는다.)
    **R0(수집)은 예외 — 운영자 결정으로 LLM 수집 채택(OPEN_QUESTIONS COLLECT-1). 단 하네스(COLLECT-3): LLM은 승인된 소스 어댑터만 호출하고 독자 웹서치 금지, 환각 가드(출처·as_of 필수, 미검증=UNVERIFIED, 추측 금지) 적용.**
-3. 시장가 주문 코드를 어떤 형태로도 작성하지 마라. 주문 관련 코드는 지정가만 존재한다
-   (v0.2 조건부 청산 경로는 동결 — 신규 사용 금지).
+3. 시장가 주문 코드를 어떤 형태로도 작성하지 마라. 주문 관련 코드는 지정가만 존재한다.
+   조건부 주문은 **EXEC-12 가이드 매도 예약(SINGLE·SELL·지정가, 상방 감시가)만 허용**
+   (운영자 결정 2026-09-02) — v0.2 손절·OCO·브래킷 경로는 동결(신규 사용 금지).
 4. 비밀값(API 키·계좌)을 코드·로그·테스트 픽스처에 넣지 마라.
    전부 환경변수 + `.env.example` + 1Password(`docs/SECRETS.md`). 모델명도 하드코딩 금지(.env 주입).
 5. 모든 타임스탬프는 timezone-aware(KST 명시). naive datetime 사용 금지.
@@ -85,8 +86,9 @@ docs/               # trading-system-design(v0.3), OPEN_QUESTIONS, SECRETS, clau
 - **트레이딩 전용 openclaw 인스턴스**: 개인 `~/.openclaw`와 분리된 프로젝트 `OPENCLAW_HOME`(`.runtime/openclaw`, gitignored, bootstrap가 생성). openclaw 설정은 손으로 두지 말고 `ops/openclaw/`에 선언적 코드로. **repo에 openclaw 소스(플랫폼)는 두지 마라** — 버전 핀 + bootstrap 설치로 의존.
 - cron 잡은 `ops/openclaw/`의 등록 스크립트로 관리. KST 정시는 `--cron "<expr>" --tz Asia/Seoul`.
 - 순수-코드 디스패치 잡은 `--tools exec --light-context` + 결정론적 프롬프트로 `python -m trading.run …`만 실행.
-- `cron_jobs.py`는 v0.3 슬롯 4잡(eod-v3 평일 18:00 · weekly-v3 토 09:30 · ALERT-1 감시
-  eod-v3-check 18:30 · weekly-v3-check 토 10:00). 변경 후 `poetry run python ops/openclaw/sync.py`
+- `cron_jobs.py`는 v0.3 슬롯 5잡(eod-v3 평일 18:00 · weekly-v3 토 09:30 · ALERT-1 감시
+  eod-v3-check 18:30 · weekly-v3-check 토 10:00 · EXEC-12 guide-orders 평일 08:40).
+  변경 후 `poetry run python ops/openclaw/sync.py`
   (dry-run) → `--apply`로 등록(.env 소싱 필요). 월간·분기 슬롯은 §6 결재·첫 분기 도래 시 추가.
 
 ## 작업 방식

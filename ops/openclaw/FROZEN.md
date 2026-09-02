@@ -1,8 +1,9 @@
 # cron 상태 고지 (2026-08-27 갱신)
 
 **`cron_jobs.py`는 v0.3 슬롯으로 재작성 완료**(일간 eod-v3 18:00 · 주간 weekly-v3 토 09:30 +
-ALERT-1 감시 eod-v3-check 18:30 · weekly-v3-check 토 10:00 — 전부 순수 코드, 장중 상주 없음).
-`sync.py --apply` 등록은 게이트웨이 기동 + CLI 페어링 후(2026-09-02 4잡 등록 상태).
+ALERT-1 감시 eod-v3-check 18:30 · weekly-v3-check 토 10:00 · EXEC-12 guide-orders 평일 08:40 —
+전부 순수 코드, 장중 상주 없음). `sync.py --apply` 등록은 게이트웨이 기동 + CLI 페어링 후
+(2026-09-02 5잡 등록 상태). 조건부 주문은 EXEC-12 경로(SELL·상방 감시)만 — 손절·OCO는 동결.
 
 - **v0.2 스윙 슬롯(감시기·LLM 체인·아침 선택·다이제스트 등 16잡)은 폐기 — 부활 금지**(PIVOT-1).
   git 이력(`cron_jobs.py` 2026-08-27 이전)에서만 참조.
