@@ -330,12 +330,81 @@ def _eod_v3() -> int:
         ("collect-fins", _collect_fins),
         ("flows-v3", _collect_flows_v3),
         ("toss-facts-v3", _collect_toss_facts_v3),
+        # v2.6(운영자 결재 2026-09-01, 전면 자동화): 가격 추종 산출은 일간으로 —
+        # 밸류에이션(PBR·여력은 시세 함수) + 페이퍼 트리거 재생(정의가 일별 종가)
+        ("valuation-daily", _valuation_v3),
+        ("paper-mark", _paper_mark),
     ):
         step_rc = step()
         if step_rc != 0:
             _alert_round_failure(f"eod-v3/{name}", f"rc={step_rc}")
     print("논제 가드: 보유 0 — 검사 대상 없음(Phase 4에서 보유 연결)")
     return 0
+
+
+def _valuation_v3() -> int:
+    from trading.valuation.build import main as valuation_main
+
+    return valuation_main()
+
+
+def _paper_mark() -> int:
+    """페이퍼 트리거 일간 재생(멱등) — 실주문 없음."""
+    import sys as _sys
+
+    argv, _sys.argv = _sys.argv, ["trading.paper"]
+    try:
+        from trading.paper import main as paper_main
+
+        return paper_main()
+    finally:
+        _sys.argv = argv
+
+
+def _owner_equity_v3() -> int:
+    from trading.collect_owner_equity import main as oe_main
+
+    return oe_main()
+
+
+def _returns_v3() -> int:
+    """환원·분할 증분 수집 — argv 가드(체인 인자 'weekly-v3'가 연수로 오파싱되지 않게)."""
+    import sys as _sys
+
+    argv, _sys.argv = _sys.argv, ["trading.collect_returns"]
+    try:
+        from trading.collect_returns import main as returns_main
+
+        return returns_main()
+    finally:
+        _sys.argv = argv
+
+
+def _review_auto_v3() -> int:
+    """자동 심사(rule-v1) + 원장 요약 로그 — 순수 코드, 수동 판정 우선."""
+    from trading.review import ReviewStore, auto_review, latest_annual_year
+
+    year = latest_annual_year()
+    store = ReviewStore()
+    try:
+        n_appr, n_hold = auto_review(store, year)
+        print(f"자동 심사: 승인 {n_appr} · 조건부 {n_hold} (기준연도 {year})")
+        return 0
+    finally:
+        store.close()
+
+
+def _paper_register_v3() -> int:
+    """승인 ∧ 여력 ≥30% 신규 종목 자동 등록(멱등) — 페이퍼 원장."""
+    import sys as _sys
+
+    argv, _sys.argv = _sys.argv, ["trading.paper", "register"]
+    try:
+        from trading.paper import main as paper_main
+
+        return paper_main()
+    finally:
+        _sys.argv = argv
 
 
 def _weekly_v3() -> int:
@@ -346,9 +415,15 @@ def _weekly_v3() -> int:
     from trading.weekly_digest import main as digest_main
 
     for name, step in (
+        # v2.6: 판정·유니버스 추종은 주간 — 지배주주지분/환원 증분(멱등) →
+        # 계측 → 자동 심사 → 페이퍼 자동 등록 → 다이제스트
+        ("owner-equity", _owner_equity_v3),
         ("valuation", valuation_main),
         ("cycle", cycle_main),
         ("screen", screen_main),
+        ("returns", _returns_v3),
+        ("review-auto", _review_auto_v3),
+        ("paper-register", _paper_register_v3),
         ("digest", digest_main),
     ):
         rc = step()
