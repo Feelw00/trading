@@ -12,8 +12,11 @@
 데이터 미확보 필터(감사의견·관리종목·환원 가점·수급 네거티브)는 **unapplied로 명시**.
 
 ``PROPOSED_R4``: v1.1(2026-08-27 기본 임계)·v1.2(2026-08-28 가치 함정 방어)·
-v1.6(2026-08-31 P-18 — 존 게이트 제거·시장 percentile 병행, docs/POLICY_PARAMS.md §5).
-실집행 연결은 Phase 4(§6 결재 + 운영자 전환 결정) 후. 개정은 R7+결재로만.
+v1.6(2026-08-31 P-18 — 존 게이트 제거·시장 percentile 병행)·
+v1.7(2026-09-01 운영자 결재 — 최신 ROE 하한 0→1%: PBR=ROE×PER 항등식상 deep PBR
++명목 흑자(0<ROE<1%)는 암묵 PER 폭주 경로. 실측: 통과 545 중 22종(4.0%) 차단.
+docs/POLICY_PARAMS.md §5). 실집행 연결은 Phase 4(§6 결재 + 운영자 전환 결정) 후.
+개정은 R7+결재로만.
 """
 
 from dataclasses import dataclass
@@ -44,8 +47,10 @@ class ScreenParams:
     min_loss_observed: int = 3           # 적자 판정 최소 관측 연수(미만=관측 부족 탈락)
     max_debt_ratio: float = 2.0          # 부채비율 상한(금융업 면제)
     # v1.2 가치 함정 방어(운영자 2026-08-28, LG화학 심사 패킷 사례):
-    # ① 최신 연간 ROE > 0 (= 연간 흑자 = PER 성립 — 종목 레벨 회복 확인)
+    # ① 최신 연간 ROE 하한 (v1.7: 0 초과 → 1% — 명목 흑자는 PER 성립으로 보지 않음.
+    #    사이클 저점 "정상 적자"는 이미 ROE≤0에서 걸리므로 저점 전략과 충돌 없음)
     # ② 사이클 관통 수익성: 관측 5년 ROE 중앙값 ≥ 3% (만성 저수익 방어)
+    min_roe_latest: float = 0.01
     min_roe_median_5y: float = 0.03
 
 
@@ -86,8 +91,11 @@ def evaluate(
     # 가치 함정 방어(v1.2) — 낮은 PBR이 수익성 훼손의 반영일 가능성 차단
     if val.roe is None:
         reasons.append("최신 연간 수익성 미산출(연간 재무 없음)")
-    elif val.roe <= 0:
-        reasons.append(f"가치 함정 방어({val.roe:+.1%} — 최신 연간 ROE ≤ 0, 연간 흑자 요구)")
+    elif val.roe < params.min_roe_latest:
+        reasons.append(
+            f"가치 함정 방어({val.roe:+.1%} — 최신 연간 ROE < {params.min_roe_latest:.0%}, "
+            "유의미 흑자 요구)"
+        )
     if val.roe_median_5y is None or (val.roe_years_observed or 0) < params.min_loss_observed:
         reasons.append(
             f"수익성 관측 부족(연간 ROE {val.roe_years_observed or 0}년 < {params.min_loss_observed}년)"

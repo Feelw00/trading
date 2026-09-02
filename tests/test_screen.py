@@ -165,3 +165,20 @@ def test_run_screen_two_pass_flags_and_persistence(tmp_path: Path) -> None:
     store.close()
     vs.close()
     cs.close()
+
+
+def test_min_roe_latest_v17_nominal_profit_rejected() -> None:
+    """v1.7(운영자 결재 2026-09-01): 명목 흑자(0<ROE<1%)는 가치 함정 방어로 탈락."""
+    nominal = _val("900340", sector="금융", roe=0.005, roe_median=0.05)
+    _, reasons = evaluate(
+        nominal, industry="금융", secular_decline=False,
+        industry_pbr_pct=0.05, market_pbr_pct=0.1, params=PROPOSED_R4,
+    )
+    assert any(r.startswith("가치 함정 방어") for r in reasons)
+
+    meaningful = _val("051910", sector="화학", roe=0.015, roe_median=0.05)
+    passed, reasons2 = evaluate(
+        meaningful, industry="화학", secular_decline=False,
+        industry_pbr_pct=0.05, market_pbr_pct=0.1, params=PROPOSED_R4,
+    )
+    assert not any(r.startswith("가치 함정 방어") for r in reasons2)
