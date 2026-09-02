@@ -164,6 +164,8 @@ def test_picks_page_renders() -> None:
 
     out = render_picks()
     assert "선정 후보" in out and "예측이 아니라" in out
+    if "코어 후보 없음" not in out:  # 1+2+3(2026-09-02): 원장 표 + 대기 큐 분리
+        assert "심사 원장" in out and "심사 대기 큐" in out
 
 
 def test_paper_page_renders(tmp_path: Path) -> None:
