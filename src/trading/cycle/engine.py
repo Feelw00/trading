@@ -1,13 +1,20 @@
 """R3 국면 판정 엔진 — 순수 결정론(설계서 v0.3 §3 R3). LLM·재량 없음.
 
-판정 규칙(PIVOT-7 ②):
+판정 규칙 v2(운영자 결재 2026-09-01 — 회복 중의성 제거·불가능 전이 차단.
+근거 실측: 전이 이력 9건 중 7건이 사이클상 불가능(과열→회복 3·회복→바닥 3·바닥→하강 1)):
 - 1차 축(자체 히스토리): PBR 밴드 percentile · 마진 밴드 percentile · 매출 사이클 z.
   **하나라도 결측이면 unknown**(CycleRecord 스키마가 강제 — 부분 관측으로 국면을 지어내지 않는다).
-- **bottoming = 밴드 하단 + 개선 시작** — 하단이되 개선이 없으면 declining 유지(위치≠반전).
+- **위치 × 방향**: 하단=바닥, 상단=과열, 중간=직전 산출 대비 밴드 방향(Δ)으로
+  상승=회복 / 하락=둔화(slowing). 데드밴드(±2%p) 내 방향 불변 시 직전 국면 유지
+  (회복·둔화였을 때만), 방향 판정 불가(직전 밴드 없음)면 unknown.
+- **개선(마진·매출)은 국면 판정에서 분리** — 보조 지표(Assessment.improving 표기만).
+- **전이 규율(settle_phase)**: 인접 전이만 즉시 확정. 비인접(예: 과열→바닥)은 직전 확정
+  국면 유지 + "재판정 대기", 같은 원시 판정 2회 연속이면 반영 + "재계산" 표기 —
+  데이터 리비전과 실제 이동을 구분한다.
 - 구조적 사양(secular_decline) = 섹터 매출 장기 CAGR 하향 — 밴드가 낮아도 편입 불가(R4에서 차단).
 
-파라미터: ``CycleParams``로 명시 주입. ``PROPOSED_PARAMS``는 **policy-v1.0으로 결재됨**
-(2026-08-27, docs/POLICY_PARAMS.md §1 — 검증 사이클 운송·창고 2024 PASS). 개정은 R7+결재로만.
+파라미터: ``CycleParams``로 명시 주입. ``PROPOSED_PARAMS``는 policy-v1.0(2026-08-27) +
+**v2 개정 결재(2026-09-01, docs/POLICY_PARAMS.md §1)**. 개정은 R7+결재로만.
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -23,6 +30,7 @@ from trading.valuation.metrics import percentile_rank
 class CycleParams:
     band_low: float = 0.30        # PBR 밴드 하단 임계(이하 = 저평가 존)
     band_high: float = 0.75       # 과열 임계(이상)
+    direction_dead_band: float = 0.02  # v2: 중간 밴드 방향 판정 데드밴드(±2%p — 노이즈 무시)
     min_band_points: int = 3      # percentile 판정 최소 히스토리 점수(현재 제외)
     min_z_points: int = 4         # 매출 z 판정 최소 관측 수
     secular_window: int = 8       # 매출 장기 추세 창(연)
@@ -90,6 +98,8 @@ def assess(
     sector: str,
     params: CycleParams,
     profile: str = "industrial",
+    prev_band_pct: float | None = None,
+    prev_phase: CyclePhase | None = None,
 ) -> Assessment:
     """``at`` 시점(연도 라벨) 기준 국면 판정 — 그 시점 이전 데이터만 사용(룩어헤드 금지).
 
@@ -155,12 +165,24 @@ def assess(
     else:
         band = pbr_pct
         if band <= params.band_low:
-            phase = CyclePhase.BOTTOMING if improving else CyclePhase.DECLINING
+            phase = CyclePhase.BOTTOMING       # v2: 위치만 — 개선 여부는 보조 지표
         elif band >= params.band_high:
             phase = CyclePhase.OVERHEATED
         else:
-            phase = CyclePhase.RECOVERING if improving else CyclePhase.DECLINING
-        temperature = round(100 * (pbr_pct + margin_pct) / 2)
+            # v2: 중간 밴드는 방향으로 — 상승=회복 / 하락=둔화 / 판정 불가=unknown
+            if prev_band_pct is None:
+                phase = CyclePhase.UNKNOWN
+            else:
+                delta = band - prev_band_pct
+                if delta > params.direction_dead_band:
+                    phase = CyclePhase.RECOVERING
+                elif delta < -params.direction_dead_band:
+                    phase = CyclePhase.SLOWING
+                elif prev_phase in (CyclePhase.RECOVERING, CyclePhase.SLOWING):
+                    phase = prev_phase        # 데드밴드 내 — 방향 불변 간주
+                else:
+                    phase = CyclePhase.UNKNOWN
+        temperature = round(100 * (pbr_pct + margin_pct) / 2) if phase is not CyclePhase.UNKNOWN else None
 
     return Assessment(
         sector=sector,
@@ -177,15 +199,63 @@ def assess(
     )
 
 
-def to_record(a: Assessment, *, as_of: datetime, fetched_at: datetime, evidence: list[str]) -> CycleRecord:
-    """Assessment → CycleRecord(§4 계약). 스키마 검증이 unknown 규율을 이중 강제."""
+# v2 전이 규율 — 인접 전이(사이클 순방향 + 중간 밴드 방향 반전 + 회복 실패)만 즉시 인정.
+_ADJACENT: frozenset[tuple[CyclePhase, CyclePhase]] = frozenset(
+    {
+        (CyclePhase.BOTTOMING, CyclePhase.RECOVERING),   # 바닥 → 상승 진입
+        (CyclePhase.RECOVERING, CyclePhase.OVERHEATED),  # 상승 → 상단 도달
+        (CyclePhase.OVERHEATED, CyclePhase.SLOWING),     # 상단 → 조정
+        (CyclePhase.SLOWING, CyclePhase.BOTTOMING),      # 조정 → 하단 재진입
+        (CyclePhase.RECOVERING, CyclePhase.SLOWING),     # 중간 밴드 방향 반전
+        (CyclePhase.SLOWING, CyclePhase.RECOVERING),     # 중간 밴드 방향 반전
+        (CyclePhase.RECOVERING, CyclePhase.BOTTOMING),   # 회복 실패 — 하단 복귀
+    }
+)
+
+
+def settle_phase(
+    raw: CyclePhase,
+    prev_confirmed: CyclePhase | None,
+    prev_raw: CyclePhase | None,
+) -> tuple[CyclePhase, str | None]:
+    """(확정 국면, 표기 사유) — 비인접 전이는 2회 연속 관측 전까지 직전 확정 유지.
+
+    unknown은 관측 부족 상태라 전이 규율 대상이 아니다(자유 통과). v1 레거시
+    declining에서의 전이도 규율 미적용(첫 v2 산출은 재라벨이지 이동이 아님).
+    """
+    if prev_confirmed is None or raw == prev_confirmed:
+        return raw, None
+    if CyclePhase.UNKNOWN in (raw, prev_confirmed) or prev_confirmed is CyclePhase.DECLINING:
+        return raw, None
+    if (prev_confirmed, raw) in _ADJACENT:
+        return raw, None
+    if prev_raw == raw:
+        return raw, f"재계산 — 비인접 전이({prev_confirmed.value}→{raw.value}) 2회 연속 관측"
+    return prev_confirmed, f"재판정 대기 — 비인접 {raw.value} 관측 1회(확정은 2회 연속부터)"
+
+
+def to_record(
+    a: Assessment,
+    *,
+    as_of: datetime,
+    fetched_at: datetime,
+    evidence: list[str],
+    phase: CyclePhase | None = None,
+    phase_note: str | None = None,
+) -> CycleRecord:
+    """Assessment → CycleRecord(§4 계약). 스키마 검증이 unknown 규율을 이중 강제.
+
+    ``phase``: settle_phase 확정값(전이 규율 적용 시) — 주면 원시 판정(a.phase)은
+    phase_raw로 박제된다. 안 주면 v1 호환(원시 판정 그대로, raw/note 없음)."""
     return CycleRecord(
         id=f"cyc.{as_of.strftime('%Y%m%d')}.{a.sector}",
         as_of=as_of,
         fetched_at=fetched_at,
         source="derived:cycle-bands",
         industry=a.sector,
-        phase=a.phase,
+        phase=phase if phase is not None else a.phase,
+        phase_raw=a.phase if phase is not None else None,
+        phase_note=phase_note,
         temperature=a.temperature,
         axes_primary=(
             PrimaryAxes(
@@ -213,7 +283,11 @@ def assess_all(
     at: str,
     params: CycleParams,
     financial_groups: frozenset[str] = frozenset(),
+    prev_states: Mapping[str, tuple[float | None, CyclePhase | None]] | None = None,
 ) -> list[Assessment]:
+    """``prev_states``: 섹터 → (직전 밴드 pct, 직전 확정 국면) — v2 방향 판정 원료.
+    미제공 섹터는 중간 밴드에서 unknown(정직 — 방향을 지어내지 않는다)."""
+    prev = prev_states or {}
     out = [
         assess(
             rows,
@@ -221,6 +295,8 @@ def assess_all(
             sector=sector,
             params=params,
             profile="financial" if sector in financial_groups else "industrial",
+            prev_band_pct=prev.get(sector, (None, None))[0],
+            prev_phase=prev.get(sector, (None, None))[1],
         )
         for sector, rows in sector_years.items()
     ]
@@ -233,5 +309,6 @@ __all__ = [
     "PROPOSED_PARAMS",
     "assess",
     "assess_all",
+    "settle_phase",
     "to_record",
 ]

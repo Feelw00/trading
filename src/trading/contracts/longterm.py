@@ -61,9 +61,10 @@ class ValuationRecord(BaseRecord):
 
 class CyclePhase(str, Enum):
     BOTTOMING = "bottoming"
-    RECOVERING = "recovering"
+    RECOVERING = "recovering"     # v2: 중간 밴드 + 밴드 방향 상승(바닥→상승만)
     OVERHEATED = "overheated"
-    DECLINING = "declining"
+    SLOWING = "slowing"           # v2 신설: 중간 밴드 + 밴드 방향 하락(과열→조정)
+    DECLINING = "declining"       # v1 레거시 — v2 엔진은 미산출(기존 박제 레코드 파싱용)
     UNKNOWN = "unknown"
 
 
@@ -72,13 +73,17 @@ PHASE_KO: dict[CyclePhase, str] = {
     CyclePhase.BOTTOMING: "바닥 통과",
     CyclePhase.RECOVERING: "회복",
     CyclePhase.OVERHEATED: "과열",
-    CyclePhase.DECLINING: "하강",
+    CyclePhase.SLOWING: "둔화",
+    CyclePhase.DECLINING: "하강(구)",
     CyclePhase.UNKNOWN: "판정 불가",
 }
 
+# 국면 모델 v2(운영자 결재 2026-09-01): 방향 축 도입 — 회복/둔화 중의성 제거.
+# 개선(마진·매출)은 국면 판정에서 분리된 보조 지표다.
 PHASE_LEGEND_KO = (
-    "국면 기준: 바닥 통과=밴드 하단(30% 이하)+개선 시작, 회복=중간 구간+개선, "
-    "과열=밴드 상단(75% 이상), 하강=개선 없음(하단 포함), 판정 불가=관측 부족"
+    "국면 기준(v2): 바닥 통과=밴드 하단(30% 이하), 회복=중간 구간·밴드 상승 중, "
+    "과열=밴드 상단(75% 이상), 둔화=중간 구간·밴드 하락 중(과열 조정), 판정 불가=관측 부족. "
+    "개선(마진·매출)은 국면과 별개의 보조 지표"
 )
 
 
@@ -121,6 +126,11 @@ class CycleRecord(BaseRecord):
     axes_aux: dict[str, float | None] = Field(default_factory=dict)
     secular_decline: bool | None = None
     evidence: list[NonEmptyStr] = Field(default_factory=list)
+    # v2 전이 규율(운영자 결재 2026-09-01): phase=확정 국면(비인접 전이는 2회 연속
+    # 관측 전까지 직전 확정 유지), phase_raw=이번 산출의 원시 판정, phase_note=
+    # "재판정 대기…"/"재계산…" 사유. v1 레코드는 둘 다 None.
+    phase_raw: CyclePhase | None = None
+    phase_note: str | None = None
 
     @model_validator(mode="after")
     def _unknown_when_unobserved(self) -> "CycleRecord":

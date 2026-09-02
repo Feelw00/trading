@@ -12,7 +12,13 @@ from trading.contracts.longterm import phase_ko
 from trading.collectors.fins import FinStore
 from trading.collectors.market import MarketStore
 from trading.cycle.bands import build_sector_years, full_year_ends
-from trading.cycle.engine import PROPOSED_PARAMS, Assessment, assess_all, to_record
+from trading.cycle.engine import (
+    PROPOSED_PARAMS,
+    Assessment,
+    assess_all,
+    settle_phase,
+    to_record,
+)
 from trading.cycle.policy import (
     CURATED_GROUPS,
     FINANCIAL_PROFILE_GROUPS,
@@ -49,9 +55,17 @@ def main() -> int:
                 print(f"{sector:<14} " + " ".join(cells))
             return 0
 
+        # v2: 직전 확정 국면·밴드 pct — 방향 판정(중간 밴드)·전이 규율 원료
+        prev_records = {s: store.latest_for_industry(s) for s in sector_years}
+        prev_states = {
+            s: (r.axes_primary.sector_pbr_band_pct, r.phase)
+            for s, r in prev_records.items()
+            if r is not None
+        }
         assessments = assess_all(
             sector_years, at="current", params=PROPOSED_PARAMS,
             financial_groups=FINANCIAL_PROFILE_GROUPS,
+            prev_states=prev_states,
         )
         print(f"R3 온도계 ({POLICY_VERSION}) · 기준일 {year_ends.get('current')}")
         def fmt(v: float | int | None, p: str) -> str:
@@ -78,16 +92,28 @@ def main() -> int:
         for a in assessments:
             if a.sector not in wl_groups:
                 show(a)
+        settled_phases = []
         for a in assessments:
+            prev_rec = prev_records.get(a.sector)
+            confirmed, note = settle_phase(
+                a.phase,
+                prev_rec.phase if prev_rec else None,
+                (prev_rec.phase_raw or prev_rec.phase) if prev_rec else None,
+            )
+            settled_phases.append(confirmed)
+            if note:
+                print(f"  전이 규율: {a.sector} → {phase_ko(confirmed)} — {note}")
             store.append(
                 to_record(
                     a,
                     as_of=now,
                     fetched_at=now,
                     evidence=[f"bands:{a.sector}:{year_ends.get('current', '?')}"],
+                    phase=confirmed,
+                    phase_note=note,
                 )
             )
-        dist = Counter(phase_ko(a.phase) for a in assessments)
+        dist = Counter(phase_ko(p) for p in settled_phases)
         print(f"\n국면 분포: {dict(dist)} → data/cycle.sqlite ({store.count()}개 산업)")
     finally:
         fins.close()

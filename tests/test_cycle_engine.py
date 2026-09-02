@@ -24,8 +24,8 @@ def _rows(
     return [_row("current", current_pbr, None, None), *rows]
 
 
-def test_bottoming_requires_improvement() -> None:
-    # PBR 히스토리 상단(2.0×4) 대비 현재 0.5 = 하단. 마진·매출 개선 → bottoming
+def test_bottoming_is_position_only_improving_is_qualifier() -> None:
+    # v2: 하단 = 바닥(개선 무관 — 개선은 보조 지표로 분리)
     rows = _rows(
         current_pbr=0.5,
         margins=[0.08, 0.05, 0.10, 0.12, 0.11],
@@ -36,7 +36,7 @@ def test_bottoming_requires_improvement() -> None:
     assert a.phase is CyclePhase.BOTTOMING and a.improving is True
     assert a.pbr_band_pct is not None and a.pbr_band_pct < P.band_low
 
-    # 같은 하단인데 마진·매출 모두 악화(YoY 델타까지 음전) → declining (위치≠반전)
+    # 같은 하단, 마진·매출 악화 — v2에서도 바닥(위치), improving=False가 이를 표기
     rows2 = _rows(
         current_pbr=0.5,
         margins=[0.04, 0.05, 0.10, 0.12, 0.11],
@@ -44,7 +44,52 @@ def test_bottoming_requires_improvement() -> None:
         pbrs=[2.0, 2.1, 1.9, 2.2, 2.0],
     )
     a2 = assess(rows2, at="current", sector="s", params=P)
-    assert a2.phase is CyclePhase.DECLINING and a2.improving is False
+    assert a2.phase is CyclePhase.BOTTOMING and a2.improving is False
+
+
+def test_mid_band_direction_decides_recovering_vs_slowing() -> None:
+    # v2: 중간 밴드 — 직전 밴드 대비 상승=회복 / 하락=둔화 / 직전 없음=unknown
+    rows = _rows(
+        current_pbr=1.5,
+        margins=[0.08, 0.05, 0.10, 0.12, 0.11],
+        revs=[1100, 1000, 1200, 1300, 1250],
+        pbrs=[2.0, 2.1, 0.9, 2.2, 1.0],
+    )
+    mid = assess(rows, at="current", sector="s", params=P)
+    assert mid.pbr_band_pct is not None and P.band_low < mid.pbr_band_pct < P.band_high
+
+    up = assess(rows, at="current", sector="s", params=P,
+                prev_band_pct=mid.pbr_band_pct - 0.10)
+    down = assess(rows, at="current", sector="s", params=P,
+                  prev_band_pct=mid.pbr_band_pct + 0.10)
+    none_prev = assess(rows, at="current", sector="s", params=P)
+    assert up.phase is CyclePhase.RECOVERING
+    assert down.phase is CyclePhase.SLOWING
+    assert none_prev.phase is CyclePhase.UNKNOWN  # 방향을 지어내지 않는다
+
+    # 데드밴드 내 — 직전 국면(회복/둔화)이면 유지, 아니면 unknown
+    hold = assess(rows, at="current", sector="s", params=P,
+                  prev_band_pct=mid.pbr_band_pct + 0.01, prev_phase=CyclePhase.SLOWING)
+    assert hold.phase is CyclePhase.SLOWING
+    flat_no_prev_phase = assess(rows, at="current", sector="s", params=P,
+                                prev_band_pct=mid.pbr_band_pct + 0.01)
+    assert flat_no_prev_phase.phase is CyclePhase.UNKNOWN
+
+
+def test_settle_phase_transition_discipline() -> None:
+    from trading.cycle.engine import settle_phase
+
+    B, R, O, S, U = (CyclePhase.BOTTOMING, CyclePhase.RECOVERING,
+                     CyclePhase.OVERHEATED, CyclePhase.SLOWING, CyclePhase.UNKNOWN)
+    assert settle_phase(R, B, B) == (R, None)            # 인접 — 즉시 확정
+    assert settle_phase(S, O, O) == (S, None)            # 과열→둔화 인접
+    held, note = settle_phase(B, O, O)                   # 과열→바닥 비인접 1회
+    assert held is O and note is not None and "재판정 대기" in note
+    adopted, note2 = settle_phase(B, O, B)               # 같은 원시 판정 2회 연속
+    assert adopted is B and note2 is not None and "재계산" in note2
+    assert settle_phase(U, O, O) == (U, None)            # unknown 자유 통과
+    assert settle_phase(B, U, U) == (B, None)
+    assert settle_phase(B, CyclePhase.DECLINING, None) == (B, None)  # v1 레거시 재라벨
 
 
 def test_overheated_at_band_top() -> None:
