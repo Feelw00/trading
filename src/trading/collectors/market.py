@@ -285,6 +285,16 @@ class MarketStore:
             )
         }
 
+    def names_any(self) -> dict[str, str]:
+        """{srtn_cd: 종목명} — 소스 무관 이름 전수(외국 상장 등 KRX 태깅 밖 커버).
+        같은 코드에 복수 소스면 아무 이름이나(실관측 동일) — 표시 폴백 전용."""
+        return {
+            str(r[0]): str(r[1])
+            for r in self._conn.execute(
+                "SELECT DISTINCT srtn_cd, name FROM stock_sectors WHERE name IS NOT NULL"
+            )
+        }
+
     def sector_map(self, source: str) -> dict[str, list[str]]:
         """{srtn_cd: [sector,...]} — 미분류 제외."""
         cur = self._conn.execute(

@@ -83,6 +83,12 @@ class FinSnapshot:
     # v0.3(P-14): 밸류에이션(PER/ROE)용 — 실관측 계정명 "당기순이익(손실)"(startswith 매칭)
     net_income: float | None = None
     net_income_prev: float | None = None
+    # COLLECT-6(2026-09-01): 지배기업 소유주지분 — CFS의 비지배지분 제외 자본.
+    # fnlttSinglAcntAll에서 별도 수집(collect_owner_equity), 미수집·OFS는 None.
+    owner_equity: float | None = None
+    # 재무 통화(실관측: KRW 외 USD·CNY·JPY·GBP·HKD — 외국 상장 9xxxxx) —
+    # 원화 시총과 혼합 금지(밸류에이션에서 제외 판단 원료)
+    currency: str | None = None
 
     @property
     def rev_yoy(self) -> float | None:
@@ -172,12 +178,15 @@ class FinStore:
             return None
         year, reprt = str(row[0]), str(row[1])
         acc: dict[tuple[str, str], tuple[float | None, float | None]] = {}
-        for fs, nm, th, fr in self._conn.execute(
-            "SELECT fs_div, account_nm, thstrm_amount, frmtrm_amount FROM fin_facts "
+        currency: str | None = None
+        for fs, nm, th, fr, cur in self._conn.execute(
+            "SELECT fs_div, account_nm, thstrm_amount, frmtrm_amount, currency FROM fin_facts "
             "WHERE srtn_cd=? AND bsns_year=? AND reprt_code=?",
             (srtn_cd, year, reprt),
         ):
             acc.setdefault((str(fs), str(nm)), (th, fr))  # 중복 계정은 첫 행(실관측 동일값)
+            if currency is None and cur:
+                currency = str(cur)
         fs_div = "CFS" if any(k[0] == "CFS" for k in acc) else "OFS"
 
         def _get(nm: str) -> tuple[float | None, float | None]:
@@ -195,11 +204,22 @@ class FinStore:
         liab, _ = _get("부채총계")
         eq, _ = _get("자본총계")
         ni, ni_p = _get_prefix("당기순이익")
-        return FinSnapshot(srtn_cd, year, reprt, fs_div, rev, rev_p, op, op_p, liab, eq, ni, ni_p)
+        own, _ = _get_prefix("지배기업")  # COLLECT-6: "지배기업 소유주지분"(실관측 계정명)
+        return FinSnapshot(
+            srtn_cd, year, reprt, fs_div, rev, rev_p, op, op_p, liab, eq, ni, ni_p, own,
+            currency,
+        )
 
     def symbols(self) -> list[str]:
         """재무가 1건 이상 적재된 종목코드 목록."""
         return [str(r[0]) for r in self._conn.execute("SELECT DISTINCT srtn_cd FROM fin_facts")]
+
+    def latest_annual_year(self) -> str:
+        """전 종목 최신 연간(11011) 사업연도 — 심사 원장 만료 기준(v2.4)."""
+        row = self._conn.execute(
+            "SELECT MAX(bsns_year) FROM fin_facts WHERE reprt_code='11011'"
+        ).fetchone()
+        return str(row[0]) if row and row[0] else "0000"
 
     def annual_series(self, srtn_cd: str) -> list[tuple[str, dict[str, float | None]]]:
         """연간(11011) 주요계정 시계열 (연도 desc) — 섹터 밴드(R3 1차 축)·loss_years 원료.
@@ -306,6 +326,83 @@ def collect_fins(
             loaded += 1
         else:
             skipped += 1
+    return loaded, skipped, errors
+
+
+OWNER_EQUITY_NM = "지배기업 소유주지분"      # 실관측 계정명(2026-09-01, COLLECT-6)
+OWNER_EQUITY_ID = "ifrs-full_EquityAttributableToOwnersOfParent"
+
+
+def collect_owner_equity(
+    dart: DartClient,
+    store: FinStore,
+    corp_map: dict[str, tuple[str, str]],
+    stocks: list[tuple[str, str]],
+) -> tuple[int, int, list[str]]:
+    """지배기업 소유주지분 수집(COLLECT-6) — 각 종목의 **최신 BS 스냅샷과 같은
+    (연도, 보고서)** 기준으로 fnlttSinglAcntAll(CFS)에서 1계정만 뽑아 fin_facts에 append.
+
+    - OFS 스냅샷(비지배지분 없음)·계정 부재는 skip으로 기록 — PBR은 자본총계 폴백(정직).
+    - 멱등: fin_attempts에 reprt_code '<reprt>-all'로 별도 기록(주요계정 시도와 비충돌).
+    반환: (적재, 스킵, 오류).
+    """
+    loaded = skipped = 0
+    errors: list[str] = []
+    for srtn_cd, name in stocks:
+        snap = store.snapshot_for(srtn_cd)
+        ent = corp_map.get(srtn_cd)
+        if snap is None or not ent or not ent[0]:
+            skipped += 1
+            continue
+        attempt_reprt = f"{snap.reprt_code}-all"
+        if store.attempted(srtn_cd, snap.bsns_year, attempt_reprt) is not None:
+            if snap.owner_equity is not None:
+                loaded += 1
+            else:
+                skipped += 1
+            continue
+        if snap.fs_div != "CFS":
+            store.record_attempt(srtn_cd, snap.bsns_year, attempt_reprt, "ofs-skip")
+            skipped += 1
+            continue
+        try:
+            rows = dart.financials_all(ent[0], snap.bsns_year, snap.reprt_code, "CFS")
+        except CollectError as e:
+            errors.append(f"{name}({srtn_cd}): {e}")
+            continue
+        own = next(
+            (
+                r
+                for r in rows
+                if str(r.get("sj_div")) == "BS"
+                and (
+                    str(r.get("account_id")) == OWNER_EQUITY_ID
+                    or str(r.get("account_nm", "")).startswith("지배기업")
+                )
+            ),
+            None,
+        )
+        if own is None or parse_amount(own.get("thstrm_amount")) is None:
+            store.record_attempt(srtn_cd, snap.bsns_year, attempt_reprt, "no-account")
+            skipped += 1
+            continue
+        store.upsert(
+            srtn_cd,
+            snap.bsns_year,
+            snap.reprt_code,
+            [
+                {
+                    "fs_div": "CFS",
+                    "sj_div": "BS",
+                    "account_nm": OWNER_EQUITY_NM,
+                    "thstrm_amount": own.get("thstrm_amount"),
+                    "frmtrm_amount": own.get("frmtrm_amount"),
+                    "currency": own.get("currency"),
+                }
+            ],
+        )
+        store.record_attempt(srtn_cd, snap.bsns_year, attempt_reprt, "ok")
+        loaded += 1
     return loaded, skipped, errors
 
 

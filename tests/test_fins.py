@@ -174,3 +174,59 @@ def test_backfill_annuals_idempotent(tmp_path: Path) -> None:
     assert (loaded2, dart.calls) == (0, [])
     assert skipped2 == 3
     store.close()
+
+
+def test_collect_owner_equity_and_snapshot_pickup(tmp_path) -> None:
+    """COLLECT-6: 지배주주지분 수집 → 같은 (연도,보고서) 스냅샷에서 owner_equity로 노출."""
+    import json
+    from pathlib import Path
+
+    from trading.collectors.dart import DartClient
+    from trading.collectors.fins import FinStore, collect_owner_equity
+
+    store = FinStore(tmp_path / "f.sqlite")
+    # 기존 주요계정 적재(CFS 스냅샷 성립)
+    store.upsert("001390", "2025", "11011", [
+        {"fs_div": "CFS", "sj_div": "BS", "account_nm": "자본총계", "thstrm_amount": "3,937,401,957,646"},
+        {"fs_div": "CFS", "sj_div": "BS", "account_nm": "부채총계", "thstrm_amount": "4,406,276,284,803"},
+    ])
+    full = {"status": "000", "list": [
+        {"sj_div": "BS", "account_id": "ifrs-full_Equity", "account_nm": "자본총계", "thstrm_amount": "3,937,401,957,646"},
+        {"sj_div": "BS", "account_id": "ifrs-full_EquityAttributableToOwnersOfParent",
+         "account_nm": "지배기업 소유주지분", "thstrm_amount": "998,971,750,055"},
+        {"sj_div": "BS", "account_id": "ifrs-full_NoncontrollingInterests", "account_nm": "비지배지분", "thstrm_amount": "2,938,430,207,591"},
+    ]}
+    calls: list[str] = []
+    def fake(url: str):
+        calls.append(url)
+        return full if "fnlttSinglAcntAll" in url else {"status": "013"}
+    dart = DartClient("k", json_fetch=fake)
+    cmap = {"001390": ("00101220", "KG케미칼")}
+    loaded, skipped, errors = collect_owner_equity(dart, store, cmap, [("001390", "KG케미칼")])
+    assert (loaded, skipped, errors) == (1, 0, [])
+    snap = store.snapshot_for("001390")
+    assert snap is not None and snap.owner_equity == 998_971_750_055.0
+    assert snap.equity == 3_937_401_957_646.0
+    # 멱등 — 재실행 시 API 재호출 없음
+    calls.clear()
+    loaded2, _, _ = collect_owner_equity(dart, store, cmap, [("001390", "KG케미칼")])
+    assert loaded2 == 1 and calls == []
+
+
+def test_owner_equity_pbr_priority_and_fallback() -> None:
+    from trading.valuation.metrics import derive_metrics
+
+    m = derive_metrics(
+        mrkt_tot_amt=320_000_000_000.0, equity=3_937_401_957_646.0,
+        liabilities=4_406_276_284_803.0, annual_net_income=None,
+        annual_revenue=None, annual_equity=None,
+        owner_equity=998_971_750_055.0,
+    )
+    assert m.pbr is not None and 0.31 < m.pbr < 0.33      # 지배주주 기준
+    assert m.debt_ratio is not None and 1.1 < m.debt_ratio < 1.2  # 부채비율은 자본총계 유지
+    fb = derive_metrics(
+        mrkt_tot_amt=320_000_000_000.0, equity=3_937_401_957_646.0,
+        liabilities=None, annual_net_income=None, annual_revenue=None,
+        annual_equity=None,
+    )
+    assert fb.pbr is not None and fb.pbr < 0.1            # 미수집 폴백 = 자본총계

@@ -65,19 +65,88 @@ class DartClient:
         raise CollectError(f"DART {status}: {data.get('message') if isinstance(data, dict) else ''}")
 
     def disclosures(
-        self, corp_code: str, bgn_de: str, end_de: str, *, page_count: int = 100
+        self,
+        corp_code: str,
+        bgn_de: str,
+        end_de: str,
+        *,
+        page_count: int = 100,
+        pblntf_ty: str | None = None,
+        page_no: int | None = None,
     ) -> list[dict[str, Any]]:
-        """[bgn_de~end_de] 공시 목록(YYYYMMDD). 데이터 없으면 빈 리스트."""
+        """[bgn_de~end_de] 공시 목록(YYYYMMDD). 데이터 없으면 빈 리스트.
+
+        실호출 확인 2026-09-01: ``pblntf_ty="B"``(주요사항보고)로 필터하면 분할·합병 등
+        주요사항보고서만 온다(LG화학 2020~21: 전체 181건 → B 2건). 응답은 페이징
+        (total_page/page_no) — 넓은 창 조회는 ``disclosures_all``을 쓸 것."""
+        params = {
+            "crtfc_key": self._key,
+            "corp_code": corp_code,
+            "bgn_de": bgn_de,
+            "end_de": end_de,
+            "page_count": str(page_count),
+        }
+        if pblntf_ty is not None:
+            params["pblntf_ty"] = pblntf_ty
+        if page_no is not None:
+            params["page_no"] = str(page_no)
+        return self._rows(self._json(f"{DART_BASE}/list.json?{urlencode(params)}"))
+
+    def disclosures_all(
+        self, corp_code: str, bgn_de: str, end_de: str, *, pblntf_ty: str | None = None
+    ) -> list[dict[str, Any]]:
+        """공시 목록 전 페이지 순회 — total_page 기준(실호출 확인 2026-09-01)."""
+        params = {
+            "crtfc_key": self._key,
+            "corp_code": corp_code,
+            "bgn_de": bgn_de,
+            "end_de": end_de,
+            "page_count": "100",
+        }
+        if pblntf_ty is not None:
+            params["pblntf_ty"] = pblntf_ty
+        out: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            data = self._json(f"{DART_BASE}/list.json?{urlencode({**params, 'page_no': str(page)})}")
+            out.extend(self._rows(data))
+            total = int(data.get("total_page") or 1) if isinstance(data, dict) else 1
+            if page >= total:
+                return out
+            page += 1
+
+    def alot_matter(
+        self, corp_code: str, bsns_year: str, reprt_code: str = "11011"
+    ) -> list[dict[str, Any]]:
+        """배당에 관한 사항(alotMatter) — 실호출 관측 확정(2026-09-01, 삼성전자 2025):
+        행 필드 se(지표명: "주당 현금배당금(원)"·"현금배당수익률(%)"·"(연결)현금배당성향(%)" 등)·
+        stock_knd(보통주/우선주/'-')·thstrm/frmtrm/lwfr(쉼표 천단위 문자열, 결측 '-')."""
         q = urlencode(
             {
                 "crtfc_key": self._key,
                 "corp_code": corp_code,
-                "bgn_de": bgn_de,
-                "end_de": end_de,
-                "page_count": str(page_count),
+                "bsns_year": bsns_year,
+                "reprt_code": reprt_code,
             }
         )
-        return self._rows(self._json(f"{DART_BASE}/list.json?{q}"))
+        return self._rows(self._json(f"{DART_BASE}/alotMatter.json?{q}"))
+
+    def treasury_stock(
+        self, corp_code: str, bsns_year: str, reprt_code: str = "11011"
+    ) -> list[dict[str, Any]]:
+        """자기주식 취득·처분 현황(tesstkAcqsDspsSttus) — 실호출 관측 확정(2026-09-01,
+        삼성전자 2025): 행 필드 acqs_mth1/2/3(취득 방법 계층)·stock_knd·bsis_qy(기초)·
+        change_qy_acqs(취득)·change_qy_dsps(처분)·change_qy_incnr(소각)·trmend_qy(기말),
+        수량은 쉼표 천단위 문자열·결측 '-'."""
+        q = urlencode(
+            {
+                "crtfc_key": self._key,
+                "corp_code": corp_code,
+                "bsns_year": bsns_year,
+                "reprt_code": reprt_code,
+            }
+        )
+        return self._rows(self._json(f"{DART_BASE}/tesstkAcqsDspsSttus.json?{q}"))
 
     def company_profile(self, corp_code: str) -> dict[str, Any]:
         """회사개황(업종코드 induty_code·corp_cls 등). 단일 객체 응답. 데이터 없으면 빈 dict.
@@ -105,6 +174,24 @@ class DartClient:
             }
         )
         return self._rows(self._json(f"{DART_BASE}/fnlttSinglAcnt.json?{q}"))
+
+    def financials_all(
+        self, corp_code: str, bsns_year: str, reprt_code: str, fs_div: str
+    ) -> list[dict[str, Any]]:
+        """단일회사 전체 재무제표(fnlttSinglAcntAll) — 실호출 관측 확정(2026-09-01,
+        KG케미칼 2025 CFS 293행): 행 필드 sj_div(BS/IS/…)·account_id(IFRS 태그,
+        예: ifrs-full_EquityAttributableToOwnersOfParent="지배기업 소유주지분")·
+        account_nm·thstrm_amount. fs_div 필수(CFS/OFS)."""
+        q = urlencode(
+            {
+                "crtfc_key": self._key,
+                "corp_code": corp_code,
+                "bsns_year": bsns_year,
+                "reprt_code": reprt_code,
+                "fs_div": fs_div,
+            }
+        )
+        return self._rows(self._json(f"{DART_BASE}/fnlttSinglAcntAll.json?{q}"))
 
     def stock_totals(
         self, corp_code: str, bsns_year: str, reprt_code: str = "11011"
