@@ -21,6 +21,8 @@
   거부권(veto). 결측 지표 수기 입력은 데이터 입력 경로(`source="manual"`)로 허용.
 - 라운드 간 전달은 **DB(append-only)/파일로만** (프롬프트 체이닝 금지, 설계서 §3).
 - 알림(P0/P1/P2)은 openclaw 채널(Telegram). **P0 전달 확인 전 veto 카운트다운 금지**(PIVOT-7 ⑤).
+  **실행 보고·미발화 감시 = ALERT-1**: Python이 Bot API 직접 발송, P1은 실행 보고 꼬리로 동봉
+  (별도 다이제스트 슬롯 없음), 감시 2잡(check-*)이 트리거 턴 실패를 잡는다.
 - **v0.2 스윙 계열은 동결**(PIVOT-1): `watch/`·`selector/`·executor 브래킷·시간손절·arm-check —
   cron 미등록·수정 금지, 삭제도 금지(git 이력 보존).
 
@@ -83,8 +85,9 @@ docs/               # trading-system-design(v0.3), OPEN_QUESTIONS, SECRETS, clau
 - **트레이딩 전용 openclaw 인스턴스**: 개인 `~/.openclaw`와 분리된 프로젝트 `OPENCLAW_HOME`(`.runtime/openclaw`, gitignored, bootstrap가 생성). openclaw 설정은 손으로 두지 말고 `ops/openclaw/`에 선언적 코드로. **repo에 openclaw 소스(플랫폼)는 두지 마라** — 버전 핀 + bootstrap 설치로 의존.
 - cron 잡은 `ops/openclaw/`의 등록 스크립트로 관리. KST 정시는 `--cron "<expr>" --tz Asia/Seoul`.
 - 순수-코드 디스패치 잡은 `--tools exec --light-context` + 결정론적 프롬프트로 `python -m trading.run …`만 실행.
-- ⚠️ **현행 `cron_jobs.py`는 v0.2 스윙 슬롯(동결) — sync·등록 실행 금지.** v0.3 슬롯(일간 EOD·
-  주간 토·월간·분기, 설계서 §5)으로 재작성 후에만 등록한다.
+- `cron_jobs.py`는 v0.3 슬롯 4잡(eod-v3 평일 18:00 · weekly-v3 토 09:30 · ALERT-1 감시
+  eod-v3-check 18:30 · weekly-v3-check 토 10:00). 변경 후 `poetry run python ops/openclaw/sync.py`
+  (dry-run) → `--apply`로 등록(.env 소싱 필요). 월간·분기 슬롯은 §6 결재·첫 분기 도래 시 추가.
 
 ## 작업 방식
 - 작업 단위는 설계서 §10 로드맵(Phase 0~4) — 각 Phase의 AC를 충족하기 전에 다음 Phase로

@@ -26,6 +26,26 @@
 - **결정(2026-06-08, STRUCT-1=B의 귀결):** **Python 두뇌가 LLM 호출을 직접 오케스트레이션.** R2/R3=OpenAI API(Python SDK), R4/R5/R7=`claude -p` 서브프로세스. openclaw provider 라우팅은 라운드에 미사용(openclaw는 스케줄러+알림 채널 역할).
 - 인증: `claude -p`는 로컬 Claude Code 인증 사용(운영자 보유). R2/R3는 Python `.env`의 `OPENAI_API_KEY` 필요(openclaw의 OpenAI OAuth는 재사용 안 함). 모델명은 `.env` 주입(하드코딩 금지).
 
+### 🟢 ALERT-1 — v0.3 실행 보고·P1 배선·미발화 감시 (운영자 결정 2026-09-02)
+- **문제:** v0.3 cron 2잡은 fire-and-forget이라 성공/실패가 어디에도 통지되지 않았다. P1(라운드
+  실패)은 적재만 되고 flush 슬롯(`alerts-digest` = v0.2 digest-noon/close)이 폐기돼 영구 적체
+  (9/1 weekly-v3 실패 2건 미발송). openclaw 트리거 턴 자체의 실패(9/1 eod-v3 "Agent couldn't
+  generate a response")는 Python이 뜨지 않아 Python 훅으로는 불가지.
+- **결정(운영자 2026-09-02 — "A안 + B 슬롯 + C"):**
+  - **A. 실행 보고 1통:** `trading.run` 진입점이 eod-v3·weekly-v3 종료 직후 텔레그램 1통
+    (✅ 완료 / ⚠️ 완료·부분 실패 / ❌ 실패 + 체인 stdout 최상위 줄 ≤14 + 미발송 P1 꼬리).
+    Python이 Bot API 직접 발송(`alerts.channels.TelegramChannel`) — openclaw 채널 미사용(비활성
+    유지: 인바운드 면적·LLM 턴 개입 회피). 보고는 P2로 원장 박제, 동봉 P1은 dispatches 기록.
+  - **B. 미발화 감시 2잡:** `eod-v3-check` 평일 18:30 · `weekly-v3-check` 토 10:00(openclaw
+    cron, 순수 코드). `data/runs.sqlite`(RunStore, append-only started/finished)에 오늘 기록이
+    없으면 ❌ 미발화, 시작만 있으면 ⏳ 미완료 즉시 발송. 완료 기록(실패 rc 포함)이면 침묵.
+  - **C. 적체 P1 2건(64684cf로 수리된 버그):** dispatches에 `suppressed:fixed-64684cf` 행
+    append로 억제(원장 무삭제).
+- **기각 대안:** openclaw cron `delivery`/텔레그램 채널 경유 — 트리거 턴이 12분+ exec를 붙들어야
+  하고(6/11 fire-and-forget 전환 이유), LLM 미응답이 곧 알림 누락.
+- **실측:** 2026-09-02 스모크 `sent:telegram`(봇 lucas_homeclaw_bot — 이 프로젝트 첫 실발송).
+  잔여: v0.3에 P0 발생 지점 없음(§8 이벤트 트리거는 Phase 4 보유 연결 시 배선).
+
 ---
 
 ## 수집 (R0)
