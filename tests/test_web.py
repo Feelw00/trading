@@ -166,7 +166,7 @@ def test_picks_page_renders() -> None:
     assert "선정 후보" in out and "예측이 아니라" in out
 
 
-def test_paper_page_renders(tmp_path) -> None:
+def test_paper_page_renders(tmp_path: Path) -> None:
     """매매 가이드 페이지 — 포지션 유무와 무관하게 렌더링(실주문 없음 명시)."""
     from trading.web.paper_page import render_paper
 

@@ -51,7 +51,7 @@ def test_veto_tag_promotion_counts(tmp_path: Path) -> None:
     store.close()
 
 
-def test_auto_review_rules(tmp_path: Path, monkeypatch) -> None:
+def test_auto_review_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """v2.6 자동 심사 — 결정론 규칙, 수동 판정 우선, veto 미생성."""
     from dataclasses import dataclass, field
 

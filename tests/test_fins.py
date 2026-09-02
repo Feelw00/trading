@@ -176,7 +176,7 @@ def test_backfill_annuals_idempotent(tmp_path: Path) -> None:
     store.close()
 
 
-def test_collect_owner_equity_and_snapshot_pickup(tmp_path) -> None:
+def test_collect_owner_equity_and_snapshot_pickup(tmp_path: Path) -> None:
     """COLLECT-6: 지배주주지분 수집 → 같은 (연도,보고서) 스냅샷에서 owner_equity로 노출."""
     import json
     from pathlib import Path
@@ -197,7 +197,7 @@ def test_collect_owner_equity_and_snapshot_pickup(tmp_path) -> None:
         {"sj_div": "BS", "account_id": "ifrs-full_NoncontrollingInterests", "account_nm": "비지배지분", "thstrm_amount": "2,938,430,207,591"},
     ]}
     calls: list[str] = []
-    def fake(url: str):
+    def fake(url: str) -> dict[str, Any]:
         calls.append(url)
         return full if "fnlttSinglAcntAll" in url else {"status": "013"}
     dart = DartClient("k", json_fetch=fake)

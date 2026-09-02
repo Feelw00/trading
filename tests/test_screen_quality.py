@@ -12,7 +12,7 @@ def _year(rev: float | None, ni: float | None, eq: float | None) -> dict[str, fl
     return {"revenue": rev, "op_income": None, "equity": eq, "net_income": ni}
 
 
-def _series(rows: list[tuple[str, float | None, float | None, float | None]]):
+def _series(rows: list[tuple[str, float | None, float | None, float | None]]) -> list[tuple[str, dict[str, float | None]]]:
     # annual_series 계약: 연도 desc
     return [(y, _year(rev, ni, eq)) for y, rev, ni, eq in sorted(rows, reverse=True)]
 
