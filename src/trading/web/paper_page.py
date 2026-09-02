@@ -29,8 +29,8 @@ def render_paper() -> str:
     parts = [
         "<h1>매매 가이드 — 최종 선정 종목</h1>",
         "<div class='meta'><b>실주문 없음</b> — 심사 승인 종목의 분할 매매 가이드"
-        "(가상 원장 기반). 매수는 상한가 아래에서 종목당 100주까지 · 매도는 목표가 "
-        "80·90·100·120%에 20주씩, 150%에 잔량 정리 · 90% 이상 매도선 터치 후 직전 선 "
+        "(가상 원장 기반). 매수는 상한가 아래에서 분할 매수 · 매도는 목표가 "
+        "80·90·100·120%에 각 20%, 150%에 잔량 정리 · 90% 이상 매도선 터치 후 직전 선 "
         "이탈 시 잔량 정리(이익 보호) · 가격은 EOD 종가(+1영업일 지연).</div>",
     ]
     if not views:
@@ -52,11 +52,13 @@ def render_paper() -> str:
             buy = f"<b>{v.buy_ceiling:,.0f}까지 매수</b>"
         else:
             buy = f"중단 — 상한 {v.buy_ceiling:,.0f}"
-        if v.sell_plan:
+        if v.sell_plan and v.total_bought > 0:
+            def _pct(q: float) -> str:
+                return f"{q / v.total_bought:.0%}"
             nxt_p, nxt_q = v.sell_plan[0]
-            full = " → ".join(f"{p:,.0f}에 {q:.0f}주" for p, q in v.sell_plan)
+            full = " → ".join(f"{p:,.0f}에 {_pct(q)}" for p, q in v.sell_plan)
             sell = (f"<span class='tip' data-tip='전체 계획: {full}'>"
-                    f"<b>{nxt_p:,.0f}</b>부터 {nxt_q:.0f}주</span>")
+                    f"<b>{nxt_p:,.0f}</b>부터 {_pct(nxt_q)}</span>")
         else:
             sell = "완료"
         deadline = _d(v.opened) + timedelta(days=1095)
@@ -92,7 +94,7 @@ def render_paper() -> str:
     parts.append(
         "<div class='meta'>시작가 = 실제 투자 시작 가격(기준가) — 수익률·매수 상한의 앵커. "
         "매도 열에 마우스를 올리면 남은 매도 계획 전체가 보인다"
-        "(현 보유 기준 전개 — 추가 매수 시 갱신). 정리 = 목표가 150% 도달가, "
+        "(비중은 전체 포지션 대비 — 추가 매수 시 갱신). 정리 = 목표가 150% 도달가, "
         "~연월은 등록일+3년 시한(미수렴 청산). 수익률 = (실현+평가) ÷ 투입 − 1 · "
         "체결 내역은 CLI(python -m trading.paper) 참조.</div>"
     )

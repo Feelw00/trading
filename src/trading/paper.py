@@ -261,6 +261,7 @@ class PositionView:
     cycle: int = 0                       # 사이클(이전 청산 횟수) — v2.10
     # 남은 매도 계획 전체 [(가격, 주수)] — 현 보유·추가 매수 없음 가정의 결정론 전개
     sell_plan: tuple[tuple[float, float], ...] = ()
+    total_bought: float = 0.0            # 누적 매수 주수 — 가이드의 비중(%) 분모
     closed_reason: str | None = None
 
     @property
@@ -438,6 +439,7 @@ def mark(store: PaperStore, market_db: Path = Path("data") / "market.sqlite") ->
                     in_buy_zone=in_zone,
                     buy_ceiling=ceiling, buy_remaining=remaining,
                     final_exit_price=final_exit, cycle=cy, sell_plan=tuple(plan),
+                    total_bought=sum(f.qty for f in fills if f.side == "buy"),
                     exit_note=exit_note,
                     closed_reason=pos_now.closed_reason,
                 )
