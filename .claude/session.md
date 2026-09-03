@@ -16,7 +16,8 @@
 - 헌법 = `docs/trading-system-design.md` **v0.3**(2026-08-26 비준) · 최종 기준 = `docs/OPEN_QUESTIONS.md`(PIVOT-1~8)
 - 환경 프로비저닝 여부 한 줄: poetry / `.env` / `~/.openclaw` 유무 (Phase 0 완료 전엔 없음이 정상. DB는 SQLite 파일 — docker/PostgreSQL 불필요, PIVOT-8)
 - **cron 정상 상태 = v0.3 5잡**(eod-v3 18:00 · weekly-v3 토 09:30 · check 2 · guide-orders 08:40)
-  — `cron list`로 확인. 스윙 잡(v0.2 16잡)이 살아 있으면 그게 사고다(PIVOT-1). 장중 상주 없음
+  — `cron list`로 확인(.env 소싱 + `OPENCLAW_STATE_DIR=$PWD/.runtime/openclaw OPENCLAW_CONFIG_PATH=$PWD/.runtime/openclaw/openclaw.json ~/.openclaw/bin/openclaw cron list --all` — `OPENCLAW_HOME`으로는 1006 끊김).
+  스윙 잡(v0.2 16잡)이 살아 있으면 그게 사고다(PIVOT-1). 장중 상주 없음
 - **⚠️ 실주문 경로 가동 중(EXEC-12 live, 2026-09-02)**: guide-orders가 토스 조건주문(SELL·지정가)을
   실등록. `.runtime/exec/KILL` 없음 = 가동. 토스 OPEN 조건주문 = 저널(data/broker.sqlite) 대조
 
@@ -28,7 +29,9 @@
   EXEC-12(가이드 매도 SELL·상방 감시)만 허용, 손절·OCO·브래킷은 동결
 - 시작가(가이드 기준가)는 불변 — `paper rebase`는 `--correction <사유>` 정정 전용
 - **페이퍼 편입은 실보유(guide-orders 자동)·명시 `paper register <심볼>`만**(9/2 자동 등록 폐지). 승인 종목
-  노출 = 심사 승인 ∧ 회귀 여력 ≥ +30%(미달 "승인 보류" 파생). 목표가 반영은 `paper retarget --reason`만
+  노출 = 심사 승인 ∧ 회귀 여력 ≥ +30%(미달 "승인 보류" 파생). 목표가 반영은 `paper retarget --reason`만.
+  **회귀 여력 = min(자기 역사 5년 밴드 중앙, 정당 PBR (ROE₅−1%)/(10%−1%)) ÷ 현재 PBR − 1**(v2.13·v2.14, 9/3 —
+  섹터 중앙 PBR 폐기, `valuation/band.py`). COE·g 변경은 결재 사항
 - **브로커 대사 미완(PIVOT-6)**: 7/15 이후 방치된 보유(피에스케이 5주·S-Oil 4주)+조건주문 — Phase 0에서 실측 대사 전까지 브로커 상태 추측 금지
 - 국내 EOD는 +1영업일 공개. 정책 파라미터(부록 B)는 운영자 결재 전 임의 기본값 금지
 - 지시 인코딩 시 **결과를 지시자 언어로 에코백**(7/14 규칙)
