@@ -4,9 +4,12 @@
 고르는 페이지". 헌법 절대금지 2(판단에 LLM 금지)에 따라 "예상"은 예측이 아니라
 **관측 가능한 산술 분해**로만 구성한다:
 
-- 가치 회귀 여력: 섹터 중앙 PBR로 회귀한다고 가정할 때의 산술 상승률
-  (= 섹터 중앙 PBR / 현재 PBR − 1). 회귀는 가정이지 예측이 아니며, 실현 조건
-  (이익 회복·국면 진행)을 함께 표기한다.
+- 가치 회귀 여력: **목표 PBR = min(자기 역사 5년 PBR 밴드 중앙, 정당 PBR)**로 회귀한다고
+  가정할 때의 산술 상승률(= 목표 PBR / 현재 PBR − 1, `valuation.band`). v2.13(운영자 결재
+  2026-09-03) 밴드 중앙 — v2.12까지의 섹터 중앙 PBR은 KRX 버킷 이질성(일반서비스에 바이오·플랫폼
+  혼재 — 와이엔텍 +362%·한국종합기술 +455%)으로 폐기. v2.14(같은 날 결재) 정당 PBR 상한 캡
+  = (ROE 5년 중앙 − 1%) ÷ (10% − 1%) — ROE가 자기자본비용을 밑도는 종목의 과거 배수 회귀 가정
+  차단. 회귀는 가정이지 예측이 아니며, 실현 조건(이익 회복·국면 진행)을 함께 표기한다.
 - 배당 캐리: 최근 사업보고서 기준 현금배당수익률(보통주) — 보유 기간 수익의 하한 축.
 - 이익방향(영업, v2.2): 최신 연간 영업이익/자본 − 5년 중앙. 양수 = 영업 회복 진행
   (순이익 기준은 영업외 스파이크가 중앙값을 부풀려 폐기 — 운영자 결재 2026-09-01).
@@ -36,7 +39,7 @@ from dataclasses import dataclass, field
 
 from trading.collectors.fins import FinStore
 from trading.collectors.returns import ReturnsStore
-from trading.contracts.longterm import CandidateRecord, CyclePhase, ValuationRecord, phase_ko
+from trading.contracts.longterm import CandidateRecord, CyclePhase, phase_ko
 from trading.paper import MIN_UPSIDE_PCT, PaperStore
 from trading.screen.quality import (
     dividend_streak,
@@ -51,6 +54,15 @@ from trading.screen.quality import (
 )
 from trading.screen.rank import PHASE_PRIORITY, high_per, shortlist
 from trading.screen.store import CandidateStore
+from trading.valuation.band import (
+    JUSTIFIED_COE,
+    JUSTIFIED_G,
+    PbrBand,
+    TargetPbr,
+    pbr_bands,
+    regression_upside,
+    target_pbr,
+)
 from trading.valuation.store import ValuationStore
 from trading.web.glossary import phase_pill
 from trading.web.layout import page
@@ -64,7 +76,7 @@ class Pick:
     rec: CandidateRecord
     name: str
     pbr: float | None
-    upside_pct: float | None      # 섹터 중앙 PBR 회귀 가정 산술 상승률
+    upside_pct: float | None      # 목표 PBR(min(밴드 중앙, 정당 PBR)) 회귀 가정 산술 상승률(v2.14)
     div_yield: float | None       # 최근 사업보고서 현금배당수익률(보통주, %)
     div_streak: int
     cancelled: bool
@@ -83,6 +95,9 @@ class Pick:
     screen_ok: bool = True        # 최신 심사 통과 여부(원장 종목의 '심사 탈락' 배지)
     core_fail: list[str] = field(default_factory=list)  # 미충족 축 이름
     held: bool = False            # 페이퍼(매매 가이드) open 포지션 존재 — 실보유·명시 편입
+    band: PbrBand | None = None   # v2.13 자기 역사 밴드(회귀 여력 셀 호버·감사용)
+    target: TargetPbr | None = None  # v2.14 목표 PBR(밴드 중앙 vs 정당 PBR 캡 — 어느 앵커인지)
+    roe_median: float | None = None  # ROE 5년 중앙(정당 PBR 입력, 호버 표시)
 
     @property
     def upside_ok(self) -> bool:
@@ -97,36 +112,22 @@ class Pick:
         return self.verdict
 
 
-def sector_median_pbr(latest: list[ValuationRecord]) -> dict[str, float]:
-    """섹터 중앙 PBR(전 상장 기준, 표본 ≥5) — 회귀 여력의 분모."""
-    by_sector: dict[str, list[float]] = {}
-    for v in latest:
-        if v.pbr is not None and v.sector_krx:
-            by_sector.setdefault(v.sector_krx, []).append(v.pbr)
-    return {s: sorted(ps)[len(ps) // 2] for s, ps in by_sector.items() if len(ps) >= 5}
-
-
-def regression_upside(v: ValuationRecord | None, median: dict[str, float]) -> float | None:
-    """회귀 여력(%) = 섹터 중앙 PBR ÷ 현재 PBR − 1. 산술이지 예측이 아니다."""
-    if v is None or not v.pbr or v.pbr <= 0:
-        return None
-    med = median.get(v.sector_krx or "")
-    return (med / v.pbr - 1) * 100 if med else None
-
-
 def current_upside(symbols: Iterable[str]) -> dict[str, float | None]:
-    """심볼 → 현재 회귀 여력(%) — 밸류에이션 최신본만 읽는 경량 경로.
+    """심볼 → 현재 회귀 여력(%) — 밴드(시세·재무 DB) + ROE 5년 중앙(밸류에이션 최신본)의 경량 경로.
 
-    페이퍼 실보유 편입 목표가·보유 종목 목표가 괴리 표기가 쓴다(/picks와 같은 산식).
+    페이퍼 실보유 편입 목표가·보유 종목 목표가 괴리 표기·`retarget auto`가 쓴다(/picks와 같은 산식
+    `valuation.band.regression_upside` — v2.14 정당 PBR 캡 포함).
     """
+    syms = list(symbols)
+    if not syms:
+        return {}
     vs = ValuationStore()
     try:
-        latest = vs.all_latest()
+        roe = {v.symbol: v.roe_median_5y for v in vs.all_latest()}
     finally:
         vs.close()
-    med = sector_median_pbr(latest)
-    vals = {v.symbol: v for v in latest}
-    return {s: regression_upside(vals.get(s), med) for s in symbols}
+    bands = pbr_bands(syms)
+    return {s: regression_upside(bands.get(s), roe.get(s)) for s in syms}
 
 
 def _build_picks() -> list[Pick]:
@@ -165,7 +166,6 @@ def _build_picks() -> list[Pick]:
     finally:
         vs.close()
     vals = {v.symbol: v for v in latest}
-    sector_median = sector_median_pbr(latest)  # 회귀 여력 분모(전 상장 기준)
 
     fin_store = FinStore()
     try:
@@ -227,6 +227,8 @@ def _build_picks() -> list[Pick]:
     )
     # 1. 심사 원장 — 판정 있는 종목 전부(캡 무관), 통과 여부·코어 자격은 배지로
     ledger = [rec_by_sym[s] for s in sorted(ledger_syms)]
+    # v2.13 회귀 여력 앵커 = 자기 역사 PBR 밴드 — 표시 대상(원장+큐)만 계산(시세 스캔 비용)
+    bands = pbr_bands([r.symbol for r in ledger] + [r.symbol for r in queue])
 
     from trading.web.data import stock_names
 
@@ -236,7 +238,10 @@ def _build_picks() -> list[Pick]:
         for r in recs:
             val = vals.get(r.symbol)
             pbr = val.pbr if val else None
-            upside = regression_upside(val, sector_median)
+            band = bands.get(r.symbol)
+            roe_med = val.roe_median_5y if val else None
+            upside = regression_upside(band, roe_med)
+            tp = target_pbr(band, roe_med) if band is not None else None
             # v2.2(운영자 결재 2026-09-01): 이익 방향은 영업이익/자본 기준 — 영업외 스파이크가
             # 중앙값을 부풀려 회복 종목이 음수로 보이던 왜곡(신세계I&C·슈피겐 사례) 제거
             od = op_dirs.get(r.symbol)
@@ -284,7 +289,7 @@ def _build_picks() -> list[Pick]:
                     verdict_note=(verdicts.get(r.symbol) or {}).get("note")
                     or (verdicts.get(r.symbol) or {}).get("condition"),
                     tier=tier, core_ok=not fails, screen_ok=bool(r.passed), core_fail=fails,
-                    held=r.symbol in held,
+                    held=r.symbol in held, band=band, target=tp, roe_median=roe_med,
                 )
             )
     # 정렬: 국면 → 회귀 여력 내림차순(결측은 뒤) — 소비자(자동 심사 등)의 기본 순서
@@ -337,13 +342,36 @@ def _fmt(v: float | None, suffix: str = "%") -> str:
     return f"{v:+.0f}{suffix}" if v is not None else "—"
 
 
+def _band_tip(p: Pick) -> str:
+    """회귀 여력 셀 호버 — 목표 PBR의 앵커(밴드 중앙 vs 정당 PBR 캡)와 근거. 결측이면 이유."""
+    b = p.band
+    if b is None:
+        return "밴드 결측 — 이력 500거래일 미만 또는 연간 자본총계 결측(지어내지 않음)"
+    t = p.target
+    if t is None:
+        return (f"ROE 5년 중앙 결측 — 정당 PBR 캡 검증 불가(여력 결측) · 5년 밴드 중앙 {b.median:.2f} · "
+                f"현재 {b.current:.2f}")
+    roe = f"{p.roe_median * 100:.1f}%" if p.roe_median is not None else "결측"
+    coe_g = f"COE {JUSTIFIED_COE:.0%} · g {JUSTIFIED_G:.0%}"
+    if t.anchor == "justified":
+        head = (f"목표 PBR {t.value:.2f} = 정당 PBR 캡 (ROE 5년 중앙 {roe}, {coe_g}) "
+                f"< 밴드 중앙 {t.band_median:.2f}")
+    else:
+        head = (f"목표 PBR {t.value:.2f} = 5년 밴드 중앙 (정당 PBR {t.justified:.2f} 미발동, "
+                f"ROE 5년 중앙 {roe})")
+    return (
+        f"{head} · 현재 {b.current:.2f} · 최저~최고 {b.low:.2f}~{b.high:.2f} · "
+        f"{b.n_days:,}거래일 · {b.equity_basis}"
+    )
+
+
 def _row(p: Pick) -> str:
     r = p.rec
     return (
         f"<tr><td><a href='/stocks/{r.symbol}'>{html.escape(p.name)}</a> "
         f"<span class='meta'>{r.symbol}</span></td>"
         f"<td>{html.escape(r.industry)}</td><td>{phase_ko(r.phase)}</td>"
-        f"<td>{_fmt(p.upside_pct)}</td>"
+        f"<td title='{html.escape(_band_tip(p), quote=True)}'>{_fmt(p.upside_pct)}</td>"
         f"<td class='hl'><b>{f'{p.risk_adj:.1f}%' if p.risk_adj is not None else '—'}</b></td>"
         f"<td>{_VERDICT_BADGE.get(p.effective_verdict or '', '대기')}</td>"
         f"<td class='meta'>{' '.join(p.flags) or '—'}</td></tr>"
@@ -359,8 +387,8 @@ def render_picks() -> str:
     parts = ["<h1>선정 후보 — 결정론 기대 분해</h1>"]
     parts.append(
         "<div class='meta'>코어 후보(안정·환원·분할 무이력·비고PER·이익질 정상·非역성장)만 대상. "
-        "<b>회귀 여력은 예측이 아니라 산술이다</b>: '섹터 중앙 PBR로 회귀한다면'의 "
-        "상승률이며, 실현 조건은 영업 회복(이익방향(영업) 양수)과 국면 진행이다. "
+        "<b>회귀 여력은 예측이 아니라 산술이다</b>: '목표 PBR(자기 역사 5년 밴드 중앙, 단 정당 PBR을 "
+        "상한으로)로 회귀한다면'의 상승률이며, 실현 조건은 영업 회복(이익방향(영업) 양수)과 국면 진행이다. "
         "배당수익률은 최근 사업보고서 기준(현재가 기준 아님). "
         "편입·비중의 최종 기제는 §6 R5 포트폴리오(결재 예정) — 이 페이지는 계측·보고 전용.</div>"
     )
@@ -446,20 +474,24 @@ def render_picks() -> str:
     else:
         parts.append("<div class='card meta'>대기 종목 없음 — 코어 풀이 전부 판정됨</div>")
     parts.append(
-        "<div class='meta'>산식: 회귀 여력 = 섹터 중앙 PBR ÷ 현재 PBR − 1 "
-        "(섹터 표본 ≥5 전 상장 기준) = 실현 예상 수익. "
+        "<div class='meta'>산식: 회귀 여력 = 목표 PBR ÷ 현재 PBR − 1, "
+        "<b>목표 PBR = min(자기 역사 5년 PBR 밴드 중앙, 정당 PBR)</b> (v2.14 — 정당 PBR = (ROE 5년 중앙 − "
+        f"{JUSTIFIED_G:.0%}) ÷ ({JUSTIFIED_COE:.0%} − {JUSTIFIED_G:.0%}): ROE가 자기자본비용을 밑돌면 과거 "
+        "배수 회귀는 근거가 없으므로 상한으로만 작동. 밴드 = 최근 5년 일별 PBR, 시총 = 종가 × 그날 주식수, "
+        "분모 = 연간 자본총계를 다음 해 4/1부터 적용, 이력 500거래일 미만·ROE 결측은 결측) = 실현 예상 수익. "
+        "셀 호버에 앵커·밴드 근거. "
         "<b>위험조정수익률</b> = 이익수익률(1/PER) ÷ (1 + 5년 ROE 변동계수) — 표 정렬 키. "
         "모든 값은 EOD·연간 재무의 as-of 기준 — 실시간 아님. "
         "PBR·깊이·배당·연속배당·이익방향(영업)·매출YoY·ROE변동계수 등 분해 지표 전체는 "
         "종목 이름을 눌러 종목 상세에서. "
-        "<b>회귀 여력 +100% 초과는 실현 기대치가 아니라 극단 저PBR의 산술</b> — "
-        "지주·연결 구조 할인(자본 대비 시총 괴리)이 원인일 수 있으며, 그 할인은 "
-        "지배구조 이벤트 없이 좀처럼 해소되지 않는다.</div>"
+        "<b>회귀 여력 +100% 초과는 실현 기대치가 아니라 자기 역사 대비 극단 저PBR의 산술</b> — "
+        "2021 버블 잔상(밴드 중앙이 높음)·자본 급증·사업 축소 같은 구조 변화가 원인일 수 있어 "
+        "회귀 근거를 따로 확인해야 한다(자동 심사는 +150% 초과를 hold).</div>"
     )
     return page("선정 후보", "".join(parts), active="/picks")
 
 
 __all__ = [
     "Pick", "QUEUE_INDUSTRY_CAP", "QUEUE_N", "approved_picks", "current_upside",
-    "regression_upside", "render_picks", "sector_median_pbr",
+    "regression_upside", "render_picks",
 ]

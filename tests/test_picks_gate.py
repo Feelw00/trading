@@ -5,9 +5,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trading.contracts.longterm import CandidateRecord, CyclePhase, ValuationRecord
+from trading.contracts.longterm import CandidateRecord, CyclePhase
 from trading.paper import MIN_UPSIDE_PCT
-from trading.web.picks import Pick, approved_picks, regression_upside, sector_median_pbr
+from trading.valuation.band import PbrBand
+from trading.web.picks import Pick, approved_picks, regression_upside
 
 TS = datetime(2026, 9, 2, 15, 30, tzinfo=ZoneInfo("Asia/Seoul"))
 
@@ -49,15 +50,15 @@ def test_approved_picks_exposes_only_upside_ok_sorted_by_risk_adj() -> None:
 
 
 def test_regression_upside_formula() -> None:
-    def _v(sym: str, pbr: float, sector: str = "X") -> ValuationRecord:
-        return ValuationRecord(
-            id=f"val.{sym}", as_of=TS, fetched_at=TS, source="derived:test", symbol=sym,
-            sector_krx=sector, pbr=pbr,
-        )
-
-    latest = [_v(f"S{i}", p) for i, p in enumerate([0.4, 0.5, 0.6, 0.8, 1.0])] + [_v("T1", 0.3, "Y")]
-    med = sector_median_pbr(latest)
-    assert med == {"X": 0.6}                                             # 표본 <5 섹터 제외
-    assert regression_upside(latest[0], med) == pytest.approx(50.0)     # 0.6/0.4 − 1
-    assert regression_upside(latest[-1], med) is None                   # 섹터 중앙 없음
-    assert regression_upside(None, med) is None
+    # v2.13(운영자 결재 2026-09-03): 앵커 = 자기 역사 5년 PBR 밴드 중앙(와이엔텍 실측치)
+    # v2.14(같은 날): 정당 PBR = (ROE − 1%) ÷ (10% − 1%)를 상한으로
+    band = PbrBand(
+        symbol="067900", current=0.32, median=0.66, low=0.29, high=1.78, n_days=1250,
+        last_bas_dt="20260901", equity_basis="FY2025 연간 자본총계",
+    )
+    # ROE 10.3% → 정당 1.03 > 밴드 0.66 → 캡 미발동, 밴드 중앙 앵커
+    assert regression_upside(band, 0.103) == pytest.approx((0.66 / 0.32 - 1) * 100)  # +106%
+    # ROE 5% → 정당 0.444 < 밴드 → 캡 발동
+    assert regression_upside(band, 0.05) == pytest.approx((0.05 - 0.01) / 0.09 / 0.32 * 100 - 100)
+    assert regression_upside(band, None) is None   # ROE 결측 — 캡 검증 불가 → 결측
+    assert regression_upside(None, 0.10) is None   # 이력 부족·자본 결측 — 섹터 폴백 없이 결측
