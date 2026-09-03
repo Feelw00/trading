@@ -202,3 +202,24 @@ def test_current_targets_and_drift_alert(tmp_path: Path) -> None:
     assert d2.pct == pytest.approx(7.143, abs=0.01) and not d2.alert
     assert target_drift(views, {"000001": None}) == []
     store.close()
+
+
+def test_close_appends_closed_version_and_keeps_fills(tmp_path: Path) -> None:
+    # 운영자 실정리(2026-09-03): 실보유가 사라진 가이드는 삭제(unregister)가 아니라 closed 새 버전으로
+    store = PaperStore(tmp_path / "p.sqlite")
+    params = PaperParams()
+    store.open_position("000001", "20260101", 1000.0, 1500.0, params)
+    store.add_fill("000001", 0, "1차 매수(초기)", "buy", "20260101", 1000.0, 100.0, 100000.0)
+    store.close_position("000001", "운영자 실정리")
+    pos = next(p for p in store.latest_positions() if p.symbol == "000001")
+    assert pos.status == "closed" and pos.closed_reason == "운영자 실정리"
+    versions = store._conn.execute(
+        "SELECT version, status FROM positions WHERE symbol='000001' ORDER BY version"
+    ).fetchall()
+    assert versions == [(1, "open"), (2, "closed")]          # append-only, 이력 보존
+    assert len(store.fills("000001", 0)) == 1                 # 체결 유지
+    store.close_position("000001", "중복 호출")               # 이미 closed — 무동작
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM positions WHERE symbol='000001'"
+    ).fetchone()[0] == 2
+    store.close()

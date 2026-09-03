@@ -10,7 +10,7 @@
 - **실주문 없음** — EXEC와 완전 무관한 페이퍼 원장(절대금지 3과 무관). 계측·학습 전용.
 - 규칙(PaperParams)은 가치투자·사이클투자 문헌 조사로 캘리브레이션(POLICY §7 v2.5~).
 - 트리거는 **등록 시점에 전부 박제**된다: 매수 상한 = 기준가→정리가의 1/3 지점
-  (실매수 규율 지표), 매도 가이드 = 목표가(등록 시점 섹터 중앙 PBR 도달가 = 회귀
+  (실매수 규율 지표), 매도 가이드 = 목표가(등록 시점 목표 PBR = min(자기 역사 밴드 중앙, 정당 PBR) 도달가 = 회귀
   여력 소진점) 배수 사다리, 정리 = 목표가 150% 도달 또는 이익 보호(90% 이상 매도선
   터치 후 직전 선 이탈 — v2.9) 또는 시간 상한 또는 심사 veto.
 - 체결은 일별 EOD 종가가 트리거를 넘은 첫날 그 종가로 기록(장중가 없음 — 정직한 근사).
@@ -478,7 +478,8 @@ def current_targets(
 ) -> dict[str, tuple[str, float, float] | None]:
     """심볼 → (최근 종가일, 종가, 현재 추정 목표가 = 종가 × (1 + 회귀 여력)). 결측은 None.
 
-    회귀 여력은 /picks와 같은 산식(섹터 중앙 PBR ÷ 현재 PBR − 1, 주간 밸류에이션 + 일간 시세).
+    회귀 여력은 /picks와 같은 산식(목표 PBR = min(자기 역사 5년 밴드 중앙, 정당 PBR) ÷ 현재 PBR − 1
+    — v2.13 밴드·v2.14 정당 PBR 캡, 일간 시세 × 연간 자본총계. 구 섹터 중앙 PBR은 버킷 이질성으로 폐기).
     실보유 편입 목표가와 보유 종목 목표가 괴리 표기가 쓴다. ``upside`` 주입은 테스트·재사용용.
     """
     syms = list(symbols)
@@ -628,6 +629,24 @@ def main() -> int:
             print(f"등록 {n}건 → data/paper.sqlite")
             return 0
 
+        if args and args[0] == "close" and len(args) >= 2:
+            # 운영자 실정리(2026-09-03 "심사 외 종목 정리했어"): 실보유가 사라진 가이드 포지션을
+            # 이력 보존으로 닫는다(closed 새 버전, 체결 유지). unregister(삭제)는 등록 오류 정정 전용.
+            sym = args[1]
+            if "--reason" not in args or args.index("--reason") + 1 >= len(args):
+                print("종료는 사유 필수: `close <심볼> --reason <사유>` (실정리·운영자 판단 기록)")
+                return 2
+            reason = args[args.index("--reason") + 1]
+            pos = next((p for p in store.latest_positions()
+                        if p.symbol == sym and p.status == "open"), None)
+            if pos is None:
+                print(f"{sym}: open 포지션 없음")
+                return 1
+            store.close_position(sym, reason)
+            print(f"{sym} 가이드 종료(사이클 {pos.cycle + 1}, 시작가 {pos.base_price:,.0f} · "
+                  f"목표 {pos.target_price:,.0f}) — 사유: {reason}")
+            return 0
+
         if args and args[0] == "unregister" and len(args) >= 2:
             sym = args[1]
             # 페이퍼 원장은 검증용 입력 — 등록 오류·기준 미달의 철회는 삭제로 정정
@@ -680,7 +699,7 @@ def main() -> int:
             if pos is None:
                 print(f"{sym}: 포지션 없음")
                 return 1
-            # 목표가는 절대 앵커(섹터 중앙 PBR 도달가) — 기준가만 교체, 현 사이클만 재생
+            # 목표가는 절대 앵커(자기 역사 PBR 밴드 중앙 도달가) — 기준가만 교체, 현 사이클만 재생
             store.reset_fills(sym, pos.cycle)
             store.open_position(sym, pos.opened_bas_dt, new_base, pos.target_price, pos.params)
             print(f"{sym} 기준가 {pos.base_price:,.0f} → {new_base:,.0f} (목표 "

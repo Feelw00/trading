@@ -183,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = list(sys.argv[1:] if argv is None else argv)
     force = "--force" in args
+    # 운영자 지시(2026-09-03 "하츠랑 화신 조사 돌려놓고"): 위치 인자 = 심볼 필터. 없으면 통과 후보 전부(기존).
+    only = {a for a in args if not a.startswith("--")}
 
     if not (os.environ.get("R2_MODEL") or os.environ.get("CLAUDE_MODEL")):
         print("CLAUDE_MODEL 미설정 — 심사 패킷 서술 blocked(.env 주입 필요)")
@@ -195,6 +197,11 @@ def main(argv: list[str] | None = None) -> int:
         client = client_from_env()
         model_label = client.model or "claude-default"
         passed = cand_store.latest_passed()
+        if only:
+            missing = only - {c.symbol for c in passed}
+            for sym in sorted(missing):
+                print(f"⚠️ {sym}: 최신 통과 후보에 없음 — 스킵(지어내지 않음)")
+            passed = [c for c in passed if c.symbol in only]
         if not passed:
             print("통과 후보 없음 — 심사 패킷 대상 없음")
             return 0

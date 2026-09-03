@@ -10,6 +10,11 @@
   더 새 연간이 적재되면 판정은 만료(=pending 복귀). 낡은 판정이 새 데이터를 가리지 않는다.
 - **규칙 승격 루프**: veto 태그가 임계(기본 2회) 누적되면 결정론 규칙 후보로 리포트 —
   R7+결재 상정용(v2.1 이익질·v2.3 역성장이 이 경로의 수동 선례).
+- **초기화(reset, v2.13 — 운영자 지시 2026-09-03 "종목 선정부터 다시")**: 판정을 지우지 않고
+  `reset` 행을 append → 유효 판정 없음(pending 복귀). 이력은 그대로 남아 감사 가능.
+  용도: 산식 변경(섹터 중앙 PBR → 자기 역사 밴드) 등으로 판정의 근거 수치가 바뀐 경우.
+  `python -m trading.review reset --reason <사유> [--keep-vetoed] [<symbol> ...]`
+  (심볼 없으면 유효 판정 전부. --keep-vetoed = veto는 인간 예외 채널이라 보존).
 """
 
 import sqlite3
@@ -22,6 +27,7 @@ from trading.paper import MIN_UPSIDE_PCT
 DEFAULT_DB = Path("data") / "reviews.sqlite"
 
 VERDICTS = ("approved", "vetoed", "hold")
+RESET_VERDICT = "reset"  # v2.13: 판정 초기화 행(유효 판정 아님 → current()는 None) — decide()로는 못 쓴다
 # veto 사유 태그 화이트리스트 — 태그가 곧 규칙화의 원료(자유서술 금지)
 VETO_TAGS = (
     "이익질",       # 영업외 의존 이익 (선례: v2.1)
@@ -43,7 +49,7 @@ RULE_PROMOTION_THRESHOLD = 2   # 같은 태그 N회 → 규칙 후보 리포트
 # 건드리지 않는다(운영자 override 우선). veto는 자동 생성하지 않는다 — 규칙이 못 잡는
 # 예외의 인간 채널로 남기고, 반복되면 태그 승격 루프로 코어 규칙이 된다(기존 설계).
 AUTO_SOURCE = "auto:rule-v1"
-MAX_SANE_UPSIDE_PCT = 150.0    # 초과 시 버킷 이질성·구조 할인 의심 — hold
+MAX_SANE_UPSIDE_PCT = 150.0    # 초과 시 구조 변화(버블 잔상·자본 급증·사업 축소) 의심 — hold (v2.13 자기 역사 밴드 기준)
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS reviews (
@@ -100,14 +106,32 @@ class ReviewStore:
         self._conn.commit()
         return version
 
+    def reset(
+        self, symbol: str, *, basis_year: str, reason: str, source: str = "manual:operator",
+    ) -> int:
+        """판정 초기화 — `reset` 행 append(이력 보존). 이후 current()는 None(pending)."""
+        if not reason.strip():
+            raise ValueError("reset은 사유 필수(--reason)")
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM reviews WHERE symbol=?", (symbol,)
+        ).fetchone()
+        version = int(row[0]) + 1
+        self._conn.execute(
+            "INSERT INTO reviews VALUES (?,?,?,?,?,?,?,?,?)",
+            (symbol, version, RESET_VERDICT, "", reason, None, basis_year,
+             now_kst().isoformat(), source),
+        )
+        self._conn.commit()
+        return version
+
     def current(self, symbol: str, latest_annual_year: str) -> dict[str, str] | None:
-        """유효 판정 — basis_year < 최신 연간이면 만료(None = pending 재심사)."""
+        """유효 판정 — basis_year < 최신 연간이면 만료, reset 행이면 초기화(둘 다 None = pending)."""
         row = self._conn.execute(
             "SELECT verdict, tags, note, condition, basis_year, decided_at FROM reviews "
             "WHERE symbol=? ORDER BY version DESC LIMIT 1",
             (symbol,),
         ).fetchone()
-        if row is None:
+        if row is None or str(row[0]) == RESET_VERDICT:
             return None
         rec = {
             "verdict": str(row[0]), "tags": str(row[1] or ""), "note": str(row[2] or ""),
@@ -161,7 +185,7 @@ def auto_review(store: ReviewStore, year: str) -> tuple[int, int]:
         elif pk.roe_delta < 0:
             cond = "이익방향(영업) 양전 확인"
         elif pk.upside_pct is None or pk.upside_pct > MAX_SANE_UPSIDE_PCT:
-            cond = "극단 회귀 여력 — 버킷 이질성·구조 할인 원인 확인"
+            cond = "극단 회귀 여력 — 구조 변화(버블 잔상·자본 급증·사업 축소) 원인 확인"
         elif pk.upside_pct < MIN_UPSIDE_PCT:
             cond = f"회귀 여력 +{MIN_UPSIDE_PCT:.0f}% 회복(현재 {pk.upside_pct:+.0f}% — 실현 예상 수익 부족)"
         if cond is None:
@@ -206,6 +230,35 @@ def main() -> int:
             n_appr, n_hold = auto_review(store, year)
             print(f"자동 심사(rule-v1): 승인 {n_appr} · 조건부 {n_hold} "
                   f"(기준연도 {year}, 수동 판정 우선)")
+            return 0
+
+        if args and args[0] == "reset":
+            # v2.13(운영자 지시 2026-09-03): 판정 초기화 — 지우지 않고 reset 행 append(pending 복귀)
+            rest = args[1:]
+            if "--reason" not in rest or rest.index("--reason") + 1 >= len(rest):
+                print("초기화는 사유 필수: `reset --reason <사유> [--keep-vetoed] [<symbol> ...]`",
+                      file=sys.stderr)
+                return 2
+            reason = rest[rest.index("--reason") + 1]
+            keep_vetoed = "--keep-vetoed" in rest
+            targets = [a for i, a in enumerate(rest)
+                       if not a.startswith("--") and rest[i - 1] != "--reason"]
+            current = store.all_current(year)
+            if not targets:
+                targets = sorted(current)
+            n = 0
+            for sym in targets:
+                rec = current.get(sym)
+                if rec is None:
+                    print(f"  {sym}: 유효 판정 없음 — 건너뜀")
+                    continue
+                if keep_vetoed and rec["verdict"] == "vetoed":
+                    print(f"  {sym}: vetoed 보존(--keep-vetoed) — {rec['tags'] or rec['note'][:40]}")
+                    continue
+                v = store.reset(sym, basis_year=year, reason=reason)
+                print(f"  {sym}: {rec['verdict']} → pending (v{v} reset)")
+                n += 1
+            print(f"초기화 {n}종 (사유: {reason})")
             return 0
 
         if not args or args[0] == "list":
@@ -256,8 +309,9 @@ def main() -> int:
         return 0
     except (ValueError, StopIteration) as e:
         print(f"오류: {e}", file=sys.stderr)
-        print("사용법: python -m trading.review [list | <symbol> approved|vetoed|hold "
-              "[--tag T]... [--note N] [--condition C]]", file=sys.stderr)
+        print("사용법: python -m trading.review [list | auto | reset --reason R [--keep-vetoed] "
+              "[<symbol>...] | <symbol> approved|vetoed|hold [--tag T]... [--note N] "
+              "[--condition C]]", file=sys.stderr)
         return 1
     finally:
         store.close()
@@ -268,6 +322,7 @@ __all__ = [
     "DEFAULT_DB",
     "RULE_PROMOTION_THRESHOLD",
     "MAX_SANE_UPSIDE_PCT",
+    "RESET_VERDICT",
     "VETO_TAGS",
     "VERDICTS",
     "ReviewStore",

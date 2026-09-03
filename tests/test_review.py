@@ -28,6 +28,29 @@ def test_expiry_on_new_annual_year(tmp_path: Path) -> None:
     store.close()
 
 
+def test_reset_returns_to_pending_and_keeps_history(tmp_path: Path) -> None:
+    # v2.13(운영자 지시 2026-09-03): 산식 변경 후 "종목 선정부터 다시" — 판정을 지우지 않고 초기화
+    store = ReviewStore(tmp_path / "r.sqlite")
+    store.decide("003800", "approved", basis_year="2025", note="배당 7.4%")
+    v = store.reset("003800", basis_year="2025", reason="policy v2.13 재심사")
+    assert v == 2
+    assert store.current("003800", "2025") is None                 # pending 복귀
+    assert "003800" not in store.all_current("2025")
+    rows = store._conn.execute(
+        "SELECT version, verdict FROM reviews WHERE symbol='003800' ORDER BY version"
+    ).fetchall()
+    assert rows == [(1, "approved"), (2, "reset")]                 # 이력 보존(append-only)
+    # 초기화 후 재판정은 v3 — 유효 판정 복귀
+    store.decide("003800", "hold", basis_year="2025", condition="회귀 여력 +30% 회복")
+    rec = store.current("003800", "2025")
+    assert rec is not None and rec["verdict"] == "hold"
+    with pytest.raises(ValueError):
+        store.reset("003800", basis_year="2025", reason="  ")     # 사유 필수
+    with pytest.raises(ValueError):
+        store.decide("003800", "reset", basis_year="2025")          # decide()로는 못 쓴다
+    store.close()
+
+
 def test_verdict_discipline(tmp_path: Path) -> None:
     store = ReviewStore(tmp_path / "r.sqlite")
     with pytest.raises(ValueError):
