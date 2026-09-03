@@ -36,7 +36,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from trading.collectors.base import now_kst
+from trading.collectors.base import CollectError, now_kst
 from trading.paper import PaperStore, PositionRow, enroll_holding
 
 DEFAULT_DB = Path("data") / "broker.sqlite"
@@ -307,13 +307,21 @@ class BrokerStore:
         self._conn.commit()
 
     def open_orders(self) -> list[OpenOrder]:
-        """우리가 보낸(sent) 조건주문 중 종결 이벤트가 없는 것."""
+        """우리가 보낸(sent) 조건주문 중 종결 이벤트가 없는 것.
+
+        실사고(2026-09-03): live 주문이 살아 있는 상태에서 `--mode dry-run`을 돌리면 취소
+        **의도**가 `cancel`(mode=dry-run)로 저널에 남는데, 이를 종결로 치면 다음 live가 기존
+        주문을 못 보고 새로 등록해 **중복 조건주문**이 생긴다. `cancel`은 실제로 브로커에 보낸
+        live 행만 종결로 인정한다. 브로커 상태 대사 이벤트(filled/expired/canceled/…)는 관측
+        사실이라 모드 무관.
+        """
         marks = ",".join("?" for _ in _CLOSING_EVENTS)
         rows = self._conn.execute(
             "SELECT cond_id, symbol, cycle, leg_index, quantity, trigger_price, holding_qty, "
             "expire_date FROM guide_orders WHERE event = 'sent' AND cond_id IS NOT NULL "
             f"AND cond_id NOT IN (SELECT cond_id FROM guide_orders WHERE cond_id IS NOT NULL "
-            f"AND event IN ({marks})) ORDER BY row_id",
+            f"AND event IN ({marks}) AND NOT (event = 'cancel' AND mode <> 'live')) "
+            "ORDER BY row_id",
             _CLOSING_EVENTS,
         ).fetchall()
         return [
@@ -475,7 +483,17 @@ def run(
         if o.cond_id in broker_open:
             alive.setdefault(o.symbol, []).append(o)
             continue
-        detail = client.conditional_order(o.cond_id)
+        try:
+            detail = client.conditional_order(o.cond_id)
+        except CollectError as exc:
+            # 실측(2026-09-03): 운영자가 앱에서 취소한 조건주문은 상세 조회가 404 — 예외로 라운드 전체가
+            # 죽으면 나머지 종목 등록까지 막힌다. 외부 종료로 저널링(종결 이벤트)하고 계속 간다.
+            store.append_order(
+                ts=ts, event="canceled", symbol=o.symbol, cycle=o.cycle, mode=mode, cond_id=o.cond_id,
+                note=f"상세 조회 실패 — 외부 취소(앱) 추정: {exc!r}"[:200],
+            )
+            _p1(f"가이드 조건주문이 외부에서 종료됨(조회 실패): {o.symbol} leg{o.leg_index}")
+            continue
         status = str(detail.get("status") or "")
         first = detail.get("first") if isinstance(detail.get("first"), dict) else {}
         trig_id = first.get("triggeredOrderId") if isinstance(first, dict) else None
@@ -627,6 +645,14 @@ def run(
             )
             s.placed += 1
             s.lines.append(f"[dry-run] {tag} [{why}]")
+    # 4. 가이드가 닫힌(open 포지션 없음) 종목의 잔존 조건주문 — 고아 취소.
+    # 실사고(2026-09-03): 운영자가 실정리 후 `paper close`하면 위 루프(open 포지션)에서 빠져
+    # 살아 있는 매도 예약이 만료(최대 7일)까지 남고, 보유 없는 매도가 발동하면 거부만 쌓인다.
+    for sym, orders in sorted(alive.items()):
+        if sym in positions or not orders:
+            continue
+        _cancel_alive(sym, orders[0].cycle, "가이드 종료(open 포지션 없음) — 잔존 주문 취소")
+        s.lines.append(f"{sym} 가이드 종료 — 잔존 조건주문 {len(orders)}건 취소")
     s.lines.insert(0, (
         f"가이드 매도 예약 [{mode}] 보유 {s.holdings}종목 · 가이드 {s.guided} · 등록 {s.placed} · "
         f"유지 {s.kept} · 건너뜀 {s.skipped} · 취소 {s.canceled} · 체결 정산 {s.filled}"

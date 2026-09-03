@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trading import guide_orders as go
+from trading.collectors.base import CollectError
 from trading.guide_orders import (
     BrokerStore, account_view, ladder_of, plan_next_leg, round_up_to_tick, run, short_label,
 )
@@ -27,6 +28,7 @@ class FakeBroker:
         self.placed: list[dict[str, Any]] = []
         self.calls: list[str] = []
         self.reject = False
+        self.missing: set[str] = set()   # 앱에서 수동 취소된 조건주문 — 상세 조회 404
         self._seq = 0
 
     def holdings(self) -> dict[str, Any]:
@@ -38,6 +40,8 @@ class FakeBroker:
         return {"conditionalOrders": self.open}
 
     def conditional_order(self, conditional_order_id: str) -> dict[str, Any]:
+        if conditional_order_id in self.missing:
+            raise CollectError(f"토스 호출 실패: GET /api/v1/conditional-orders/{conditional_order_id}")
         return self.details.get(conditional_order_id, {})
 
     def cancel_conditional(self, conditional_order_id: str) -> None:
@@ -275,3 +279,54 @@ def test_enroll_callback_registers_real_holding_and_plans(tmp_path: Path) -> Non
     s2 = run(b, mode="dry-run", store=store, paper=paper, now=T0 + timedelta(days=1), enroll=_enroll)
     assert s2.kept == 1 and s2.placed == 0 and len(paper.latest_positions()) == 1
     paper.close()
+
+
+def test_dry_run_cancel_intent_does_not_close_live_order(tmp_path: Path) -> None:
+    # 실사고(2026-09-03): live 주문이 살아 있는데 --mode dry-run을 돌리면 취소 **의도**가
+    # cancel(mode=dry-run)로 저널에 남고, 이를 종결로 치면 다음 live가 기존 주문을 못 보고
+    # 새로 등록해 중복 조건주문이 생긴다. dry-run cancel은 종결이 아니다.
+    b = FakeBroker([_item("000001", "A", 13, 2720, 2770)])
+    store = BrokerStore(tmp_path / "b.sqlite")
+    paper = _paper(tmp_path, "000001")
+    run(b, mode="live", store=store, paper=paper, now=T0)
+    assert [o.cond_id for o in store.open_orders()] == ["c1"]
+    b.items = [_item("000001", "A", 20, 2700, 2770)]                  # 수량 변경 → 재등록 계획
+    s_dry = run(b, mode="dry-run", store=store, paper=paper, now=T0 + timedelta(days=1))
+    assert s_dry.canceled == 1 and b.canceled == []                   # 의도만 저널, 브로커 무접촉
+    assert [o.cond_id for o in store.open_orders()] == ["c1"]         # 여전히 살아 있다
+    s_live = run(b, mode="live", store=store, paper=paper, now=T0 + timedelta(days=1))
+    assert b.canceled == ["c1"] and s_live.placed == 1                # 실취소 후 재등록 — 중복 없음
+    assert [o.cond_id for o in store.open_orders()] == ["c2"]
+
+
+def test_closed_guide_cancels_orphan_orders(tmp_path: Path) -> None:
+    # 운영자 실정리(2026-09-03): 보유를 팔고 가이드를 close하면 open 포지션 루프에서 빠져
+    # 살아 있는 조건주문이 고아로 남았다 — 가이드 없는 우리 주문은 취소한다.
+    b = FakeBroker([_item("000001", "A", 13, 2720, 2770)])
+    store = BrokerStore(tmp_path / "b.sqlite")
+    paper = _paper(tmp_path, "000001")
+    run(b, mode="live", store=store, paper=paper, now=T0)
+    assert [o.cond_id for o in store.open_orders()] == ["c1"]
+    paper.close_position("000001", "운영자 실정리")
+    b.items = []                                                      # 실보유 0
+    s = run(b, mode="live", store=store, paper=paper, now=T0 + timedelta(days=1))
+    assert b.canceled == ["c1"] and s.canceled == 1 and s.placed == 0
+    assert store.open_orders() == []
+    assert any("가이드 종료" in ln for ln in s.lines or [])
+
+
+def test_manually_canceled_order_404_does_not_crash_round(tmp_path: Path) -> None:
+    # 실사고(2026-09-03): 운영자가 앱에서 취소한 조건주문은 토스 상세 조회가 404 → 정산 루프 예외로
+    # 라운드 전체 중단(다른 종목 등록까지 막힘). 외부 취소로 저널링하고 계속 진행해야 한다.
+    b = FakeBroker([_item("000001", "A", 13, 2720, 2770), _item("000002", "B", 10, 1000, 1000)])
+    store = BrokerStore(tmp_path / "b.sqlite")
+    paper = _paper(tmp_path, "000001", "000002")
+    run(b, mode="live", store=store, paper=paper, now=T0)
+    assert [o.cond_id for o in store.open_orders()] == ["c1", "c2"]
+    b.open = [o for o in b.open if o["conditionalOrderId"] != "c1"]   # 앱에서 c1 취소
+    b.missing.add("c1")
+    s = run(b, mode="live", store=store, paper=paper, now=T0 + timedelta(days=1))
+    assert [o.cond_id for o in store.open_orders()] != ["c1", "c2"]   # c1 종결
+    assert any("외부에서 종료" in a for a in s.anomalies or [])
+    assert s.placed == 1 and b.placed[-1]["symbol"] == "000001"        # 000001 재등록, 000002 유지
+    assert s.kept == 1
