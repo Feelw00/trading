@@ -47,6 +47,10 @@
 - **배당은 `alot_reports` 접수분 합산**(v2.18, 9/4): 리츠 등 반기·분기 결산은 연도당 접수분 2~4건 — 옛 `alot_facts` 첫 접수분만 보면 과소.
   리츠 환원 면제 없음. **분할은 인적=강등 없음, 물적·혼합·미상·미수록=강등**(`SplitAssessment.downgrade`), 배제 아님 — 물적분할 후
   자회사 상장 사실 소스는 미확정(결재거리)
+- **지배주주 기준 완결(v2.19·v2.20, 9/4)**: 밴드 분모는 최근 7개 사업연도 전부 지배주주지분이 있을 때만 승격, 캡 ROE도 같은 기준
+  (`band.effective_roe`) · PER 분모 귀속 순이익 · as-of 적용일 = 사업보고서 접수일 다음날(`fin_reports`). 백필 잔여는 weekly
+  `owner-equity` 600콜/회 — 서두르려면 `python -m trading.collect_owner_equity --years 7 --max-calls 5000`(DART 일 20,000 한도 안에서).
+  `_build_picks`는 밸류에이션을 자동 재산출(append)하므로 효과 계량 시 비교 기준 버전에 주의
 - 지시 인코딩 시 **결과를 지시자 언어로 에코백**(7/14 규칙)
 
 ### next
