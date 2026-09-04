@@ -127,3 +127,10 @@ EXEC-9 시간손절 창, EXEC-10 아침 규율·모멘텀, EXEC-11 저잔고·�
   시작가 불변. **Phase 4 매도 선행 — 매수는 수동, 진입 자동화(DCA)는 §6 결재 후.** /paper·
   /picks 재구성(원장·대기 큐 분리). 검증: pytest 전체·mypy 208 clean.
   상세 → [archive](../history/work/archive/2026-09-02-alert1-exec12-guide-orders.md)
+- **회귀 여력 v2.13/v2.14 · 결재 6건(v2.15) · SCREEN-1 하드 필터(v2.16) (9/3~9/4)** — 목표가 앵커를 자기 역사
+  5년 PBR 밴드 중앙 + 정당 PBR 캡으로 교체·원장 초기화 재심사(승인 20)·가이드 7종=실보유 7종; 과열 산업 가이드 등록 제외·
+  승인 없는 실보유 편입 보류·매수는 운영자 재량(자동 DCA 보류); 설계서 R4 탈락 필터 중 미구현이던 관리종목·거래정지·감사의견
+  비적정을 **소스 실측(KIS `inquire-price` 상태 필드·DART 감사의견 API) 후 적용**(수집기 2종 → `data/status.sqlite`,
+  단독 탈락 10). 검증: pytest 전체·mypy 215 clean.
+  상세 → [archive](../history/work/archive/2026-09-03-own-history-pbr-band.md) ·
+  [archive](../history/work/archive/2026-09-04-decisions-v215-screen1-v216.md)
