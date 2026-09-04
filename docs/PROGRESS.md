@@ -145,3 +145,7 @@ EXEC-9 시간손절 창, EXEC-10 아침 규율·모멘텀, EXEC-11 저잔고·�
   (헌법 표적 = 물적분할 후 자회사 상장). 검증: pytest 709·mypy 217 clean.
   상세 → [research](research/2026-09-04-collect5-reit-dividends-split-method.md) ·
   [archive](../history/work/archive/2026-09-04-collect5-v218-reit-split.md)
+- **P-20 ④ 지배주주 기준 완결(v2.19) (9/4 오후)** — 연간 전체 재무제표 1콜 백필(지배주주지분·귀속 순이익·접수일, 11,000콜·적재
+  8,752·잔여 4,871은 weekly 갭 채움) → 밴드 분모 전연도 승격(원장·큐 122/169종)·PER 귀속 분모(변경 860, 고PER 교차 16)·as-of
+  적용일 = 접수일 다음날. 발견: 정당 PBR 캡 ROE 기준 혼합 → P-20 ⑧ 결재 안건. 검증: pytest 715·mypy 217 clean.
+  상세 → [archive](../history/work/archive/2026-09-04-p20-4-owner-equity-backfill.md)
