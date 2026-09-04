@@ -149,3 +149,5 @@ EXEC-9 시간손절 창, EXEC-10 아침 규율·모멘텀, EXEC-11 저잔고·�
   8,752·잔여 4,871은 weekly 갭 채움) → 밴드 분모 전연도 승격(원장·큐 122/169종)·PER 귀속 분모(변경 860, 고PER 교차 16)·as-of
   적용일 = 접수일 다음날. 발견: 정당 PBR 캡 ROE 기준 혼합 → P-20 ⑧ 결재 안건. 검증: pytest 715·mypy 217 clean.
   상세 → [archive](../history/work/archive/2026-09-04-p20-4-owner-equity-backfill.md)
+- **P-20 ⑧ 캡 ROE 기준 정합(v2.20) (9/4 오후)** — 승격 밴드의 정당 PBR 캡 ROE = 귀속 순이익÷지배주주지분 5y 중앙(비지배 ≤0.1%는
+  연결 순이익 사용). 캡 ROE 지배주주 122/170, 성우하이텍 승인 보류 파생. pytest 718·mypy clean. 상세 → 위 P-20 ④ archive §6.
