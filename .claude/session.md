@@ -40,6 +40,10 @@
   탈락이 아니라 종목별 미적용 고지. `data/status.sqlite`(eod `status-v3`·weekly `audit`)
 - **브로커 대사 미완(PIVOT-6)**: 7/15 이후 방치된 보유(피에스케이 5주·S-Oil 4주)+조건주문 — Phase 0에서 실측 대사 전까지 브로커 상태 추측 금지
 - 국내 EOD는 +1영업일 공개. 정책 파라미터(부록 B)는 운영자 결재 전 임의 기본값 금지
+- **cron list의 `error`는 Python 실패가 아닐 수 있다** — 9/1·9/3 eod-v3 error = 트리거 모델 빈 답변(Python rc=0·보고 발송·감시 ok).
+  진단은 `runs.sqlite` → `.runtime/openclaw/agents/main/sessions/<run>.jsonl`(stopReason·usage) 순, 쿼터 추측 금지. 9/4 exec stdio
+  분리+고정 답변으로 교정(sync.py) — 재발 시 트랜스크립트부터
+- **보유 종목 상태 전이 = P1**(v2.17, 9/4): eod `status-v3`·weekly `audit` 끝에 `holding_status` 감시, 자동 청산 없음
 - 지시 인코딩 시 **결과를 지시자 언어로 에코백**(7/14 규칙)
 
 ### next

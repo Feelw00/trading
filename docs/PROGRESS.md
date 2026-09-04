@@ -134,3 +134,8 @@ EXEC-9 시간손절 창, EXEC-10 아침 규율·모멘텀, EXEC-11 저잔고·�
   단독 탈락 10). 검증: pytest 전체·mypy 215 clean.
   상세 → [archive](../history/work/archive/2026-09-03-own-history-pbr-band.md) ·
   [archive](../history/work/archive/2026-09-04-decisions-v215-screen1-v216.md)
+- **결재 3건(v2.17) + 배당수익률 액면 오기재 가드 + 추가 매수 반영 (9/4)** — 보유 종목 상태 전이 P1(`holding_status.py`,
+  eod/weekly 끝 감시·중복 방지)·PIVOT-10 잔여 종결·eod-v3 트리거 턴 빈 답변 교정(exec stdio 분리, cron 5잡 재등록); DART 배당
+  수익률 액면 오기재 12종 23행 가드(판정 미개입, /picks 표시 교정); 운영자 추가 매수(7종 수량 증가, 평가 61→163만원) → 조건주문
+  7건 재등록(시작가 불변). 검증: pytest 전체·mypy 217 clean.
+  상세 → [archive](../history/work/archive/2026-09-04-holding-status-p1-dividend-guard.md)
