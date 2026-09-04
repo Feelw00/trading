@@ -16,7 +16,8 @@
 import os
 import sqlite3
 import sys
-from dataclasses import dataclass
+from collections.abc import Collection
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,11 @@ CREATE TABLE IF NOT EXISTS fin_facts (
 CREATE TABLE IF NOT EXISTS fin_attempts (
   srtn_cd TEXT NOT NULL, bsns_year TEXT NOT NULL, reprt_code TEXT NOT NULL,
   status TEXT NOT NULL, fetched_at TEXT,
+  UNIQUE(srtn_cd, bsns_year, reprt_code)
+);
+CREATE TABLE IF NOT EXISTS fin_reports (
+  srtn_cd TEXT NOT NULL, bsns_year TEXT NOT NULL, reprt_code TEXT NOT NULL,
+  rcept_no TEXT NOT NULL, source TEXT, fetched_at TEXT,
   UNIQUE(srtn_cd, bsns_year, reprt_code)
 );
 """
@@ -89,6 +95,9 @@ class FinSnapshot:
     # 재무 통화(실관측: KRW 외 USD·CNY·JPY·GBP·HKD — 외국 상장 9xxxxx) —
     # 원화 시총과 혼합 금지(밸류에이션에서 제외 판단 원료)
     currency: str | None = None
+    # P-20 ④(2026-09-04): 지배기업 소유주지분 귀속 당기순이익(연간 IS,
+    # ifrs-full_ProfitLossAttributableToOwnersOfParent) — PER 분모. 미수집·OFS는 None.
+    owner_net_income: float | None = None
 
     @property
     def rev_yoy(self) -> float | None:
@@ -204,10 +213,14 @@ class FinStore:
         liab, _ = _get("부채총계")
         eq, _ = _get("자본총계")
         ni, ni_p = _get_prefix("당기순이익")
-        own, _ = _get_prefix("지배기업")  # COLLECT-6: "지배기업 소유주지분"(실관측 계정명)
+        # COLLECT-6·P-20 ④: 정규화 계정명 **정확** 매칭 — DART 원문은 BS 지배주주지분과 IS 귀속 순이익이
+        # 같은 계정명("지배기업 소유주지분")이라 prefix 매칭은 둘을 섞는다. 저장 시 IS는 OWNER_NI_NM으로 박제.
+        own, _ = _get(OWNER_EQUITY_NM)
+        own_ni, _ = _get(OWNER_NI_NM)
         return FinSnapshot(
-            srtn_cd, year, reprt, fs_div, rev, rev_p, op, op_p, liab, eq, ni, ni_p, own,
-            currency,
+            srtn_cd, year, reprt, fs_div, rev, rev_p, op, op_p, liab, eq,
+            net_income=ni, net_income_prev=ni_p, owner_equity=own, currency=currency,
+            owner_net_income=own_ni,
         )
 
     def symbols(self) -> list[str]:
@@ -264,9 +277,42 @@ class FinStore:
                         "net_income": _pick(None, "당기순이익"),
                         # 금융 프로파일(v1.4) top line — 은행 실관측 계정 "순이자손익"
                         "net_interest": _pick("순이자손익"),
+                        # P-20 ④: 지배주주지분(BS)·귀속 순이익(IS) — 밴드 분모 승격·PER 분모(정확 매칭)
+                        "owner_equity": _pick(OWNER_EQUITY_NM),
+                        "owner_net_income": _pick(OWNER_NI_NM),
                     },
                 )
             )
+        return out
+
+    # --- 사업보고서 접수일(P-20 ④ — 연간 재무 as-of 적용일) ---
+    def record_report(self, srtn_cd: str, year: str, reprt: str, rcept_no: str) -> None:
+        if not rcept_no:
+            return
+        self._conn.execute(
+            "INSERT OR IGNORE INTO fin_reports VALUES (?,?,?,?,?,?)",
+            (srtn_cd, year, reprt, rcept_no, SOURCE_ALL, now_kst().isoformat()),
+        )
+        self._conn.commit()
+
+    def annual_receipt_dates(self, srtn_cd: str) -> dict[int, str]:
+        """연간(11011) 사업보고서 접수일 {사업연도: YYYYMMDD} — 접수번호 앞 8자리(실관측 14자리 = 접수일+일련)."""
+        out: dict[int, str] = {}
+        for year, rn in self._conn.execute(
+            "SELECT bsns_year, rcept_no FROM fin_reports WHERE srtn_cd=? AND reprt_code='11011'", (srtn_cd,)
+        ):
+            d = str(rn)[:8]
+            if len(d) == 8 and d.isdigit():
+                out[int(year)] = d
+        return out
+
+    def annual_apply_dates(self, srtn_cd: str) -> dict[int, str]:
+        """연간 재무 적용 시작일 {사업연도: YYYYMMDD} = 접수일 **다음날**(접수 당일 장중 공개 가능성 배제 — 보수)."""
+        from datetime import timedelta
+
+        out: dict[int, str] = {}
+        for y, d in self.annual_receipt_dates(srtn_cd).items():
+            out[y] = (datetime.strptime(d, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
         return out
 
     def annual_net_incomes(self, srtn_cd: str) -> list[tuple[str, float | None]]:
@@ -331,6 +377,12 @@ def collect_fins(
 
 OWNER_EQUITY_NM = "지배기업 소유주지분"      # 실관측 계정명(2026-09-01, COLLECT-6)
 OWNER_EQUITY_ID = "ifrs-full_EquityAttributableToOwnersOfParent"
+# P-20 ④(실관측 2026-09-04, 삼성전자 2025 CFS): IS 행 account_id 아래, account_nm은 BS와 **동일**("지배기업 소유주지분")
+# → 저장은 정규화 이름(OWNER_NI_NM)으로, 매칭은 account_id로만. CIS(단일 포괄손익계산서)에도 같은 ID로 올 수 있다.
+OWNER_NI_ID = "ifrs-full_ProfitLossAttributableToOwnersOfParent"
+OWNER_NI_NM = "지배기업 소유주지분 귀속 당기순이익"
+SOURCE_ALL = "dart:fnlttSinglAcntAll"
+OWNER_ATTEMPT_SUFFIX = "-own"   # fin_attempts reprt_code 키: '11011-own' (1단계 '-all'과 비충돌)
 
 
 def collect_owner_equity(
@@ -404,6 +456,109 @@ def collect_owner_equity(
         store.record_attempt(srtn_cd, snap.bsns_year, attempt_reprt, "ok")
         loaded += 1
     return loaded, skipped, errors
+
+
+@dataclass
+class OwnerBackfillResult:
+    calls: int = 0        # 실제 API 호출 수(예산 대비)
+    loaded: int = 0       # 지배주주지분 또는 귀속 순이익을 1건 이상 적재한 (종목, 연도)
+    no_account: int = 0   # CFS는 있으나 두 계정 모두 부재
+    empty: int = 0        # CFS 응답 없음(별도만 공시 — 비지배지분 없음)
+    remaining: int = 0    # 예산 소진으로 남긴 (종목, 연도)
+    errors: list[str] = field(default_factory=list)
+
+
+def _pick_owner_rows(rows: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """전체 재무제표 행에서 (BS 지배주주지분, IS 귀속 당기순이익) — IS 우선, 없으면 CIS. 순수."""
+    own = next(
+        (r for r in rows if str(r.get("sj_div")) == "BS"
+         and (str(r.get("account_id")) == OWNER_EQUITY_ID or str(r.get("account_nm", "")).startswith("지배기업"))),
+        None,
+    )
+    ni_rows = [r for r in rows if str(r.get("account_id")) == OWNER_NI_ID and str(r.get("sj_div")) in ("IS", "CIS")]
+    ni_rows.sort(key=lambda r: 0 if str(r.get("sj_div")) == "IS" else 1)
+    return own, (ni_rows[0] if ni_rows else None)
+
+
+def backfill_owner_annuals(
+    dart: DartClient,
+    store: FinStore,
+    corp_map: dict[str, tuple[str, str]],
+    stocks: list[tuple[str, str]],
+    *,
+    years: int,
+    max_calls: int,
+    priority: Collection[str] = (),
+    now: datetime | None = None,
+) -> OwnerBackfillResult:
+    """연간(11011) 지배주주지분(BS)·귀속 순이익(IS)·접수일 백필 — P-20 ④(운영자 지시 2026-09-04).
+
+    작업 순서(예산 안에서): ① ``priority`` 종목(호출자 = R4 통과 — 밴드 분모 승격은 창 안 **전 연도**가 있어야
+    하므로) × 대상 연도 전부 → ② 나머지 종목은 **최신 사업연도**부터 연도 바깥 루프(PER 분모가 최신 연도만
+    쓰므로). 연간 주요계정(11011)이 'ok'인 (종목, 연도)만 대상(주요계정이 없으면 전체 재무제표도 없다 — 무호출).
+    멱등 키 fin_attempts '11011-own'(ok·no-account·empty). CollectError(한도 초과 등)는 즉시 중단 — 시도 미기록이라
+    다음 실행이 이어간다.
+    """
+    year_now = (now or now_kst()).year
+    target_years = [str(y) for y in range(year_now - 1, year_now - 1 - years, -1)]
+    key = f"11011{OWNER_ATTEMPT_SUFFIX}"
+    res = OwnerBackfillResult()
+    work: list[tuple[str, str, str, str]] = []  # (srtn_cd, name, corp, year)
+
+    def _add(srtn_cd: str, name: str, year: str) -> None:
+        ent = corp_map.get(srtn_cd)
+        if not ent or not ent[0]:
+            return
+        if store.attempted(srtn_cd, year, "11011") != "ok":
+            return
+        if store.attempted(srtn_cd, year, key) is not None:
+            return
+        work.append((srtn_cd, name, ent[0], year))
+
+    pri = set(priority)
+    for srtn_cd, name in stocks:
+        if srtn_cd in pri:
+            for year in target_years:
+                _add(srtn_cd, name, year)
+    for year in target_years:
+        for srtn_cd, name in stocks:
+            if srtn_cd not in pri:
+                _add(srtn_cd, name, year)
+    for i, (srtn_cd, name, corp, year) in enumerate(work):
+        if res.calls >= max_calls:
+            res.remaining = len(work) - i
+            break
+        try:
+            rows = dart.financials_all(corp, year, "11011", "CFS")
+        except CollectError as e:
+            res.errors.append(f"{name}({srtn_cd}) {year}: {e}")
+            res.remaining = len(work) - i
+            break
+        res.calls += 1
+        if not rows:
+            store.record_attempt(srtn_cd, year, key, "empty")
+            res.empty += 1
+            continue
+        own, ni = _pick_owner_rows(rows)
+        facts: list[dict[str, Any]] = []
+        if own is not None and parse_amount(own.get("thstrm_amount")) is not None:
+            facts.append({"fs_div": "CFS", "sj_div": "BS", "account_nm": OWNER_EQUITY_NM,
+                          "thstrm_amount": own.get("thstrm_amount"), "frmtrm_amount": own.get("frmtrm_amount"),
+                          "currency": own.get("currency")})
+        if ni is not None and parse_amount(ni.get("thstrm_amount")) is not None:
+            facts.append({"fs_div": "CFS", "sj_div": "IS", "account_nm": OWNER_NI_NM,
+                          "thstrm_amount": ni.get("thstrm_amount"), "frmtrm_amount": ni.get("frmtrm_amount"),
+                          "currency": ni.get("currency")})
+        rcept = next((str(r.get("rcept_no")) for r in rows if r.get("rcept_no")), "")
+        store.record_report(srtn_cd, year, "11011", rcept)
+        if not facts:
+            store.record_attempt(srtn_cd, year, key, "no-account")
+            res.no_account += 1
+            continue
+        store.upsert(srtn_cd, year, "11011", facts)
+        store.record_attempt(srtn_cd, year, key, "ok")
+        res.loaded += 1
+    return res
 
 
 def backfill_annuals(
@@ -508,7 +663,22 @@ def main() -> int:
     return 0
 
 
-__all__ = ["FinSnapshot", "FinStore", "backfill_annuals", "collect_fins", "parse_amount", "DEFAULT_DB"]
+__all__ = [
+    "DEFAULT_DB",
+    "OWNER_ATTEMPT_SUFFIX",
+    "OWNER_EQUITY_ID",
+    "OWNER_EQUITY_NM",
+    "OWNER_NI_ID",
+    "OWNER_NI_NM",
+    "FinSnapshot",
+    "FinStore",
+    "OwnerBackfillResult",
+    "backfill_annuals",
+    "backfill_owner_annuals",
+    "collect_fins",
+    "collect_owner_equity",
+    "parse_amount",
+]
 
 
 if __name__ == "__main__":

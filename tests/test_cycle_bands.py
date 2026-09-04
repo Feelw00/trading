@@ -117,6 +117,7 @@ def test_annual_series_extraction(tmp_path: Path) -> None:
     _annual(fins, "000001", "2024", rev="900", op="45", eq="500", ni="-40")
     series = dict(fins.annual_series("000001"))
     assert series["2024"] == {"revenue": 900.0, "op_income": 45.0, "equity": 500.0,
-                              "net_income": -40.0, "net_interest": None}
+                              "net_income": -40.0, "net_interest": None,
+                              "owner_equity": None, "owner_net_income": None}  # P-20 ④ 키(미수집 None)
     assert fins.annual_net_incomes("000001") == [("2024", -40.0)]
     fins.close()

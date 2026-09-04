@@ -1,7 +1,9 @@
 """재무 캐시(fins) — 파싱·스냅샷·사다리 수집 테스트. 픽스처는 2026-07-11 실호출 관측 형태."""
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from trading.collectors.fins import FinStore, collect_fins, parse_amount
 
@@ -230,3 +232,95 @@ def test_owner_equity_pbr_priority_and_fallback() -> None:
         annual_equity=None,
     )
     assert fb.pbr is not None and fb.pbr < 0.1            # 미수집 폴백 = 자본총계
+
+
+def test_backfill_owner_annuals_stores_equity_income_receipt_and_respects_budget(tmp_path: Path) -> None:
+    """P-20 ④: 연간 전체 재무제표 1콜 → 지배주주지분(BS)·귀속 순이익(IS, 계정명은 BS와 동일 → ID 매칭)·접수일.
+    예산 소진 시 남은 작업은 시도 미기록(다음 실행이 이어감). 스냅샷·연간 시계열 정확 매칭."""
+    from trading.collectors.dart import DartClient
+    from trading.collectors.fins import (
+        OWNER_NI_NM,
+        FinStore,
+        backfill_owner_annuals,
+    )
+
+    store = FinStore(tmp_path / "f.sqlite")
+    for sym in ("005930", "001390"):
+        for year in ("2025", "2024"):
+            store.upsert(sym, year, "11011", [
+                {"fs_div": "CFS", "sj_div": "BS", "account_nm": "자본총계", "thstrm_amount": "1,000"},
+                {"fs_div": "CFS", "sj_div": "IS", "account_nm": "당기순이익", "thstrm_amount": "100"},
+            ])
+            store.record_attempt(sym, year, "11011", "ok")
+    store.record_attempt("001390", "2023", "11011", "empty")  # 주요계정 없음 → 무호출
+
+    full = {"status": "000", "list": [
+        {"rcept_no": "20260310002820", "sj_div": "BS", "account_id": "ifrs-full_Equity", "account_nm": "자본총계", "thstrm_amount": "1,000"},
+        {"rcept_no": "20260310002820", "sj_div": "BS", "account_id": "ifrs-full_EquityAttributableToOwnersOfParent",
+         "account_nm": "지배기업 소유주지분", "thstrm_amount": "800"},
+        {"rcept_no": "20260310002820", "sj_div": "IS", "account_id": "ifrs-full_ProfitLoss", "account_nm": "당기순이익", "thstrm_amount": "100"},
+        {"rcept_no": "20260310002820", "sj_div": "IS", "account_id": "ifrs-full_ProfitLossAttributableToOwnersOfParent",
+         "account_nm": "지배기업 소유주지분", "thstrm_amount": "90"},
+        {"rcept_no": "20260310002820", "sj_div": "CIS", "account_id": "ifrs-full_ProfitLossAttributableToOwnersOfParent",
+         "account_nm": "지배기업 소유주지분", "thstrm_amount": "95"},  # IS 우선 — CIS는 폴백
+    ]}
+    calls: list[str] = []
+
+    def fake(url: str) -> dict[str, Any]:
+        calls.append(url)
+        return full if "fnlttSinglAcntAll" in url else {"status": "013"}
+
+    dart = DartClient("k", json_fetch=fake)
+    cmap = {"005930": ("00126380", "삼성전자"), "001390": ("00101220", "KG케미칼")}
+    stocks = [("005930", "삼성전자"), ("001390", "KG케미칼")]
+    res = backfill_owner_annuals(dart, store, cmap, stocks, years=3, max_calls=3, now=datetime(2026, 9, 4, tzinfo=ZoneInfo("Asia/Seoul")))
+    # 작업 순서: 2025(삼전·KG) → 2024(삼전) 까지 3콜, 2024 KG는 잔여
+    assert (res.calls, res.loaded, res.remaining, res.errors) == (3, 3, 1, [])
+    assert "bsns_year=2025" in calls[0] and "bsns_year=2025" in calls[1] and "bsns_year=2024" in calls[2]
+    snap = store.snapshot_for("005930")
+    assert snap is not None and snap.owner_equity == 800.0 and snap.owner_net_income == 90.0 and snap.equity == 1000.0
+    series = dict(store.annual_series("005930"))
+    assert series["2025"]["owner_equity"] == 800.0 and series["2025"]["owner_net_income"] == 90.0
+    assert series["2025"]["equity"] == 1000.0 and series["2025"]["net_income"] == 100.0
+    assert store.annual_receipt_dates("005930") == {2025: "20260310", 2024: "20260310"}
+    assert store.annual_apply_dates("005930")[2025] == "20260311"  # 접수일 다음날
+    assert store.attempted("001390", "2024", "11011-own") is None  # 예산 소진 — 미기록
+    # 우선순위 종목(R4 통과)은 전 연도를 먼저 — KG를 priority로 주면 순서가 (KG 2024) 먼저
+    calls.clear()
+    res_p = backfill_owner_annuals(dart, store, cmap, stocks, years=3, max_calls=1, priority={"001390"},
+                                   now=datetime(2026, 9, 4, tzinfo=ZoneInfo("Asia/Seoul")))
+    assert res_p.calls == 1 and "corp_code=00101220" in calls[0] and "bsns_year=2024" in calls[0]
+    store._conn.execute("DELETE FROM fin_attempts WHERE srtn_cd='001390' AND bsns_year='2024' AND reprt_code='11011-own'")
+    store._conn.execute("DELETE FROM fin_facts WHERE srtn_cd='001390' AND bsns_year='2024' AND account_nm LIKE '지배기업%'")
+    store._conn.commit()
+    # 재실행: 잔여 1건만 호출
+    calls.clear()
+    res2 = backfill_owner_annuals(dart, store, cmap, stocks, years=3, max_calls=10, now=datetime(2026, 9, 4, tzinfo=ZoneInfo("Asia/Seoul")))
+    assert (res2.calls, res2.loaded, res2.remaining) == (1, 1, 0) and len(calls) == 1
+    # OFS만 공시(CFS 응답 없음) → empty 기록, 계정 부재 → no-account
+    store.upsert("009999", "2025", "11011", [{"fs_div": "OFS", "sj_div": "BS", "account_nm": "자본총계", "thstrm_amount": "5"}])
+    store.record_attempt("009999", "2025", "11011", "ok")
+    dart_empty = DartClient("k", json_fetch=lambda url: {"status": "013"})
+    r3 = backfill_owner_annuals(dart_empty, store, {"009999": ("00000009", "별도")}, [("009999", "별도")], years=1, max_calls=5,
+                                now=datetime(2026, 9, 4, tzinfo=ZoneInfo("Asia/Seoul")))
+    assert r3.empty == 1 and store.attempted("009999", "2025", "11011-own") == "empty"
+    assert OWNER_NI_NM not in {r[0] for r in store._conn.execute("SELECT account_nm FROM fin_facts WHERE srtn_cd='009999'")}
+    store.close()
+
+
+def test_snapshot_exact_match_does_not_confuse_owner_equity_with_owner_income(tmp_path: Path) -> None:
+    from trading.collectors.fins import OWNER_EQUITY_NM, OWNER_NI_NM, FinStore
+
+    store = FinStore(tmp_path / "f.sqlite")
+    store.upsert("000001", "2025", "11011", [
+        {"fs_div": "CFS", "sj_div": "BS", "account_nm": "자본총계", "thstrm_amount": "1,000"},
+        {"fs_div": "CFS", "sj_div": "IS", "account_nm": OWNER_NI_NM, "thstrm_amount": "90"},
+    ])
+    snap = store.snapshot_for("000001")
+    assert snap is not None and snap.owner_equity is None and snap.owner_net_income == 90.0
+    store.upsert("000001", "2025", "11011", [
+        {"fs_div": "CFS", "sj_div": "BS", "account_nm": OWNER_EQUITY_NM, "thstrm_amount": "800"},
+    ])
+    snap = store.snapshot_for("000001")
+    assert snap is not None and snap.owner_equity == 800.0 and snap.owner_net_income == 90.0
+    store.close()

@@ -424,9 +424,10 @@ def _holding_status_check(kind: str) -> None:
 
 
 def _owner_equity_v3() -> int:
+    """지배주주지분 최신 스냅샷(COLLECT-6) + 연간 백필 갭 채움(P-20 ④, 회당 기본 예산 — 정기 경로는 느리게)."""
     from trading.collect_owner_equity import main as oe_main
 
-    return oe_main()
+    return oe_main([])
 
 
 def _returns_v3() -> int:

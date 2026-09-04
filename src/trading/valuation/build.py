@@ -120,6 +120,7 @@ def build_valuation_records(
             annual_revenue=annual.revenue if annual else None,
             annual_equity=annual.equity if annual else None,
             owner_equity=snap.owner_equity,  # COLLECT-6: PBR만 지배주주지분 우선
+            annual_owner_net_income=annual.owner_net_income if annual else None,  # P-20 ④: PER 분모
         )
         annuals = fin_store.annual_series(srtn_cd)
         losses, observed = loss_years([vals["net_income"] for _year, vals in annuals])
@@ -128,6 +129,8 @@ def build_valuation_records(
         basis = f"BS {snap.bsns_year}/{snap.reprt_code}"
         if snap.owner_equity is not None:
             basis += " · 지배주주지분"  # COLLECT-6: PBR 분모 표기(폴백=자본총계, 미표기)
+        if annual is not None and annual.owner_net_income is not None:
+            basis += " · PER 지배주주귀속"  # P-20 ④: PER 분모 표기(폴백=연결 순이익, 미표기)
         if annual is not None and annual is not snap:
             basis += f" · IS {annual.bsns_year}/{annual.reprt_code}"
         rows.append(

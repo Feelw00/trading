@@ -15,10 +15,16 @@
   폴백은 `FinStore.annual_series`와 동일(재사용 — 대한약품처럼 별도만 공시하는 종목).
   ※ 3월 결산 등 비12월 결산 종목은 4/1 규칙이 수개월 룩어헤드가 될 수 있다(소수 — 알려진
   단순화, 결산월 수집 시 정밀화).
-- **현재점도 같은 잣대**(최신 거래일 종가 × 주식수 ÷ 연간 자본총계). 밸류에이션 레코드의
+- **현재점도 같은 잣대**(최신 거래일 종가 × 주식수 ÷ 연간 자본). 밸류에이션 레코드의
   PBR(지배주주지분·최신 분기 BS, COLLECT-6)과 기준이 다르지만 여력은 **비율**이라 대부분
-  상쇄된다. 과거 지배주주지분이 DB에 없어(COLLECT-6은 최신 스냅샷만 수집) 자본총계로
-  통일 — 백필 후 승격은 OPEN_QUESTIONS COLLECT-6 후속.
+  상쇄된다.
+- **분모 승격(P-20 ④, 2026-09-04):** 연간 **지배기업 소유주지분**이 밴드에 걸릴 수 있는 최근
+  ``BAND_FISCAL_YEARS`` 사업연도 전부에 있을 때만 현재점·과거점을 **동시에** 지배주주지분으로
+  바꾼다(한쪽만 바꾸면 편향). 하나라도 빠지면 전부 자본총계 유지(`equity_basis`에 표기).
+- **적용일 정밀화(P-20 ④):** 연간 재무의 적용 시작일은 **사업보고서 접수일 다음날**
+  (`FinStore.annual_receipt_dates` — 전체 재무제표 응답의 ``rcept_no`` 앞 8자리). 12월 결산은
+  3월 중하순, 3월·6월 결산은 결산 후 3개월 시점이 되어 4/1 단순화의 룩어헤드가 사라진다.
+  접수일이 없는 연도는 종전 y+1년 4월 1일 규칙. 정정 사업보고서는 접수일이 늦어져 보수적.
 - 창 = 최근 ``WINDOW_DAYS``(1,250 거래일 ≈ 5년 — 사이클 한 바퀴를 담고 2021 버블은 중앙값이
   완화. 운영자 결재 2026-09-03: 3년·가용 전체 대안 중 5년 고정). 표본 < ``MIN_DAYS``(500 ≈ 2년)
   는 결측 — 신규 상장은 승인 노출·페이퍼 등록이 막힌다(섹터 폴백 없음: 구 결함 재유입 금지).
@@ -37,8 +43,11 @@ from trading.collectors.fins import FinStore
 
 WINDOW_DAYS = 1250          # ≈ 5년 거래일(운영자 결재 2026-09-03)
 MIN_DAYS = 500              # ≈ 2년 미만 이력은 결측
-ANNUAL_APPLY_MMDD = "0401"  # 사업연도 y의 연간 자본총계 적용 시작 = y+1년 4월 1일
+ANNUAL_APPLY_MMDD = "0401"  # 사업연도 y의 연간 자본총계 적용 시작(기본) = y+1년 4월 1일
+BAND_FISCAL_YEARS = 7       # 5년 창 + as-of 시차가 닿는 사업연도 수 — 분모 승격 판정 범위
 MARKET_DB = Path("data") / "market.sqlite"
+BASIS_TOTAL = "연간 자본총계"
+BASIS_OWNER = "연간 지배주주지분"
 
 
 @dataclass(frozen=True)
@@ -114,14 +123,32 @@ def fiscal_year_asof(bas_dt: str) -> int:
     return y - 1 if bas_dt[4:8] >= ANNUAL_APPLY_MMDD else y - 2
 
 
-def equity_asof(equities: Mapping[int, float], bas_dt: str) -> tuple[int, float] | None:
-    """as-of 사업연도의 (연도, 자본총계). 결측이면 한 해 폴백, 그래도 없거나 ≤0이면 None."""
-    fy = fiscal_year_asof(bas_dt)
-    for y in (fy, fy - 1):
-        e = equities.get(y)
-        if e is not None and e > 0:
-            return y, e
-    return None
+def apply_date(year: int, apply_from: Mapping[int, str] | None = None) -> str:
+    """사업연도 ``year`` 연간 재무의 적용 시작일(YYYYMMDD) — 접수일 다음날이 있으면 그것, 없으면 y+1년 4/1."""
+    if apply_from is not None:
+        d = apply_from.get(year)
+        if d:
+            return d
+    return f"{year + 1}{ANNUAL_APPLY_MMDD}"
+
+
+def equity_asof(
+    equities: Mapping[int, float], bas_dt: str, apply_from: Mapping[int, str] | None = None,
+) -> tuple[int, float] | None:
+    """as-of 사업연도의 (연도, 자본). 거래일에 이미 공개된(적용일 ≤ 거래일) 연도 중 최신.
+
+    결측이면 한 해 폴백(기본 규칙 기준 전전년까지), 그래도 없거나 ≤0이면 None(지어내지 않음).
+    ``apply_from``(P-20 ④)이 있으면 연도별 접수일 다음날을 적용일로 쓴다 — 12월 결산은 4/1보다
+    앞당겨지고, 비12월 결산은 실제 공개 시점으로 늦춰진다."""
+    floor = fiscal_year_asof(bas_dt) - 1
+    ok = [
+        y for y, e in equities.items()
+        if e is not None and e > 0 and y >= floor and apply_date(y, apply_from) <= bas_dt
+    ]
+    if not ok:
+        return None
+    y = max(ok)
+    return y, equities[y]
 
 
 def build_band(
@@ -131,11 +158,13 @@ def build_band(
     *,
     window_days: int = WINDOW_DAYS,
     min_days: int = MIN_DAYS,
+    apply_from: Mapping[int, str] | None = None,
+    basis_label: str = BASIS_TOTAL,
 ) -> PbrBand | None:
-    """일별 (bas_dt, 종가, 상장주식수) — **최신순** — 와 연도별 자본총계 → 밴드.
+    """일별 (bas_dt, 종가, 상장주식수) — **최신순** — 와 연도별 자본 → 밴드.
 
     창은 최근 ``window_days`` 거래일(자본 결측일은 창 안에서 제외만, 창을 늘리지 않는다).
-    표본이 ``min_days`` 미만이면 None.
+    표본이 ``min_days`` 미만이면 None. ``apply_from``·``basis_label``은 P-20 ④(접수일 적용·분모 승격).
     """
     series: list[float] = []
     basis: str | None = None
@@ -143,12 +172,12 @@ def build_band(
     for bas_dt, close, shares in quotes[:window_days]:
         if close <= 0 or shares <= 0:
             continue
-        eq = equity_asof(equities, bas_dt)
+        eq = equity_asof(equities, bas_dt, apply_from)
         if eq is None:
             continue
         series.append(close * shares / eq[1])
         if basis is None:
-            basis = f"FY{eq[0]} 연간 자본총계"
+            basis = f"FY{eq[0]} {basis_label}"
             last_dt = bas_dt
     if len(series) < min_days or basis is None or last_dt is None:
         return None
@@ -159,13 +188,30 @@ def build_band(
     )
 
 
-def _annual_equities(fins: FinStore, symbol: str) -> dict[int, float]:
-    out: dict[int, float] = {}
+def choose_equities(
+    total: Mapping[int, float], owner: Mapping[int, float], *, fiscal_years: int = BAND_FISCAL_YEARS,
+) -> tuple[dict[int, float], str]:
+    """분모 승격 판정(순수): 자본총계가 있는 최근 ``fiscal_years`` 연도 **전부**에 지배주주지분이 있으면
+    그 연도들을 지배주주지분으로(현재점·과거점 동시), 아니면 자본총계 그대로. (연도→값, 라벨)."""
+    recent = sorted((y for y, e in total.items() if e > 0), reverse=True)[:fiscal_years]
+    if recent and all(owner.get(y, 0.0) > 0 for y in recent):
+        return {y: owner[y] for y in recent}, BASIS_OWNER
+    return {y: e for y, e in total.items() if e > 0}, BASIS_TOTAL
+
+
+def _annual_equities(fins: FinStore, symbol: str) -> tuple[dict[int, float], dict[int, str], str]:
+    """연도별 (자본, 적용일, 분모 라벨) — 자본총계·지배주주지분(P-20 ④ 승격 판정)·접수일 다음날."""
+    total: dict[int, float] = {}
+    owner: dict[int, float] = {}
     for year, acc in fins.annual_series(symbol):
         e = acc.get("equity")
         if e is not None and e > 0:
-            out[int(year)] = float(e)
-    return out
+            total[int(year)] = float(e)
+        o = acc.get("owner_equity")
+        if o is not None and o > 0:
+            owner[int(year)] = float(o)
+    equities, label = choose_equities(total, owner)
+    return equities, fins.annual_apply_dates(symbol), label
 
 
 _IN_CHUNK = 500  # SQLite 바인딩 상한(999) 아래
@@ -214,19 +260,21 @@ def pbr_bands(
     mconn = sqlite3.connect(f"file:{market_db}?mode=ro", uri=True)
     try:
         quotes = _quotes_desc_many(mconn, syms, window_days)
-        return {
-            s: build_band(
-                s, quotes[s], _annual_equities(fins, s),
-                window_days=window_days, min_days=min_days,
+        out: dict[str, PbrBand | None] = {}
+        for s in syms:
+            equities, apply_from, label = _annual_equities(fins, s)
+            out[s] = build_band(
+                s, quotes[s], equities,
+                window_days=window_days, min_days=min_days, apply_from=apply_from, basis_label=label,
             )
-            for s in syms
-        }
+        return out
     finally:
         mconn.close()
         fins.close()
 
 
 __all__ = [
+    "BAND_FISCAL_YEARS", "BASIS_OWNER", "BASIS_TOTAL", "apply_date", "choose_equities",
     "JUSTIFIED_COE", "JUSTIFIED_G", "MIN_DAYS", "WINDOW_DAYS", "PbrBand", "TargetPbr",
     "build_band", "equity_asof", "fiscal_year_asof", "justified_pbr", "pbr_bands",
     "regression_upside", "target_pbr",

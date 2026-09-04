@@ -136,3 +136,45 @@ def test_justified_pbr_and_target_cap() -> None:
     assert regression_upside(band, 0.055) == pytest.approx(0.0)    # 0.5 / 0.5 − 1 — 제값
     assert regression_upside(band, 0.005) == pytest.approx(-100.0) # 정당 0 → 게이트 미달
     assert regression_upside(band, None) is None
+
+
+def test_equity_asof_with_receipt_dates_removes_lookahead() -> None:
+    """P-20 ④: 접수일 다음날 적용 — 12월 결산은 4/1보다 앞당겨지고, 3월 결산은 실제 공개(6월 말)로 늦춰진다."""
+    from trading.valuation.band import apply_date
+
+    eq = {2025: 300.0, 2024: 200.0}
+    dec = {2025: "20260320", 2024: "20250318"}          # 12월 결산: 3/19 접수 → 3/20 적용
+    assert apply_date(2025, dec) == "20260320" and apply_date(2023, dec) == "20240401"  # 접수일 없으면 기본 4/1
+    assert equity_asof(eq, "20260325", dec) == (2025, 300.0)   # 기본 규칙(4/1)이라면 2024였을 날
+    assert equity_asof(eq, "20260319", dec) == (2024, 200.0)   # 접수 당일은 아직 전년
+    mar = {2025: "20260629", 2024: "20250627"}          # 3월 결산(FY2025 = 2026-03-31 마감): 6/28 접수
+    assert equity_asof(eq, "20260501", mar) == (2024, 200.0)   # 기본 규칙은 2025를 미리 써서 룩어헤드
+    assert equity_asof(eq, "20260629", mar) == (2025, 300.0)
+    # 기본(접수일 없음)은 종전과 동일
+    assert equity_asof(eq, "20260401") == (2025, 300.0) and equity_asof(eq, "20260331") == (2024, 200.0)
+
+
+def test_choose_equities_promotes_only_when_all_recent_years_have_owner_equity() -> None:
+    from trading.valuation.band import BASIS_OWNER, BASIS_TOTAL, choose_equities
+
+    total = {y: 1000.0 for y in range(2016, 2026)}
+    owner_full = {y: 800.0 for y in range(2019, 2026)}            # 최근 7개년 전부
+    eqs, label = choose_equities(total, owner_full)
+    assert label == BASIS_OWNER and eqs == {y: 800.0 for y in range(2019, 2026)}
+    owner_partial = {y: 800.0 for y in range(2021, 2026)}         # 2019·2020 결측 → 승격 안 함(편향 방지)
+    eqs2, label2 = choose_equities(total, owner_partial)
+    assert label2 == BASIS_TOTAL and eqs2 == total
+    assert choose_equities({}, {})[1] == BASIS_TOTAL
+    # 자본총계가 5개년만 있으면 그 5개년 기준으로 판정
+    eqs3, label3 = choose_equities({y: 1000.0 for y in range(2021, 2026)}, owner_partial)
+    assert label3 == BASIS_OWNER and eqs3 == {y: 800.0 for y in range(2021, 2026)}
+
+
+def test_build_band_basis_label_and_apply_from() -> None:
+    from trading.valuation.band import BASIS_OWNER
+
+    q = _quotes([10.0] * 600)
+    band = build_band("A", q, EQ, basis_label=BASIS_OWNER, apply_from={2025: "20260320"})
+    assert band is not None and band.equity_basis == f"FY2025 {BASIS_OWNER}"
+    plain = build_band("A", q, EQ)
+    assert plain is not None and plain.equity_basis == "FY2025 연간 자본총계"

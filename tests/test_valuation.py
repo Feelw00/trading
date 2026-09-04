@@ -158,3 +158,12 @@ def test_valuation_store_append_only(tmp_path: Path) -> None:
     store.close()
     fins.close()
     market.close()
+
+
+def test_derive_metrics_per_prefers_owner_attributable_income() -> None:
+    """P-20 ④: PER 분모 = 지배주주 귀속 순이익 우선. 귀속 손실이면 None(연결로 되돌리지 않음), 미수집이면 연결 폴백."""
+    base = dict(mrkt_tot_amt=1_000.0, equity=500.0, liabilities=250.0, annual_revenue=2_000.0, annual_equity=400.0)
+    m = derive_metrics(annual_net_income=100.0, annual_owner_net_income=50.0, **base)
+    assert m.per == 20.0 and m.roe == 0.25          # ROE는 연결/연결 유지
+    assert derive_metrics(annual_net_income=100.0, annual_owner_net_income=-5.0, **base).per is None
+    assert derive_metrics(annual_net_income=100.0, annual_owner_net_income=None, **base).per == 10.0

@@ -31,6 +31,7 @@ def derive_metrics(
     annual_revenue: float | None,
     annual_equity: float | None,
     owner_equity: float | None = None,
+    annual_owner_net_income: float | None = None,
 ) -> Metrics:
     """시총 + BS(최신) + 연간 IS → 지표. 분모가 무의미한 경우 None.
 
@@ -38,7 +39,12 @@ def derive_metrics(
     (owner_equity, 결측 시 자본총계 폴백). 시총은 지배주주 몫만 반영하므로 비지배지분
     포함 자본총계와 비교하면 지주형 기업의 PBR이 과소된다(실측: KG케미칼 연결 자본
     3.94조 중 비지배 2.94조 — PBR 0.08→0.32). 부채비율·ROE는 자본총계 유지
-    (연결 순이익·부채가 비지배 포함이라 내부 정합)."""
+    (연결 순이익·부채가 비지배 포함이라 내부 정합).
+
+    P-20 ④(2026-09-04): PER 분모도 **지배기업 소유주지분 귀속 당기순이익 우선**(연간 IS,
+    `ifrs-full_ProfitLossAttributableToOwnersOfParent`) — 시총(지배주주 몫) ÷ 연결 순이익(비지배 포함)의
+    분자·분모 불일치 교정(KG케미칼 PER 1.2 실증). 귀속 순이익이 있고 ≤0이면 PER None(지배주주 기준
+    손실 — 연결로 되돌리지 않는다). 미수집이면 연결 순이익 폴백."""
     pbr = None
     pbr_equity = owner_equity if owner_equity is not None else equity
     if mrkt_tot_amt is not None and pbr_equity is not None and pbr_equity > 0:
@@ -49,8 +55,9 @@ def derive_metrics(
         debt_ratio = liabilities / equity
 
     per = None
-    if mrkt_tot_amt is not None and annual_net_income is not None and annual_net_income > 0:
-        per = mrkt_tot_amt / annual_net_income
+    per_income = annual_owner_net_income if annual_owner_net_income is not None else annual_net_income
+    if mrkt_tot_amt is not None and per_income is not None and per_income > 0:
+        per = mrkt_tot_amt / per_income
 
     psr = None
     if mrkt_tot_amt is not None and annual_revenue is not None and annual_revenue > 0:
