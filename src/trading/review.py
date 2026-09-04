@@ -164,7 +164,8 @@ class ReviewStore:
 def auto_review(store: ReviewStore, year: str) -> tuple[int, int]:
     """무판정 코어 종목을 결정론 규칙으로 자동 판정 — (approved 수, hold 수) 반환.
 
-    approve = 영업 이익방향 ≥ 0 ∧ 매출급감 없음 ∧ 여력 정상 대역(**+30% ≤** … ≤ +150%) ∧ 리츠 아님.
+    approve = 영업 이익방향 ≥ 0 ∧ 매출급감 없음 ∧ 여력 정상 대역(**+30% ≤** … ≤ +150%).
+    (리츠 hold 조건은 v2.18(2026-09-04)에서 제거 — 분배금 관측 경로 확보, COLLECT-5 ① 종결.)
     아니면 hold(확인 조건 명시). 여력 하한은 운영자 지시(2026-09-02): 실현 예상 수익 < +30%는
     승인 종목에 나오지 않는다 — 노출 게이트(picks.effective_verdict)와 같은 상수. 이미 유효 판정(수동·자동 불문)이 있으면 스킵 —
     만료(새 연간)되면 다음 실행이 재판정한다.
@@ -176,9 +177,7 @@ def auto_review(store: ReviewStore, year: str) -> tuple[int, int]:
         if pk.verdict is not None:
             continue  # 유효 판정 존재(수동 우선 포함) — 자동 미개입
         cond: str | None = None
-        if pk.rec.industry == "리츠":
-            cond = "리츠 분배금 관측 경로 확보 후 심사(COLLECT-5 ①)"
-        elif any("매출급감" in f for f in pk.flags):
+        if any("매출급감" in f for f in pk.flags):
             cond = "매출 급감 원인 규명·회복 확인"
         elif pk.roe_delta is None:
             cond = "영업이익 방향 관측 부족 — 연간 재무 축적 확인"

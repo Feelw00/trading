@@ -132,6 +132,22 @@ class DartClient:
         )
         return self._rows(self._json(f"{DART_BASE}/alotMatter.json?{q}"))
 
+    def split_decisions(self, corp_code: str, bgn_de: str, end_de: str) -> list[dict[str, Any]]:
+        """회사분할 결정(DS005 ``cmpDvDecsn``, 공식 가이드 apiId 2020051) — 실호출 관측 확정(2026-09-04):
+        토비스·KPX케미칼·LG화학·서흥. 창은 **최초접수일**(정정 공시는 최신 접수번호 1건으로 합쳐져 옴).
+        필드: ``dv_mth``(분할방법 원문 — "단순·인적분할"/"단순·물적분할" 문구 포함)·``dv_rt``·``ex_sm_r``(주총 특별결의
+        제외 사유, 물적이면 '물적분할')·``rs_sm_atn``·``bddd``·``atdv_excmp_cmpnm``·``dvfcmp_cmpnm``·재무 ``ffdtl_*``/
+        ``atdvfdtl_*``. 철회·정정 껍데기는 ``dv_mth`` None·``bddd`` '-'(골프존 2024, 서흥 2020). 2016~2017 접수분은
+        list.json엔 있어도 여기엔 없다(롯데칠성·크라운해태홀딩스·샘표)."""
+        q = urlencode({"crtfc_key": self._key, "corp_code": corp_code, "bgn_de": bgn_de, "end_de": end_de})
+        return self._rows(self._json(f"{DART_BASE}/cmpDvDecsn.json?{q}"))
+
+    def split_merger_decisions(self, corp_code: str, bgn_de: str, end_de: str) -> list[dict[str, Any]]:
+        """회사분할합병 결정(DS005 ``cmpDvmgDecsn``, apiId 2020052) — 가이드 필드 ``dvmg_mth``(분할합병 방법)·
+        ``mg_stn``(합병형태)·``mgptncmp_cmpnm``·``nmgcmp_cmpnm``·``bddd``. 2026-09-04 실호출은 0건(롯데칠성 2017 미수록)."""
+        q = urlencode({"crtfc_key": self._key, "corp_code": corp_code, "bgn_de": bgn_de, "end_de": end_de})
+        return self._rows(self._json(f"{DART_BASE}/cmpDvmgDecsn.json?{q}"))
+
     def treasury_stock(
         self, corp_code: str, bsns_year: str, reprt_code: str = "11011"
     ) -> list[dict[str, Any]]:

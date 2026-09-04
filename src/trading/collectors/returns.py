@@ -5,13 +5,27 @@
 - 자기주식: ``tesstkAcqsDspsSttus`` — 취득/처분/**소각**(change_qy_incnr) 수량
 - 분할: ``list.json pblntf_ty=B``(주요사항보고) 중 report_nm에 "분할" 포함
   (LG화학 2020 물적분할이 "주요사항보고서(회사분할결정)"로 관측됨)
+- 분할 방법(인적/물적, COLLECT-5 ② 실측 2026-09-04): DART DS005 ``cmpDvDecsn``(회사분할 결정)·
+  ``cmpDvmgDecsn``(회사분할합병 결정) — ``dv_mth``/``dvmg_mth`` 원문에 "단순·인적분할"/"단순·물적분할",
+  보조 ``ex_sm_r``(주총 특별결의 제외 사유 = '물적분할')·``mg_stn``. 원문 박제 + 순수 분류.
+
+**접수분별 저장(2026-09-04, COLLECT-5 ①):** 리츠 22/23종은 반기·분기 결산이라 ``alotMatter(연도)``가
+접수분 2~4건을 한 응답에 돌려준다(각 15행, ``stlm_dt`` 상이). 옛 표 ``alot_facts``(키: 종목·연도·항목·주식종류)는
+첫 접수분만 남겨 연간 배당을 50~75% 과소 기록했다 → ``alot_reports``(접수번호·행 번호 키)에 병행 기록하고
+읽기는 **결산기준일별 최신 접수분**(정정은 새 접수번호 = 같은 결산일 → 최신만)을 합산한다. 옛 표는 보존(append-only),
+접수분 표가 없는 연도만 폴백.
 
 수집기는 **사실 박제만** 한다 — 가점·네거티브 스크린 편입은 분포 실측 첨부 후
 별도 결재(docs/POLICY_PARAMS.md §5 v1.8 ③·§6). append 전용(INSERT OR IGNORE),
 attempts 테이블로 멱등 재실행. 결측은 None 박제(0 폴백 금지 — parse_amount).
 """
 
+import json
+import re
 import sqlite3
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +37,10 @@ DEFAULT_DB = Path("data") / "returns.sqlite"
 SOURCE_ALOT = "dart:alotMatter"
 SOURCE_TESSTK = "dart:tesstkAcqsDspsSttus"
 SOURCE_SPLIT = "dart:list/pblntf_ty=B"
+SOURCE_DV = "dart:cmpDvDecsn"
+SOURCE_DVMG = "dart:cmpDvmgDecsn"
+SPLIT_KIND_DV = "분할"
+SPLIT_KIND_DVMG = "분할합병"
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS alot_facts (
@@ -48,6 +66,19 @@ CREATE TABLE IF NOT EXISTS ret_attempts (
   status TEXT NOT NULL, fetched_at TEXT,
   UNIQUE(srtn_cd, kind, period)
 );
+CREATE TABLE IF NOT EXISTS alot_reports (
+  srtn_cd TEXT NOT NULL, bsns_year TEXT NOT NULL, rcept_no TEXT NOT NULL, row_idx INTEGER NOT NULL,
+  stlm_dt TEXT, se TEXT NOT NULL, stock_knd TEXT NOT NULL,
+  thstrm REAL, frmtrm REAL, lwfr REAL, source TEXT, fetched_at TEXT,
+  UNIQUE(srtn_cd, bsns_year, rcept_no, row_idx)
+);
+CREATE INDEX IF NOT EXISTS idx_alot_reports_sym ON alot_reports(srtn_cd, bsns_year);
+CREATE TABLE IF NOT EXISTS split_decisions (
+  srtn_cd TEXT NOT NULL, kind TEXT NOT NULL, rcept_no TEXT NOT NULL,
+  bddd TEXT, method_text TEXT, method_hint TEXT, new_company TEXT, surviving_company TEXT,
+  payload TEXT NOT NULL, source TEXT NOT NULL, fetched_at TEXT NOT NULL,
+  UNIQUE(srtn_cd, kind, rcept_no)
+);
 """
 
 
@@ -64,6 +95,107 @@ def is_par_based_yield(yield_pct: float | None, dps: float | None, par: float | 
     if yield_pct is None or dps is None or par is None or par <= 0 or dps <= 0:
         return False
     return abs(yield_pct - dps / par * 100.0) < 0.05
+
+
+def parse_dividend_rows(rows: Iterable[tuple[Any, Any, float | None]]) -> dict[str, float | None]:
+    """한 보고서(접수분)의 (se, stock_knd, thstrm) 행 → {dps, yield_pct, payout_pct}. 순수.
+
+    보통주 우선·'-'(단일 종류) 폴백·우선주 무시 · 주당 행 총액 오기재 가드(>100만원) · 액면 배당률 가드
+    (`is_par_based_yield`). 라벨 정규화는 `_normalize_stock_kind`."""
+    y: dict[str, float | None] = {"dps": None, "yield_pct": None, "payout_pct": None}
+    par: float | None = None
+    for se, knd, v in rows:
+        se_s, knd_s = str(se), _normalize_stock_kind(str(knd))
+        key: str | None = None
+        if se_s.startswith("주당 현금배당금"):
+            key = "dps"
+            if v is not None and v > 1_000_000:
+                v = None
+        elif se_s.startswith("현금배당수익률"):
+            key = "yield_pct"
+        elif se_s.startswith("(연결)현금배당성향"):
+            y["payout_pct"] = v
+        elif se_s.startswith("주당액면가액"):
+            if v is not None and v > 0 and (knd_s == "보통주" or par is None):
+                par = float(v)
+        if key is not None and v is not None and (knd_s == "보통주" or (knd_s == "-" and y[key] is None)):
+            y[key] = v
+    if is_par_based_yield(y["yield_pct"], y["dps"], par):
+        y["yield_pct"] = None
+    return y
+
+
+def aggregate_reports(reports: Sequence[Mapping[str, float | None]]) -> dict[str, float | None]:
+    """결산기준일이 다른 접수분들(반기·분기 결산) → 연도 값. 순수.
+
+    dps·수익률은 **합**(각 접수분이 자기 기간 기준 — 이지스레지던스 150+150=300, SK리츠 70+66+66+66=268),
+    성향(%)은 비율이라 가산 불가 → 접수분 1건일 때만, `n_reports` = 접수분 수(표시용)."""
+    def _sum(k: str) -> float | None:
+        vals = [r[k] for r in reports if r.get(k) is not None]
+        return float(sum(v for v in vals if v is not None)) if vals else None
+
+    return {
+        "dps": _sum("dps"), "yield_pct": _sum("yield_pct"),
+        "payout_pct": reports[0].get("payout_pct") if len(reports) == 1 else None,
+        "n_reports": float(len(reports)),
+    }
+
+
+def classify_split_method(text: str | None, hint: str | None = None) -> str:
+    """분할방법 원문(`dv_mth`/`dvmg_mth`) → '인적' | '물적' | '혼합' | '미상'. 순수.
+
+    실관측(2026-09-04): "단순·인적분할"(토비스·KPX케미칼) · "단순·물적분할"(LG화학) · "단순ㆍ물적분할"(서흥, 가운뎃점
+    변형) — 공백 제거 후 '인적분할'/'물적분할' 포함 여부. 둘 다면 혼합. 원문이 비면 보조 필드(`ex_sm_r`='물적분할' 등),
+    그래도 없으면 미상(골프존 2024·서흥 2020 빈 레코드)."""
+    t = re.sub(r"\s+", "", str(text or ""))
+    a, b = "인적분할" in t, "물적분할" in t
+    if a and b:
+        return "혼합"
+    if a:
+        return "인적"
+    if b:
+        return "물적"
+    h = re.sub(r"\s+", "", str(hint or ""))
+    if "물적분할" in h:
+        return "물적"
+    if "인적분할" in h:
+        return "인적"
+    return "미상"
+
+
+@dataclass(frozen=True)
+class SplitDecision:
+    kind: str        # 분할 | 분할합병
+    rcept_no: str
+    bddd: str | None
+    cls: str         # 인적 | 물적 | 혼합 | 미상
+
+
+@dataclass(frozen=True)
+class SplitAssessment:
+    """종목의 분할 이력 평가(순수) — 운영자 결재 2026-09-04(COLLECT-5 ② (a)):
+    **인적분할은 강등 없음**(주주가치 중립), 물적·혼합·미상은 강등 유지, 구조화 API 미수록(2016~17 접수분)은 보수 유지."""
+
+    n_events: int                                  # list.json 분할 주요사항보고 건수(정정 포함)
+    decisions: tuple[SplitDecision, ...]
+
+    @property
+    def downgrade(self) -> int:
+        """강등 사유 수 — 0이면 코어 자격 무관."""
+        if not self.n_events:
+            return 0
+        if not self.decisions:
+            return 1  # 미수록 — 구분 불가라 보수(강등) 유지
+        return sum(1 for d in self.decisions if d.cls != "인적")
+
+    @property
+    def summary(self) -> str:
+        if not self.n_events:
+            return ""
+        if not self.decisions:
+            return f"미수록 {self.n_events}건"
+        c = Counter(d.cls for d in self.decisions)
+        return " · ".join(f"{k} {n}" for k, n in sorted(c.items()))
 
 
 class ReturnsStore:
@@ -103,8 +235,26 @@ class ReturnsStore:
         ]
         before = self._conn.total_changes
         self._conn.executemany("INSERT OR IGNORE INTO alot_facts VALUES (?,?,?,?,?,?,?)", values)
+        # 접수분별 표(2026-09-04) — 접수번호·행 번호 키, 결산기준일 보존. 픽스처처럼 rcept_no가 없으면 ''(단일 접수분).
+        rep = [
+            (
+                srtn_cd, year, str(r.get("rcept_no") or ""), idx, str(r.get("stlm_dt") or "") or None,
+                str(r.get("se") or ""), str(r.get("stock_knd") or "-"),
+                parse_amount(r.get("thstrm")), parse_amount(r.get("frmtrm")), parse_amount(r.get("lwfr")),
+                SOURCE_ALOT, fetched,
+            )
+            for idx, r in enumerate(rows)
+            if r.get("se")
+        ]
+        self._conn.executemany("INSERT OR IGNORE INTO alot_reports VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rep)
         self._conn.commit()
         return self._conn.total_changes - before
+
+    def has_alot_report(self, srtn_cd: str, year: str) -> bool:
+        r = self._conn.execute(
+            "SELECT 1 FROM alot_reports WHERE srtn_cd=? AND bsns_year=? LIMIT 1", (srtn_cd, year)
+        ).fetchone()
+        return r is not None
 
     def upsert_tesstk(self, srtn_cd: str, year: str, rows: list[dict[str, Any]]) -> int:
         fetched = now_kst().isoformat()
@@ -144,53 +294,76 @@ class ReturnsStore:
         self._conn.commit()
         return self._conn.total_changes - before
 
+    def add_split_decisions(self, srtn_cd: str, kind: str, rows: list[dict[str, Any]]) -> int:
+        """분할(합병) 결정 구조화 레코드 박제 — 원문 payload 전체 + 분류에 쓰는 열 승격."""
+        fetched = now_kst().isoformat()
+        src = SOURCE_DV if kind == SPLIT_KIND_DV else SOURCE_DVMG
+        values = [
+            (
+                srtn_cd, kind, str(r.get("rcept_no") or ""),
+                str(r.get("bddd") or "") or None,
+                str(r.get("dv_mth") or r.get("dvmg_mth") or "") or None,
+                str(r.get("ex_sm_r") or r.get("mg_stn") or "") or None,
+                str(r.get("dvfcmp_cmpnm") or r.get("nmgcmp_cmpnm") or "") or None,
+                str(r.get("atdv_excmp_cmpnm") or "") or None,
+                json.dumps(r, ensure_ascii=False), src, fetched,
+            )
+            for r in rows
+            if r.get("rcept_no")
+        ]
+        before = self._conn.total_changes
+        self._conn.executemany("INSERT OR IGNORE INTO split_decisions VALUES (?,?,?,?,?,?,?,?,?,?,?)", values)
+        self._conn.commit()
+        return self._conn.total_changes - before
+
     # --- 읽기(분포·후속 결재 원료) ---
     def dividend_series(self, srtn_cd: str) -> dict[str, dict[str, float | None]]:
-        """연도 → {dps(주당배당금), yield_pct(수익률), payout_pct(연결 성향)}.
+        """연도 → {dps, yield_pct, payout_pct, n_reports}.
 
-        stock_knd는 보통주 우선, **'-'(단일 주식 종류 기재) 폴백** — 실관측 2026-09-01:
-        신세계I&C가 2024년부터 '-'로 기재해 배당 430·560원이 0으로 오독됐던 버그 수정.
-        우선주 행은 무시한다. 라벨 정규화(2026-09-04, P-20 ⑥): 공백·'보통주식'(황금에스티 등
-        46행)은 보통주로 읽는다 — 그 외 어휘(종류주·소액주주·중간 배당 …)는 해석하지 않는다.
-
-        **액면 배당률 오기재 가드(P-20 ⑥, 2026-09-04 전수 스캔):** 일부 공시가 '현금배당수익률(%)'
-        행에 시가 수익률이 아니라 **액면가 대비 배당률**(DPS ÷ 액면가)을 기재한다 — 흥국 2021~2025
-        40·44·48·44·56%, 유에스티 100%, 브이엠·황금에스티·376290 등 6종 관측. 수익률이 DPS÷액면가와
-        소수 첫째 자리까지 일치하면 시가 기준이 아니라고 보고 **None(지어내지 않음)** — 배당 지급
-        여부(`quality.dividend_streak`)는 dps로 여전히 판정된다. 시가≈액면가인 종목은 두 값이
-        우연히 같아 None이 되지만, 그 경우도 표시만 비고 판정은 불변이다."""
+        읽기 순서(2026-09-04): ① `alot_reports`(접수분별) — 연도 안에서 **결산기준일(stlm_dt)별 최신 접수번호**만
+        남기고(정정 = 같은 결산일의 새 접수번호) 접수분을 `aggregate_reports`로 합산 ② 접수분 표가 없는 연도는
+        옛 `alot_facts`(첫 접수분만 — n_reports None) 폴백. 행 해석은 `parse_dividend_rows`(보통주 우선·'-' 폴백·
+        라벨 정규화·총액 오기재·액면 배당률 가드 — 실관측 2026-09-01 신세계I&C, 2026-09-04 흥국·리츠 '보통주식')."""
         out: dict[str, dict[str, float | None]] = {}
-        par_by_year: dict[str, float] = {}
-        for year, se, knd, v in self._conn.execute(
-            "SELECT bsns_year, se, stock_knd, thstrm FROM alot_facts WHERE srtn_cd=?",
+        by_year: dict[str, dict[str, tuple[str, list[tuple[Any, Any, float | None]]]]] = {}
+        for year, rn, stlm, se, knd, v in self._conn.execute(
+            "SELECT bsns_year, rcept_no, stlm_dt, se, stock_knd, thstrm FROM alot_reports "
+            "WHERE srtn_cd=? ORDER BY bsns_year, rcept_no, row_idx",
             (srtn_cd,),
         ):
-            y_s = str(year)
-            y = out.setdefault(y_s, {"dps": None, "yield_pct": None, "payout_pct": None})
-            se_s, knd_s = str(se), _normalize_stock_kind(str(knd))
-            key: str | None = None
-            if se_s.startswith("주당 현금배당금"):
-                key = "dps"
-                # 정합성 가드(실관측 2026-09-01, 와이엔텍): 일부 공시가 주당 행에
-                # 배당금 **총액**(9억+)을 기재 — 주당 100만원 초과는 오기재로 보고 무시
-                # (지급 여부 판정은 수익률 필드로 폴백 — quality.dividend_streak)
-                if v is not None and v > 1_000_000:
-                    v = None
-            elif se_s.startswith("현금배당수익률"):
-                key = "yield_pct"
-            elif se_s.startswith("(연결)현금배당성향"):
-                y["payout_pct"] = v
-            elif se_s.startswith("주당액면가액"):
-                # 액면가는 주식 종류와 무관하게 1행(보통주 우선 — 먼저 본 값 유지)
-                if v is not None and v > 0 and (knd_s == "보통주" or y_s not in par_by_year):
-                    par_by_year[y_s] = float(v)
-            if key is not None and v is not None:
-                if knd_s == "보통주" or (knd_s == "-" and y[key] is None):
-                    y[key] = v
-        for y_s, y in out.items():
-            if is_par_based_yield(y["yield_pct"], y["dps"], par_by_year.get(y_s)):
-                y["yield_pct"] = None
+            by_year.setdefault(str(year), {}).setdefault(str(rn), (str(stlm or ""), []))[1].append((se, knd, v))
+        for year, recs in by_year.items():
+            latest_by_period: dict[str, str] = {}
+            for rn, (stlm, _rows) in recs.items():
+                if stlm not in latest_by_period or rn > latest_by_period[stlm]:
+                    latest_by_period[stlm] = rn
+            reports = [parse_dividend_rows(recs[rn][1]) for rn in sorted(latest_by_period.values())]
+            out[year] = aggregate_reports(reports)
+        legacy: dict[str, list[tuple[Any, Any, float | None]]] = {}
+        for year, se, knd, v in self._conn.execute(
+            "SELECT bsns_year, se, stock_knd, thstrm FROM alot_facts WHERE srtn_cd=?", (srtn_cd,)
+        ):
+            if str(year) not in out:
+                legacy.setdefault(str(year), []).append((se, knd, v))
+        for year, rows in legacy.items():
+            y = parse_dividend_rows(rows)
+            y["n_reports"] = None
+            out[year] = y
         return out
+
+    def split_assessment(self, srtn_cd: str) -> SplitAssessment:
+        """분할 이력 평가 — list.json 이벤트 수 + 구조화 결정(분류)."""
+        n_events = len(self.split_history(srtn_cd))
+        rows = self._conn.execute(
+            "SELECT kind, rcept_no, bddd, method_text, method_hint FROM split_decisions WHERE srtn_cd=? "
+            "ORDER BY rcept_no",
+            (srtn_cd,),
+        ).fetchall()
+        decisions = tuple(
+            SplitDecision(kind=str(k), rcept_no=str(rn), bddd=str(b) if b else None, cls=classify_split_method(mt, mh))
+            for k, rn, b, mt, mh in rows
+        )
+        return SplitAssessment(n_events=n_events, decisions=decisions)
 
     def buyback_series(self, srtn_cd: str) -> dict[str, dict[str, float]]:
         """연도 → {acqs(취득 합), incnr(소각 합)} — 주식종류별 **총계 행**이 정본
@@ -251,6 +424,8 @@ def collect_returns(
                     ("tesstk", dart.treasury_stock, store.upsert_tesstk),
                 ):
                     prev = store.attempted(srtn_cd, kind, year)
+                    if kind == "alot" and prev == "ok" and not store.has_alot_report(srtn_cd, year):
+                        prev = None  # 접수분별 표(2026-09-04) 도입 전 적재 — 1회 재수집(자가 치유)
                     if prev is not None:
                         got = got or prev == "ok"
                         continue
@@ -310,10 +485,68 @@ def collect_splits(
     return found, skipped, errors
 
 
+def collect_split_decisions(
+    dart: DartClient,
+    store: ReturnsStore,
+    corp_map: dict[str, tuple[str, str]],
+    stocks: list[tuple[str, str]],
+    *,
+    lookback_years: int = 10,
+    year_now: int | None = None,
+) -> tuple[int, int, list[str]]:
+    """분할 이력(`split_history`) 보유 종목의 구조화 결정(cmpDvDecsn·분할합병이면 cmpDvmgDecsn) 수집.
+
+    멱등 키 = 창 + 이력의 최신 접수일 — 새 분할 공시가 잡히면 재수집. (결정 확보 종목, 미수록/무이력 스킵, 오류)."""
+    yn = year_now or now_kst().year
+    bgn, end = f"{yn - lookback_years}0101", f"{yn}1231"
+    got = skipped = 0
+    errors: list[str] = []
+    for srtn_cd, name in stocks:
+        hist = store.split_history(srtn_cd)
+        if not hist:
+            skipped += 1
+            continue
+        ent = corp_map.get(srtn_cd)
+        if not ent or not ent[0]:
+            skipped += 1
+            continue
+        period = f"{bgn}-{end}:{max(d for d, _ in hist)}"
+        prev = store.attempted(srtn_cd, "dv_decsn", period)
+        if prev in ("ok", "empty"):
+            got += prev == "ok"
+            continue
+        try:
+            rows_dv = dart.split_decisions(ent[0], bgn, end)
+            rows_mg = (
+                dart.split_merger_decisions(ent[0], bgn, end)
+                if any("분할합병" in nm for _, nm in hist) else []
+            )
+        except CollectError as e:
+            errors.append(f"{name}({srtn_cd}): {e}")
+            continue
+        n = store.add_split_decisions(srtn_cd, SPLIT_KIND_DV, rows_dv)
+        n += store.add_split_decisions(srtn_cd, SPLIT_KIND_DVMG, rows_mg)
+        if rows_dv or rows_mg:
+            store.record_attempt(srtn_cd, "dv_decsn", period, "ok")
+            got += 1
+        else:
+            store.record_attempt(srtn_cd, "dv_decsn", period, "empty")  # 2016~17 접수분 등 구조화 API 미수록
+            skipped += 1
+    return got, skipped, errors
+
+
 __all__ = [
-    "is_par_based_yield",
     "DEFAULT_DB",
+    "SPLIT_KIND_DV",
+    "SPLIT_KIND_DVMG",
     "ReturnsStore",
+    "SplitAssessment",
+    "SplitDecision",
+    "aggregate_reports",
+    "classify_split_method",
     "collect_returns",
+    "collect_split_decisions",
     "collect_splits",
+    "is_par_based_yield",
+    "parse_dividend_rows",
 ]

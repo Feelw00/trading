@@ -72,7 +72,8 @@ def main() -> int:
             try:
                 streaks = {sym: dividend_streak(ret_store.dividend_series(sym)) for sym in passed_syms}
                 cancels = {sym: has_cancellation(ret_store.buyback_series(sym)) for sym in passed_syms}
-                splits = {sym: len(ret_store.split_history(sym)) for sym in passed_syms}
+                # v2.18: 분할은 구조화 결정으로 인적/물적 구분 — 인적만은 강등 없음(SplitAssessment.downgrade)
+                splits = {sym: ret_store.split_assessment(sym) for sym in passed_syms}
             finally:
                 ret_store.close()
             stable_syms = {sym for sym, m in metrics.items() if is_stable_core(m)}
@@ -87,7 +88,7 @@ def main() -> int:
                 and meets_returns_core(
                     streaks[r.symbol], cancels[r.symbol], industry=r.industry
                 )
-                and splits[r.symbol] == 0
+                and splits[r.symbol].downgrade == 0
                 and not eq_flags[r.symbol]
                 and not trends[r.symbol].consecutive_decline
             ]
@@ -109,8 +110,11 @@ def main() -> int:
                 warn = " ⚠과열" if r.cycle_caution else ""
                 if high_per(r, per_by_symbol):
                     warn += f" ⚠고PER {per_by_symbol[r.symbol]:.0f}"
-                if splits.get(r.symbol):
-                    warn += f" ⚠분할 {splits[r.symbol]}건"
+                sa = splits.get(r.symbol)
+                if sa is not None and sa.downgrade:
+                    warn += f" ⚠분할 {sa.summary}"
+                elif sa is not None and sa.n_events:
+                    warn += " (인적분할 이력 — 강등 없음)"
                 if eq_flags.get(r.symbol):
                     warn += " ⚠이익질"
                 tr = trends.get(r.symbol)
@@ -125,7 +129,7 @@ def main() -> int:
 
             def _returns_tag(r: CandidateRecord) -> str:
                 if r.industry in RETURNS_EXEMPT_INDUSTRIES:
-                    return "환원 면제(리츠 — COLLECT-5 확인 중)"
+                    return "환원 면제 산업"
                 parts = [f"배당 {streaks[r.symbol]}y 연속"] if streaks[r.symbol] else []
                 if cancels[r.symbol]:
                     parts.append("소각")
@@ -134,7 +138,7 @@ def main() -> int:
             n_core_pool = len({r.symbol for r in core_pool})
             print(
                 f"\n안정 코어(매출CAGR>0 · 5y무적자 · ROE최소>2% · 환원(3y+배당∨소각) · "
-                f"분할 무이력 · 이익질 정상 · 非역성장 — 산업 캡 {CORE_INDUSTRY_CAP}종, 상위 "
+                f"분할 강등 없음(인적분할 허용, v2.18) · 이익질 정상 · 非역성장 — 산업 캡 {CORE_INDUSTRY_CAP}종, 상위 "
                 f"{CORE_TOP_N} / 코어 자격 {n_core_pool}종):"
             )
             for r in core:
@@ -153,8 +157,8 @@ def main() -> int:
             if rest > 0:
                 print(f"  … 외 {rest}종(전수는 DB·웹)")
             print(
-                "\n환원·분할 축 주의(COLLECT-5): 리츠 분배금 미관측 의심(면제 처리) · "
-                "분할은 인적/물적 미구분(배제 아닌 강등)"
+                "\n환원·분할 축(v2.18, COLLECT-5 종결): 리츠 면제 해제(접수분 합산 배당) · "
+                "분할은 인적=강등 없음, 물적·혼합·미상·미수록=강등(배제 아님)"
             )
         print("\n탈락 사유 분포:")
         for reason, n in s.reject_counts.items():

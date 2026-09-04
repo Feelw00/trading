@@ -93,11 +93,12 @@ def test_returns_core_v19() -> None:
     assert has_cancellation({"2025": {"acqs": 10.0, "incnr": 5.0}}) is True
     assert has_cancellation({"2025": {"acqs": 10.0, "incnr": 0.0}}) is False
 
-    # 3y 연속 배당 OR 소각 — 리츠는 면제(COLLECT-5 ① 확인 전)
+    # 3y 연속 배당 OR 소각 — 리츠 면제는 v2.18(2026-09-04)에서 해제(분배금 관측 경로 확보)
     assert meets_returns_core(3, False, industry="화학")
     assert meets_returns_core(0, True, industry="화학")
     assert not meets_returns_core(2, False, industry="화학")
-    assert meets_returns_core(0, False, industry="리츠")
+    assert not meets_returns_core(0, False, industry="리츠")
+    assert meets_returns_core(3, False, industry="리츠")
 
 
 def test_earnings_quality_flag_v21() -> None:

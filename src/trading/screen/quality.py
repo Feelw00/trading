@@ -11,9 +11,11 @@
 
 v1.9(운영자 결재 2026-09-01) — 환원·분할 축 편입(DART 수집 실측 분포 첨부 후 결재):
 4. 주주환원 — **3년+ 연속 배당 또는 자사주 소각 이력(5y)**. 통과군 실측: 3y+ 연속 315/523
-   (60%)·소각 109(21%). 리츠는 COLLECT-5 ①(alotMatter 분배금 미관측 의심) 확인 전 면제.
-5. 분할 이력 — 10년 창 주요사항보고(분할) 보유 시 **코어 강등(관찰로, ⚠분할 표기)**.
-   배제가 아닌 강등인 이유: report_nm만으로 인적/물적 구분 불가(COLLECT-5 ②).
+   (60%)·소각 109(21%). ~~리츠 면제~~ → **v2.18(운영자 결재 2026-09-04) 면제 해제**: 리츠 분배금은 alotMatter에
+   있었다(주식 종류 '보통주식' 라벨 + 반기·분기 접수분 2~4건 — `returns.alot_reports` 접수분별 저장으로 해소).
+5. 분할 이력 — 10년 창 주요사항보고(분할) 보유 시 코어 강등(관찰로, ⚠분할 표기). **v2.18: 인적분할은 강등 없음**
+   (주주가치 중립), 물적·혼합·미상·구조화 API 미수록만 강등(`returns.SplitAssessment.downgrade`). 물적분할의
+   배제 승격은 기각 — 헌법 표적은 "물적분할 후 자회사 상장"(상장 사실 소스 확정 후 별도 결재).
 
 관측 부족(<4년)은 코어 아님(정직 강등, 탈락 아님). 코어는 게이트가 아니라
 **표시 계층**이다: 통과/탈락 박제는 불변, 숏리스트가 코어/관찰 2단으로 나뉠 뿐이다.
@@ -214,9 +216,9 @@ def earnings_quality_flag(
 # --- v1.9 환원·분할 축 ---
 
 CORE_MIN_DIVIDEND_STREAK = 3
-# COLLECT-5 ①: 리츠 분배금이 alotMatter에 안 잡히는 것으로 의심(의무 분배인데 무배당
-# 관측) — 실측 확인 전까지 환원 요건 면제(무배당 오판으로 탈락시키지 않는다).
-RETURNS_EXEMPT_INDUSTRIES = frozenset({"리츠"})
+# COLLECT-5 ① 종결(운영자 결재 2026-09-04, v2.18): 리츠 분배금은 alotMatter에 있었다(라벨 '보통주식'·접수분
+# 2~4건 구조 — `collectors.returns` 참조). 면제 산업 없음 — 상수는 호출 호환용으로 비워 둔다.
+RETURNS_EXEMPT_INDUSTRIES: frozenset[str] = frozenset()
 
 
 def dividend_streak(series: Mapping[str, Mapping[str, float | None]]) -> int:
@@ -246,7 +248,7 @@ def meets_returns_core(
     streak: int, cancelled: bool, *, industry: str,
     min_streak: int = CORE_MIN_DIVIDEND_STREAK,
 ) -> bool:
-    """주주환원 코어 요건 — 연속 배당 또는 소각. 면제 산업(리츠)은 통과(unknown 정직)."""
+    """주주환원 코어 요건 — 연속 배당 또는 소각. 면제 산업은 없음(v2.18 — 리츠 면제 해제)."""
     if industry in RETURNS_EXEMPT_INDUSTRIES:
         return True
     return streak >= min_streak or cancelled

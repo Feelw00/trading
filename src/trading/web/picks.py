@@ -83,7 +83,7 @@ class Pick:
     roe_delta: float | None       # v2.2: 최신 영업이익/자본 − 5y 중앙(양수=영업 회복 진행)
     yoy_latest: float | None      # v2.3: 최근 연간 매출 YoY
     yoy_prev: float | None        # v2.3: 직전 연간 매출 YoY
-    splits: int
+    splits: int                   # 분할 강등 사유 수(v2.18: 물적·혼합·미상·미수록 — 인적은 0)
     flags: list[str]
     earn_yield: float | None = None  # 이익수익률 = 100/PER — 밸류 불변 가정 기대수익 근사
     roe_cv5: float | None = None     # ROE 변동계수(5y) — 낮을수록 수익 안정
@@ -192,7 +192,8 @@ def _build_picks() -> list[Pick]:
             years = sorted(div)
             yields_[s] = div[years[-1]].get("yield_pct") if years else None
         cancels = {s: has_cancellation(ret.buyback_series(s)) for s in syms}
-        splits = {s: len(ret.split_history(s)) for s in syms}
+        # v2.18: 강등 사유 수(물적·혼합·미상·미수록) — 인적분할만은 0(코어 자격 무관)
+        splits = {s: ret.split_assessment(s).downgrade for s in syms}
     finally:
         ret.close()
     per_by_symbol = {v.symbol: v.per for v in latest if v.per is not None}

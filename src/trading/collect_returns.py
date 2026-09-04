@@ -9,7 +9,7 @@ import os
 import sys
 
 from trading.collectors.dart import DartClient
-from trading.collectors.returns import ReturnsStore, collect_returns, collect_splits
+from trading.collectors.returns import ReturnsStore, collect_returns, collect_split_decisions, collect_splits
 from trading.screen.store import CandidateStore
 
 
@@ -39,10 +39,13 @@ def main() -> int:
         print(f"[배당·자기주식] 적재 {loaded} · 스킵 {skipped} · 오류 {len(errors)}")
         found, s_skipped, s_errors = collect_splits(dart, store, corp_map, stocks)
         print(f"[분할 이력] 이력 보유 {found} · 스킵 {s_skipped} · 오류 {len(s_errors)}")
-        for e in (errors + s_errors)[:8]:
+        # v2.18(COLLECT-5 ② 결재 2026-09-04): 이력 보유 종목의 구조화 결정(인적/물적) — 새 공시 잡히면 재수집
+        d_got, d_skipped, d_errors = collect_split_decisions(dart, store, corp_map, stocks)
+        print(f"[분할 결정(인적/물적)] 결정 확보 {d_got} · 무이력/미수록 {d_skipped} · 오류 {len(d_errors)}")
+        for e in (errors + s_errors + d_errors)[:8]:
             print(f"  오류: {e}")
         print("→ data/returns.sqlite (attempts 멱등 — 중단 시 재실행으로 이어짐)")
-        return 0 if not (errors or s_errors) else 1
+        return 0 if not (errors or s_errors or d_errors) else 1
     finally:
         store.close()
 

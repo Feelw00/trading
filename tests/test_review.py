@@ -97,7 +97,7 @@ def test_auto_review_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     picks = [
         _Pick(_Rec("A00001", "화학"), None, 1.0, 80.0),                  # → approved
         _Pick(_Rec("A00002", "제약"), None, -3.0, 90.0),                 # → hold(양전 확인)
-        _Pick(_Rec("A00003", "리츠"), None, 1.0, 70.0),                  # → hold(COLLECT-5)
+        _Pick(_Rec("A00003", "리츠"), None, 1.0, 70.0),                  # → approved(v2.18: 리츠 hold 제거)
         _Pick(_Rec("A00004", "화학"), None, 2.0, 400.0),                 # → hold(극단 여력)
         _Pick(_Rec("A00005", "유통"), None, 2.0, 60.0, ["⚠매출급감 -12%"]),  # → hold(급감)
         _Pick(_Rec("A00006", "화학"), "approved", -9.0, 50.0),           # 수동 존재 → 스킵
@@ -106,7 +106,8 @@ def test_auto_review_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr("trading.web.picks._build_picks", lambda: picks)
     store = review_mod.ReviewStore(tmp_path / "r.sqlite")
     n_appr, n_hold = auto_review(store, "2025")
-    assert (n_appr, n_hold) == (1, 5)
+    assert (n_appr, n_hold) == (2, 4)
+    assert store.current("A00003", "2025")["verdict"] == "approved"  # type: ignore[index]
     low = store.current("A00007", "2025")
     assert low is not None and low["verdict"] == "hold" and "회귀 여력 +30% 회복" in str(low["condition"])
     assert store.current("A00001", "2025")["verdict"] == "approved"  # type: ignore[index]
