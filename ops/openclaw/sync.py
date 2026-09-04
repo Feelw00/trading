@@ -97,10 +97,13 @@ def exec_command(job: CronJob) -> str:
       이름만 쓰면 잡이 조용히 전멸한다 (2026-07-11 Mac mini 이관에서 발견).
     """
     log = job_log_path(job)
+    # 표준입출력 분리(2026-09-04 실측): 분리 프로세스가 exec 도구의 stdio를 물고 있으면 exec가
+    # "Command still running"만 돌려주고 launched 줄이 사라진다 → 모델이 빈 답변을 내고 openclaw가
+    # 잡을 error로 표기(9/1·9/3 eod-v3, Python은 정상 완료). </dev/null >/dev/null 2>&1 로 즉시 반환.
     return (
         f"cd {shlex.quote(str(_ROOT))} && mkdir -p {shlex.quote(str(log.parent))} && "
         f"{shlex.quote(_SETSID)} -f sh -c '.venv/bin/python -m trading.run {job.round} "
-        f">> {shlex.quote(str(log))} 2>&1' && echo launched:{job.name}"
+        f">> {shlex.quote(str(log))} 2>&1' </dev/null >/dev/null 2>&1 && echo launched:{job.name}"
     )
 
 
@@ -108,7 +111,8 @@ def dispatch_message(job: CronJob) -> str:
     """결정론 디스패치 프롬프트(SCHED-2) — 발사 후 즉시 종료, 판단 금지."""
     return (
         f"exec 도구로 아래 명령을 정확히 1회 실행하라:\n{exec_command(job)}\n"
-        "출력의 launched 줄을 그대로 보고하고 즉시 끝내라. "
+        f"실행 뒤에는 exec 결과가 무엇이든(launched 줄·'Command still running'·빈 출력) "
+        f"반드시 `launched:{job.name}` 한 줄만 답하고 즉시 끝내라 — 빈 답변 금지. "
         "대기·재실행·프로세스 조작·파일/DB 열람·해석 금지 — 너는 트리거다."
     )
 
