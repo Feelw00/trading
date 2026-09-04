@@ -178,3 +178,80 @@ def test_build_band_basis_label_and_apply_from() -> None:
     assert band is not None and band.equity_basis == f"FY2025 {BASIS_OWNER}"
     plain = build_band("A", q, EQ)
     assert plain is not None and plain.equity_basis == "FY2025 연간 자본총계"
+
+
+def test_target_pbr_uses_owner_roe_on_promoted_band() -> None:
+    """v2.20(P-20 ⑧ (b)): 분모가 지배주주지분인 밴드는 캡의 ROE도 지배주주 기준 — 밸류에이션 연결 ROE는 무시."""
+    from trading.valuation.band import BASIS_OWNER, ROE_BASIS_OWNER, ROE_BASIS_TOTAL, effective_roe, target_pbr
+
+    q = _quotes([10.0] * 600)  # PBR 1.0 고정 → 중앙 1.0
+    promoted = build_band("A", q, EQ, basis_label=BASIS_OWNER, roe_owner_median=0.04)
+    plain = build_band("A", q, EQ, roe_owner_median=0.04)  # 미승격 라벨 → 지배주주 ROE는 싣지 않는다
+    assert promoted is not None and plain is not None
+    assert promoted.is_owner_basis and promoted.roe_owner_median == 0.04
+    assert not plain.is_owner_basis and plain.roe_owner_median is None
+    assert effective_roe(promoted, 0.073) == (0.04, ROE_BASIS_OWNER)
+    assert effective_roe(plain, 0.073) == (0.073, ROE_BASIS_TOTAL)
+    t_p = target_pbr(promoted, 0.073)
+    assert t_p is not None and t_p.roe_used == 0.04 and t_p.roe_basis == ROE_BASIS_OWNER
+    assert t_p.anchor == "justified" and t_p.value == pytest.approx((0.04 - 0.01) / 0.09)   # 캡 0.33
+    t_t = target_pbr(plain, 0.073)
+    assert t_t is not None and t_t.roe_used == 0.073 and t_t.value == pytest.approx(0.7)     # (7.3−1)/9
+    # 승격됐는데 지배주주 ROE 결측 → 연결로 되돌리지 않고 캡 검증 불가(None)
+    promoted_none = build_band("A", q, EQ, basis_label=BASIS_OWNER, roe_owner_median=None)
+    assert promoted_none is not None and target_pbr(promoted_none, 0.073) is None
+
+
+def test_owner_roe_median_pure() -> None:
+    from trading.valuation.band import owner_roe_median
+
+    ann: list[tuple[str, dict[str, float | None]]] = [
+        ("2025", {"owner_net_income": 90.0, "owner_equity": 1000.0}),
+        ("2024", {"owner_net_income": 50.0, "owner_equity": 1000.0}),
+        ("2023", {"owner_net_income": 70.0, "owner_equity": 1000.0}),
+        ("2022", {"owner_net_income": None, "owner_equity": 1000.0}),   # 결측 제외
+        ("2021", {"owner_net_income": 10.0, "owner_equity": 0.0}),      # 자본잠식 제외
+        ("2020", {"owner_net_income": 900.0, "owner_equity": 1000.0}),  # 창(5년) 밖
+    ]
+    assert owner_roe_median(ann) == pytest.approx(0.07)
+    empty: list[tuple[str, dict[str, float | None]]] = [("2025", {"owner_net_income": None, "owner_equity": None})]
+    assert owner_roe_median(empty) is None
+    # 귀속 결측 폴백: 비지배지분 없음(지배주주지분 = 자본총계) → 연결 순이익 사용 · 비지배 있으면 관측 제외
+    no_nci: list[tuple[str, dict[str, float | None]]] = [
+        ("2025", {"owner_net_income": None, "owner_equity": 1000.0, "equity": 1000.0, "net_income": 60.0}),
+        ("2024", {"owner_net_income": None, "owner_equity": 999.5, "equity": 1000.0, "net_income": 40.0}),   # 0.05% — 허용
+        ("2023", {"owner_net_income": None, "owner_equity": 900.0, "equity": 1000.0, "net_income": 999.0}),  # 10% — 제외
+    ]
+    assert owner_roe_median(no_nci) == pytest.approx((0.06 + 40.0 / 999.5) / 2)
+
+
+def test_pbr_bands_promotes_and_carries_owner_roe(tmp_path: Path) -> None:
+    from trading.valuation.band import BASIS_OWNER
+
+    fins = FinStore(tmp_path / "f.sqlite")
+    for year in range(2019, 2026):
+        fins.upsert("000002", str(year), "11011", [
+            {"fs_div": "CFS", "sj_div": "BS", "account_nm": "자본총계", "thstrm_amount": "1000"},
+            {"fs_div": "CFS", "sj_div": "BS", "account_nm": "지배기업 소유주지분", "thstrm_amount": "500"},
+            {"fs_div": "CFS", "sj_div": "IS", "account_nm": "당기순이익", "thstrm_amount": "100"},
+            {"fs_div": "CFS", "sj_div": "IS", "account_nm": "지배기업 소유주지분 귀속 당기순이익", "thstrm_amount": "20"},
+        ])
+        fins.record_report("000002", str(year), "11011", f"{year + 1}0315000001")
+    fins.close()
+    mdb = tmp_path / "m.sqlite"
+    conn = sqlite3.connect(mdb)
+    conn.execute("CREATE TABLE daily_quotes (bas_dt TEXT, srtn_cd TEXT, clpr TEXT, lstg_st_cnt TEXT)")
+    conn.executemany(
+        "INSERT INTO daily_quotes VALUES (?, '000002', ?, ?)",
+        [(d, str(int(c)), str(int(n))) for d, c, n in _quotes([5.0] + [10.0] * 599)],
+    )
+    conn.commit(); conn.close()
+    band = pbr_bands(["000002"], market_db=mdb, fins_db=tmp_path / "f.sqlite")["000002"]
+    assert band is not None and band.is_owner_basis and band.equity_basis == f"FY2025 {BASIS_OWNER}"
+    assert band.current == pytest.approx(1.0) and band.median == pytest.approx(2.0)   # 분모 500 기준
+    assert band.roe_owner_median == pytest.approx(0.04)                                  # 20/500
+    from trading.valuation.band import regression_upside, target_pbr
+
+    t = target_pbr(band, 0.10)  # 연결 ROE 10%는 무시 — 지배주주 4% → 캡 0.33 < 중앙 2.0
+    assert t is not None and t.anchor == "justified" and t.roe_used == pytest.approx(0.04)
+    assert regression_upside(band, 0.10) == pytest.approx(((0.04 - 0.01) / 0.09 / 1.0 - 1.0) * 100.0)

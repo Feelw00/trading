@@ -59,7 +59,14 @@ class PbrBand:
     high: float
     n_days: int         # 표본 거래일 수(자본총계 결측일 제외)
     last_bas_dt: str
-    equity_basis: str   # 현재점 분모 설명(예: "FY2025 연간 자본총계")
+    equity_basis: str   # 현재점 분모 설명(예: "FY2025 연간 자본총계" / "FY2025 연간 지배주주지분")
+    # v2.20(운영자 결재 2026-09-04, P-20 ⑧ (b)): 분모가 지배주주지분으로 승격된 밴드에는 **같은 기준의 ROE**
+    # (귀속 순이익 ÷ 지배주주지분, 최근 5개 사업연도 중앙)를 싣는다 — 정당 PBR 캡이 이것을 쓴다. 미승격은 None.
+    roe_owner_median: float | None = None
+
+    @property
+    def is_owner_basis(self) -> bool:
+        return BASIS_OWNER in self.equity_basis
 
     @property
     def upside_pct(self) -> float:
@@ -77,6 +84,9 @@ class PbrBand:
 # (docs/POLICY_PARAMS v2.14). 조사 근거: docs/research/2026-09-03-target-price-industry-practice.md.
 JUSTIFIED_COE = 0.10   # 자기자본비용(운영자 결재 — 국내 금융 리서치 참고치 12~15%의 완화 쪽)
 JUSTIFIED_G = 0.01     # 장기 성장률
+ROE_BASIS_TOTAL = "연결"
+ROE_BASIS_OWNER = "지배주주"
+ROE_WINDOW_YEARS = 5   # ROE 중앙 창(밸류에이션 `_roe_median`과 동일)
 
 
 def justified_pbr(
@@ -94,16 +104,29 @@ class TargetPbr:
     anchor: str             # "band" | "justified"(캡 발동)
     band_median: float
     justified: float
+    roe_used: float | None = None   # 정당 PBR에 실제 들어간 ROE(v2.20 — 표시용)
+    roe_basis: str = ROE_BASIS_TOTAL  # "연결" | "지배주주"
+
+
+def effective_roe(band: PbrBand, roe: float | None) -> tuple[float | None, str]:
+    """캡에 쓸 ROE(v2.20, 운영자 결재 2026-09-04 P-20 ⑧ (b)): 밴드 분모가 지배주주지분이면 같은 기준의 ROE
+    (`band.roe_owner_median`), 아니면 밸류에이션의 연결 ROE₅. 정당 PBR = (ROE−g)/(COE−g)는 **같은 자본**에 대한
+    ROE와 PBR을 전제한다 — 기준이 섞이면 캡이 자의적으로 결속한다(실측 2026-09-04: 캡 결속 57→65종, 원림 +13→−10%).
+    승격됐는데 지배주주 ROE가 결측이면 연결 ROE로 폴백하지 않고 None(캡 검증 불가 = 여력 없음 — 지어내지 않음)."""
+    if band.is_owner_basis:
+        return band.roe_owner_median, ROE_BASIS_OWNER
+    return roe, ROE_BASIS_TOTAL
 
 
 def target_pbr(band: PbrBand, roe: float | None) -> TargetPbr | None:
     """목표 PBR. ROE 결측이면 None — 캡을 검증할 수 없으면 여력을 지어내지 않는다."""
-    j = justified_pbr(roe)
+    r, basis = effective_roe(band, roe)
+    j = justified_pbr(r)
     if j is None:
         return None
     if j < band.median:
-        return TargetPbr(value=j, anchor="justified", band_median=band.median, justified=j)
-    return TargetPbr(value=band.median, anchor="band", band_median=band.median, justified=j)
+        return TargetPbr(value=j, anchor="justified", band_median=band.median, justified=j, roe_used=r, roe_basis=basis)
+    return TargetPbr(value=band.median, anchor="band", band_median=band.median, justified=j, roe_used=r, roe_basis=basis)
 
 
 def regression_upside(band: PbrBand | None, roe: float | None) -> float | None:
@@ -160,6 +183,7 @@ def build_band(
     min_days: int = MIN_DAYS,
     apply_from: Mapping[int, str] | None = None,
     basis_label: str = BASIS_TOTAL,
+    roe_owner_median: float | None = None,
 ) -> PbrBand | None:
     """일별 (bas_dt, 종가, 상장주식수) — **최신순** — 와 연도별 자본 → 밴드.
 
@@ -184,7 +208,7 @@ def build_band(
     return PbrBand(
         symbol=symbol, current=series[0], median=float(statistics.median(series)),
         low=min(series), high=max(series), n_days=len(series), last_bas_dt=last_dt,
-        equity_basis=basis,
+        equity_basis=basis, roe_owner_median=roe_owner_median if basis_label == BASIS_OWNER else None,
     )
 
 
@@ -199,11 +223,40 @@ def choose_equities(
     return {y: e for y, e in total.items() if e > 0}, BASIS_TOTAL
 
 
-def _annual_equities(fins: FinStore, symbol: str) -> tuple[dict[int, float], dict[int, str], str]:
-    """연도별 (자본, 적용일, 분모 라벨) — 자본총계·지배주주지분(P-20 ④ 승격 판정)·접수일 다음날."""
+NCI_IMMATERIAL = 0.001  # 비지배지분이 자본총계의 0.1% 이하면 손익 귀속 구분이 없어도 연결 순이익 = 귀속 순이익(사실)
+
+
+def owner_roe_median(
+    annuals: Sequence[tuple[str, Mapping[str, float | None]]], *, window: int = ROE_WINDOW_YEARS,
+    nci_tolerance: float = NCI_IMMATERIAL,
+) -> float | None:
+    """지배주주 기준 ROE 5년 중앙(순수) = 귀속 당기순이익 ÷ 지배주주지분, 최근 ``window`` 사업연도(연도 desc 입력).
+    분모 ≤0·결측 연도는 관측 제외, 관측 0이면 None — 밸류에이션 `_roe_median`(연결/연결)과 같은 규칙.
+
+    귀속 순이익 결측 폴백(실관측 2026-09-04: 덕성·한국큐빅·샘표식품·에스씨디·현대공업 — 비지배지분이 없어 IS에 귀속 구분
+    행 자체가 없음, 포시에스는 비지배 0.04%): **지배주주지분 = 자본총계(허용 오차 ``nci_tolerance``)** 이면 연결 순이익을
+    귀속 순이익으로 쓴다 — 비지배 몫이 없다는 사실에서 따라오는 값이지 추정이 아니다. 비지배지분이 그 이상인데 귀속이
+    결측이면 관측 제외."""
+    roes: list[float] = []
+    for _year, acc in list(annuals)[:window]:
+        ni, eq = acc.get("owner_net_income"), acc.get("owner_equity")
+        if eq is None or eq <= 0:
+            continue
+        if ni is None:
+            total_eq, total_ni = acc.get("equity"), acc.get("net_income")
+            if total_eq is not None and total_ni is not None and total_eq > 0 and abs(total_eq - eq) <= nci_tolerance * total_eq:
+                ni = total_ni
+        if ni is not None:
+            roes.append(ni / eq)
+    return float(statistics.median(roes)) if roes else None
+
+
+def _annual_equities(fins: FinStore, symbol: str) -> tuple[dict[int, float], dict[int, str], str, float | None]:
+    """연도별 (자본, 적용일, 분모 라벨, 지배주주 ROE 중앙) — 자본총계·지배주주지분(P-20 ④ 승격 판정)·접수일 다음날."""
     total: dict[int, float] = {}
     owner: dict[int, float] = {}
-    for year, acc in fins.annual_series(symbol):
+    annuals = fins.annual_series(symbol)
+    for year, acc in annuals:
         e = acc.get("equity")
         if e is not None and e > 0:
             total[int(year)] = float(e)
@@ -211,7 +264,8 @@ def _annual_equities(fins: FinStore, symbol: str) -> tuple[dict[int, float], dic
         if o is not None and o > 0:
             owner[int(year)] = float(o)
     equities, label = choose_equities(total, owner)
-    return equities, fins.annual_apply_dates(symbol), label
+    roe_own = owner_roe_median(annuals) if label == BASIS_OWNER else None
+    return equities, fins.annual_apply_dates(symbol), label, roe_own
 
 
 _IN_CHUNK = 500  # SQLite 바인딩 상한(999) 아래
@@ -262,10 +316,11 @@ def pbr_bands(
         quotes = _quotes_desc_many(mconn, syms, window_days)
         out: dict[str, PbrBand | None] = {}
         for s in syms:
-            equities, apply_from, label = _annual_equities(fins, s)
+            equities, apply_from, label, roe_own = _annual_equities(fins, s)
             out[s] = build_band(
                 s, quotes[s], equities,
                 window_days=window_days, min_days=min_days, apply_from=apply_from, basis_label=label,
+                roe_owner_median=roe_own,
             )
         return out
     finally:
@@ -274,7 +329,8 @@ def pbr_bands(
 
 
 __all__ = [
-    "BAND_FISCAL_YEARS", "BASIS_OWNER", "BASIS_TOTAL", "apply_date", "choose_equities",
+    "BAND_FISCAL_YEARS", "BASIS_OWNER", "BASIS_TOTAL", "NCI_IMMATERIAL", "ROE_BASIS_OWNER", "ROE_BASIS_TOTAL", "ROE_WINDOW_YEARS",
+    "apply_date", "choose_equities", "effective_roe", "owner_roe_median",
     "JUSTIFIED_COE", "JUSTIFIED_G", "MIN_DAYS", "WINDOW_DAYS", "PbrBand", "TargetPbr",
     "build_band", "equity_asof", "fiscal_year_asof", "justified_pbr", "pbr_bands",
     "regression_upside", "target_pbr",

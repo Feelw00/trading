@@ -243,6 +243,9 @@ def _build_picks() -> list[Pick]:
             roe_med = val.roe_median_5y if val else None
             upside = regression_upside(band, roe_med)
             tp = target_pbr(band, roe_med) if band is not None else None
+            # v2.20: 표시 ROE = 캡에 실제 쓰인 ROE(승격 밴드는 지배주주 기준 — band.effective_roe)
+            if tp is not None:
+                roe_med = tp.roe_used
             # v2.2(운영자 결재 2026-09-01): 이익 방향은 영업이익/자본 기준 — 영업외 스파이크가
             # 중앙값을 부풀려 회복 종목이 음수로 보이던 왜곡(신세계I&C·슈피겐 사례) 제거
             od = op_dirs.get(r.symbol)
@@ -350,9 +353,10 @@ def _band_tip(p: Pick) -> str:
         return "밴드 결측 — 이력 500거래일 미만 또는 연간 자본총계 결측(지어내지 않음)"
     t = p.target
     if t is None:
-        return (f"ROE 5년 중앙 결측 — 정당 PBR 캡 검증 불가(여력 결측) · 5년 밴드 중앙 {b.median:.2f} · "
+        basis = "지배주주" if b.is_owner_basis else "연결"
+        return (f"ROE 5년 중앙({basis}) 결측 — 정당 PBR 캡 검증 불가(여력 결측) · 5년 밴드 중앙 {b.median:.2f} · "
                 f"현재 {b.current:.2f}")
-    roe = f"{p.roe_median * 100:.1f}%" if p.roe_median is not None else "결측"
+    roe = f"{p.roe_median * 100:.1f}%({t.roe_basis})" if p.roe_median is not None else "결측"
     coe_g = f"COE {JUSTIFIED_COE:.0%} · g {JUSTIFIED_G:.0%}"
     if t.anchor == "justified":
         head = (f"목표 PBR {t.value:.2f} = 정당 PBR 캡 (ROE 5년 중앙 {roe}, {coe_g}) "
