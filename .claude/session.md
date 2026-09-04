@@ -44,6 +44,9 @@
   진단은 `runs.sqlite` → `.runtime/openclaw/agents/main/sessions/<run>.jsonl`(stopReason·usage) 순, 쿼터 추측 금지. 9/4 exec stdio
   분리+고정 답변으로 교정(sync.py) — 재발 시 트랜스크립트부터
 - **보유 종목 상태 전이 = P1**(v2.17, 9/4): eod `status-v3`·weekly `audit` 끝에 `holding_status` 감시, 자동 청산 없음
+- **배당은 `alot_reports` 접수분 합산**(v2.18, 9/4): 리츠 등 반기·분기 결산은 연도당 접수분 2~4건 — 옛 `alot_facts` 첫 접수분만 보면 과소.
+  리츠 환원 면제 없음. **분할은 인적=강등 없음, 물적·혼합·미상·미수록=강등**(`SplitAssessment.downgrade`), 배제 아님 — 물적분할 후
+  자회사 상장 사실 소스는 미확정(결재거리)
 - 지시 인코딩 시 **결과를 지시자 언어로 에코백**(7/14 규칙)
 
 ### next
