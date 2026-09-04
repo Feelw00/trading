@@ -19,7 +19,13 @@ KIS 주식현재가 시세의 ``bstp_kor_isnm``(거래소 공식 업종명)을 `
 
 소스 분리: grounded 결과는 ``dart-ksic-v1`` 로 적재. 큐레이션 ``llm-cls-v1`` 은 보존(우선),
 grounded는 미분류 갭만 채운다(스크리너 ``sector_map_multi`` 병합).
-실행: ``python -m trading.sectors``.
+
+**업종 없음 박제(P-19 ④, 2026-09-04):** KIS가 *정상 응답*(현재가 있음)을 주는데 ``bstp_kor_isnm``
+이 null/공백인 종목(KONEX 108·외국기업 950번대·신형 코드·농업/부동산 등 KRX 업종지수 밖 129종)은
+일시 장애가 아니라 소스에 업종이 없는 것 — 8/31~9/2 cron 3회 연속 129/129 동일 실패 + 실호출 확인.
+``source="none"`` 으로 'unclassified' 행을 남겨 매일 129콜 재시도를 끊는다(``KRX_NONE_SOURCE``).
+호출 실패·빈 응답은 종전처럼 행 없이 스킵(재시도). 박제분 재시도 = ``--retry-pinned``.
+실행: ``python -m trading.sectors`` [``--retag``] [``--retry-pinned``].
 """
 
 import os
@@ -37,7 +43,9 @@ from trading.screener import ScreenConfig, screen
 
 GROUNDED_SOURCE = "dart-ksic-v1"
 KRX_SOURCE = "kis-bstp-v1"   # KRX 공식 업종명(KIS bstp_kor_isnm) — 최우선(운영자 결정 2026-07-13)
+KRX_NONE_SOURCE = "none"     # P-19 ④: KIS 정상 응답인데 업종명 없음 — 영구 스킵 박제(재시도 콜 절감)
 _F_BSTP = "bstp_kor_isnm"
+_F_PRPR = "stck_prpr"        # 정상 응답 마커(현재가) — 있는데 업종명이 비면 "소스에 업종 없음"으로 확정
 
 
 @dataclass(frozen=True)
@@ -141,8 +149,9 @@ def classify_ksic(induty_code: str | None) -> list[Sector]:
 class ClassifySummary:
     attempted: int
     classified: int      # 신규 태깅된 종목수
-    unclassified: int    # 매핑 못 해 미분류로 남긴 종목수
+    unclassified: int    # 매핑 못 해 미분류로 남긴 종목수(KRX: 행 없이 스킵 = 재시도 예정)
     by_sector: dict[str, int]
+    pinned: int = 0      # KRX: 정상 응답·업종 없음 → ``KRX_NONE_SOURCE`` 박제(재시도 안 함)
 
 
 def classify_untagged(
@@ -184,13 +193,20 @@ def classify_krx(
     *,
     as_of: str,
     source: str = KRX_SOURCE,
+    pin_source: str | None = KRX_NONE_SOURCE,
 ) -> ClassifySummary:
     """``codes`` 각각 KIS 현재가 시세 → KRX 공식 업종명(``bstp_kor_isnm``) 적재.
 
-    호출 실패·업종명 결측은 **행을 남기지 않고 스킵**(다음 실행 재시도 — 일시 장애가
-    영구 미분류로 굳는 것 방지). 업종명은 거래소 원문 그대로(추측·정규화 없음).
+    응답 구분(P-19 ④, 2026-09-04 실측):
+    - 호출 실패·빈 응답 → **행을 남기지 않고 스킵**(다음 실행 재시도 — 일시 장애가 영구
+      미분류로 굳는 것 방지).
+    - **정상 응답(현재가 있음)인데 업종명 null/공백** → ``pin_source``("none")로 'unclassified'
+      행 박제 = 소스에 업종이 없는 종목(KONEX·외국기업·신형 코드 등). 이후 실행에서 제외.
+      ``pin_source=None`` 이면 종전처럼 스킵만.
+    업종명은 거래소 원문 그대로(추측·정규화 없음).
     """
     items: list[dict[str, object]] = []
+    pins: list[dict[str, object]] = []
     by_sector: Counter[str] = Counter()
     classified = skipped = 0
     for srtn_cd, name in codes:
@@ -200,21 +216,40 @@ def classify_krx(
             out = {}
         bstp = str(out.get(_F_BSTP) or "").strip()
         if not bstp:
-            skipped += 1
+            if pin_source and str(out.get(_F_PRPR) or "").strip():
+                pins.append({"srtn_cd": srtn_cd, "name": name, "sectors": [], "confidence": 0.0})
+            else:
+                skipped += 1
             continue
         items.append({"srtn_cd": srtn_cd, "name": name, "sectors": [bstp], "confidence": 1.0})
         classified += 1
         by_sector[bstp] += 1
     if items:
         store.upsert_sectors(items, source=source, as_of=as_of)
-    return ClassifySummary(len(codes), classified, skipped, dict(by_sector))
+    if pins and pin_source:
+        store.upsert_sectors(pins, source=pin_source, as_of=as_of)
+    return ClassifySummary(len(codes), classified, skipped, dict(by_sector), pinned=len(pins))
+
+
+def krx_todo(
+    store: MarketStore, all_names: dict[str, str], *, retry_pinned: bool = False
+) -> list[tuple[str, str]]:
+    """KRX 태깅 대상(코드, 이름) — 기본: 미시도 종목(``kis-bstp-v1``·``none`` 행 둘 다 없음).
+    ``retry_pinned``: 박제된 '업종 없음' 종목만 재시도(성공하면 ``kis-bstp-v1`` 행이 생겨 이후 제외).
+    어느 모드든 이미 태깅된 종목·현재 미상장(``all_names`` 밖)은 제외."""
+    krx_done = store.codes_with_any_row(KRX_SOURCE)
+    pinned = store.codes_with_any_row(KRX_NONE_SOURCE)
+    pick = (pinned - krx_done) if retry_pinned else (set(all_names) - krx_done - pinned)
+    return [(cd, all_names[cd]) for cd in sorted(pick) if cd in all_names]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """기본: 미시도 종목만 grounded 분류. ``--retag``: KSIC 규칙이 늘어난 뒤
-    과거에 '미분류'로 기록된 종목을 재평가(신규 규칙 소급 — 매칭 행만 append, 중복 무해)."""
+    과거에 '미분류'로 기록된 종목을 재평가(신규 규칙 소급 — 매칭 행만 append, 중복 무해).
+    ``--retry-pinned``: KRX '업종 없음' 박제분(``none``)을 다시 KIS에 물어본다(P-19 ④)."""
     args = list(sys.argv[1:] if argv is None else argv)
     retag = "--retag" in args
+    retry_pinned = "--retry-pinned" in args  # P-19 ④ 박제분('none') 재시도
     store = MarketStore()
     res = screen(store, ScreenConfig(top_n=1_000_000))  # 게이트 통과 전체 열거
     if not res.candidates:
@@ -234,18 +269,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         bas_dt = store.latest_date()
         all_names = store.names_on(bas_dt) if bas_dt else {}
-        krx_done = store.codes_with_any_row(KRX_SOURCE)
-        krx_todo = [(cd, nm) for cd, nm in sorted(all_names.items()) if cd not in krx_done]
-        if krx_todo:
-            ks = classify_krx(store, kis, krx_todo, as_of=res.as_of)
+        todo_krx = krx_todo(store, all_names, retry_pinned=retry_pinned)
+        mode = "박제분 재시도" if retry_pinned else "신규"
+        if todo_krx:
+            ks = classify_krx(store, kis, todo_krx, as_of=res.as_of)
             print(
-                f"KRX 업종 태깅(kis-bstp-v1) as_of={res.as_of}: 대상 {ks.attempted} · "
-                f"태깅 {ks.classified} · 스킵(재시도 예정) {ks.unclassified}"
+                f"KRX 업종 태깅(kis-bstp-v1, {mode}) as_of={res.as_of}: 대상 {ks.attempted} · "
+                f"태깅 {ks.classified} · 박제(업종 없음→none) {ks.pinned} · "
+                f"스킵(재시도 예정) {ks.unclassified}"
             )
             for sec, n in sorted(ks.by_sector.items(), key=lambda x: -x[1]):
                 print(f"  {sec}: {n}")
         else:
-            print("KRX 업종 태깅 최신 — 신규 없음")
+            print(f"KRX 업종 태깅 최신 — {mode} 대상 없음")
 
     key = os.environ.get("DART_API_KEY", "")
     if not key:
@@ -280,6 +316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "GROUNDED_SOURCE",
     "KRX_SOURCE",
+    "KRX_NONE_SOURCE",
     "MANUAL_SOURCE",
     "MANUAL_SECTORS",
     "KSIC_RULES",
@@ -289,6 +326,7 @@ __all__ = [
     "classify_krx",
     "classify_ksic",
     "classify_untagged",
+    "krx_todo",
 ]
 
 

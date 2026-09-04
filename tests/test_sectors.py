@@ -10,6 +10,7 @@ from trading.collectors.dart import DartClient
 from trading.collectors.market import MarketStore
 from trading.domains import Sector
 from trading.sectors import (
+    KRX_NONE_SOURCE,
     KRX_SOURCE,
     MANUAL_SECTORS,
     MANUAL_SOURCE,
@@ -18,6 +19,7 @@ from trading.sectors import (
     classify_krx,
     classify_ksic,
     classify_untagged,
+    krx_todo,
 )
 
 
@@ -137,38 +139,114 @@ def test_manual_takes_precedence_over_grounded(tmp_path: Path) -> None:
 
 
 class _FakeKis:
-    """quote_price만 흉내 — 업종명 매핑 + 지정 종목 호출 실패."""
+    """quote_price만 흉내 — 업종명 매핑 + 지정 종목 호출 실패 + 정상 응답·업종 없음(``blank``).
 
-    def __init__(self, bstp_by_code: dict[str, str], fail: set[str] | None = None) -> None:
+    실호출 관측(2026-09-04): KONEX·외국기업(950)·신형 코드는 79~80필드 정상 응답인데
+    ``bstp_kor_isnm`` 이 null 또는 " " — ``blank`` 는 그 모양을 흉내낸다.
+    매핑·blank·fail 어디에도 없는 코드는 필드 없는 빈 응답(일시 장애 모양)."""
+
+    def __init__(
+        self,
+        bstp_by_code: dict[str, str],
+        fail: set[str] | None = None,
+        blank: set[str] | None = None,
+    ) -> None:
         self._bstp = bstp_by_code
         self._fail = fail or set()
+        self._blank = blank or set()
+        self.calls: list[str] = []
 
     def quote_price(self, srtn_cd: str) -> dict[str, Any]:
+        self.calls.append(srtn_cd)
         if srtn_cd in self._fail:
             raise OSError("kis down")
-        return {"bstp_kor_isnm": self._bstp.get(srtn_cd, "")}
+        if srtn_cd in self._blank:
+            return {"stck_prpr": "10200", "rprs_mrkt_kor_name": "KONEX", "bstp_kor_isnm": " "}
+        if srtn_cd in self._bstp:
+            return {"stck_prpr": "255500", "bstp_kor_isnm": self._bstp[srtn_cd]}
+        return {"bstp_kor_isnm": ""}
 
 
 def test_classify_krx_tags_official_sector_and_skips_failures(tmp_path: Path) -> None:
     store = MarketStore(tmp_path / "m.sqlite")
-    kis = _FakeKis({"005930": "전기·전자", "105560": "은행"}, fail={"999999"})
+    kis = _FakeKis({"005930": "전기·전자", "105560": "은행"}, fail={"999999"}, blank={"140610"})
     codes = [
         ("005930", "삼성전자"),
         ("105560", "KB금융"),
-        ("999999", "장애종목"),   # 호출 실패 → 스킵
-        ("888888", "업종없음"),   # 응답에 업종명 결측 → 스킵
+        ("999999", "장애종목"),   # 호출 실패 → 스킵(재시도)
+        ("888888", "빈응답"),     # 필드 없는 빈 응답(일시 장애 모양) → 스킵(재시도)
+        ("140610", "엔솔바이오"),  # 정상 응답·업종 없음(KONEX) → 'none' 박제(P-19 ④)
     ]
     s = classify_krx(store, kis, codes, as_of="20260713")  # type: ignore[arg-type]
 
-    assert s.attempted == 4
+    assert s.attempted == 5
     assert s.classified == 2
-    assert s.unclassified == 2  # 스킵분
+    assert s.unclassified == 2  # 재시도 예정 스킵분(장애·빈 응답)
+    assert s.pinned == 1
     sm = store.sector_map(KRX_SOURCE)
     assert sm["005930"] == ["전기·전자"]  # 거래소 원문 그대로(정규화 없음)
     assert sm["105560"] == ["은행"]
     # 스킵분은 행을 남기지 않아 다음 실행에 재시도된다(일시 장애의 영구화 방지)
     assert "999999" not in store.codes_with_any_row(KRX_SOURCE)
     assert "888888" not in store.codes_with_any_row(KRX_SOURCE)
+    assert "888888" not in store.codes_with_any_row(KRX_NONE_SOURCE)
+    # 박제분: kis-bstp-v1 행은 없고(업종 추측 없음) 'none' 소스의 unclassified 행만 남는다
+    assert "140610" not in store.codes_with_any_row(KRX_SOURCE)
+    assert store.codes_with_any_row(KRX_NONE_SOURCE) == {"140610"}
+    assert store.sector_map(KRX_NONE_SOURCE) == {}  # unclassified는 어떤 섹터 맵에도 안 나옴
+    assert store.sector_map_multi((KRX_SOURCE, KRX_NONE_SOURCE)).get("140610") is None
+    store.close()
+
+
+def test_classify_krx_pin_source_none_keeps_legacy_skip(tmp_path: Path) -> None:
+    # pin_source=None이면 정상 응답·업종 없음도 종전처럼 행 없이 스킵(재시도)
+    store = MarketStore(tmp_path / "m.sqlite")
+    kis = _FakeKis({}, blank={"140610"})
+    s = classify_krx(store, kis, [("140610", "엔솔바이오")], as_of="20260713", pin_source=None)  # type: ignore[arg-type]
+    assert (s.classified, s.unclassified, s.pinned) == (0, 1, 0)
+    assert store.codes_with_any_row(KRX_NONE_SOURCE) == set()
+    store.close()
+
+
+def test_krx_todo_excludes_pinned_and_retries_only_on_flag(tmp_path: Path) -> None:
+    """P-19 ④: 박제분은 기본 실행에서 제외(콜 절감), --retry-pinned에서만 재시도.
+    이미 kis-bstp-v1 행이 생긴 종목(재시도 성공분)은 어느 모드에서도 제외. 상장폐지분(names 밖)도 제외."""
+    store = MarketStore(tmp_path / "m.sqlite")
+    store.upsert_sectors(
+        [{"srtn_cd": "005930", "name": "삼성전자", "sectors": ["전기·전자"], "confidence": 1.0}],
+        source=KRX_SOURCE, as_of="20260713",
+    )
+    store.upsert_sectors(
+        [
+            {"srtn_cd": "140610", "name": "엔솔바이오", "sectors": [], "confidence": 0.0},
+            {"srtn_cd": "950160", "name": "코오롱티슈진", "sectors": [], "confidence": 0.0},
+            {"srtn_cd": "000000", "name": "상폐종목", "sectors": [], "confidence": 0.0},
+        ],
+        source=KRX_NONE_SOURCE, as_of="20260904",
+    )
+    # 950160은 나중 재시도로 태깅 성공했다고 가정 → kis-bstp-v1 행도 있음
+    store.upsert_sectors(
+        [{"srtn_cd": "950160", "name": "코오롱티슈진", "sectors": ["제약"], "confidence": 1.0}],
+        source=KRX_SOURCE, as_of="20260911",
+    )
+    names = {"005930": "삼성전자", "140610": "엔솔바이오", "950160": "코오롱티슈진", "0001A0": "덕양에너젠"}
+
+    assert krx_todo(store, names) == [("0001A0", "덕양에너젠")]          # 미시도만
+    assert krx_todo(store, names, retry_pinned=True) == [("140610", "엔솔바이오")]  # 박제분만(성공분·상폐 제외)
+    store.close()
+
+
+def test_pinned_then_retagged_krx_row_wins(tmp_path: Path) -> None:
+    # 박제 뒤 재시도로 업종이 생기면 kis-bstp-v1 행이 first-wins로 이긴다('none' 행은 append-only로 남음)
+    store = MarketStore(tmp_path / "m.sqlite")
+    kis1 = _FakeKis({}, blank={"094800"})
+    classify_krx(store, kis1, [("094800", "맵스리얼티")], as_of="20260904")  # type: ignore[arg-type]
+    assert krx_todo(store, {"094800": "맵스리얼티"}) == []
+    kis2 = _FakeKis({"094800": "부동산"})
+    s = classify_krx(store, kis2, krx_todo(store, {"094800": "맵스리얼티"}, retry_pinned=True), as_of="20260911")  # type: ignore[arg-type]
+    assert s.classified == 1
+    assert store.sector_map_multi((KRX_SOURCE, MANUAL_SOURCE))["094800"] == ["부동산"]
+    assert krx_todo(store, {"094800": "맵스리얼티"}, retry_pinned=True) == []  # 성공분은 재시도 제외
     store.close()
 
 
