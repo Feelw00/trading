@@ -151,3 +151,6 @@ EXEC-9 시간손절 창, EXEC-10 아침 규율·모멘텀, EXEC-11 저잔고·�
   상세 → [archive](../history/work/archive/2026-09-04-p20-4-owner-equity-backfill.md)
 - **P-20 ⑧ 캡 ROE 기준 정합(v2.20) (9/4 오후)** — 승격 밴드의 정당 PBR 캡 ROE = 귀속 순이익÷지배주주지분 5y 중앙(비지배 ≤0.1%는
   연결 순이익 사용). 캡 ROE 지배주주 122/170, 성우하이텍 승인 보류 파생. pytest 718·mypy clean. 상세 → 위 P-20 ④ archive §6.
+- **P-19 ④ KRX 업종 없음 129종 박제 (9/4 오후)** — 재시도 소진(cron 3회 129/129) + 실호출로 "정상 응답·업종명 공백" 확인 →
+  `classify_krx`가 정상 응답+업종 없음을 `source="none"`으로 박제(호출 실패는 재시도 유지) · `--retry-pinned`. 수동 실행 129 박제,
+  재실행 KIS 콜 0. pytest +3·mypy clean. 상세 → [archive](../history/work/archive/2026-09-04-p19-4-tagging-pin-none.md)

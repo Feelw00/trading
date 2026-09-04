@@ -51,6 +51,8 @@
   (`band.effective_roe`) · PER 분모 귀속 순이익 · as-of 적용일 = 사업보고서 접수일 다음날(`fin_reports`). 백필 잔여는 weekly
   `owner-equity` 600콜/회 — 서두르려면 `python -m trading.collect_owner_equity --years 7 --max-calls 5000`(DART 일 20,000 한도 안에서).
   `_build_picks`는 밸류에이션을 자동 재산출(append)하므로 효과 계량 시 비교 기준 버전에 주의
+- **KRX 업종 태깅 박제(P-19 ④, 9/4)**: `stock_sectors` `source="none"` = KIS 정상 응답인데 업종 없음(KONEX·외국기업·신형 코드 129종) —
+  재시도 안 함. eod-v3 로그 "박제(업종 없음→none)"·"신규 대상 없음"이 정상. 되살리려면 `python -m trading.sectors --retry-pinned`
 - 지시 인코딩 시 **결과를 지시자 언어로 에코백**(7/14 규칙)
 
 ### next
