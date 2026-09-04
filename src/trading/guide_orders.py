@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from trading.collectors.base import CollectError, now_kst
-from trading.paper import PaperStore, PositionRow, enroll_holding
+from trading.paper import EnrollBlocked, PaperStore, PositionRow, enroll_holding
 
 DEFAULT_DB = Path("data") / "broker.sqlite"
 KILL_FILE = Path(".runtime") / "exec" / "KILL"   # EXEC-1 킬 스위치 공유
@@ -434,12 +434,13 @@ def run(
     paper: PaperStore,
     now: datetime | None = None,
     alert: Any | None = None,
-    enroll: Callable[[str, str, float | None], str | None] | None = None,
+    enroll: Callable[[str, str, float | None], str | EnrollBlocked | None] | None = None,
 ) -> RunSummary:
     """1회 실행: 보유 스냅샷·이상 감지 → 우리 조건주문 정산 → 변경 시에만 취소·재등록.
 
     ``alert``: P1 적재 콜백(what) — 라운드 보고 꼬리에 실린다. None이면 print만.
-    ``enroll``: 가이드 밖 실보유 편입 콜백(symbol, name, avg_price) → 편입 줄 또는 None(불가).
+    ``enroll``: 가이드 밖 실보유 편입 콜백(symbol, name, avg_price) → 편입 줄 · None(결측 불가) ·
+    ``EnrollBlocked``(정책 보류 — GUIDE-1 ③ 심사 승인 없음: 매도 예약 없이 ⚠ 표기, 신규면 P1).
     운영자 지시(2026-09-02): 페이퍼는 실투자·명시 이동만 — 실보유가 곧 편입 사유다.
     """
     ts = now or now_kst()
@@ -550,7 +551,17 @@ def run(
     for sym, h in sorted(held.items()):
         if sym in positions or h.quantity <= 0:
             continue
-        line = enroll(sym, h.name, h.avg_price) if enroll is not None else None
+        outcome = enroll(sym, h.name, h.avg_price) if enroll is not None else None
+        if isinstance(outcome, EnrollBlocked):
+            # GUIDE-1 ③(운영자 결정 2026-09-03): 심사 승인 없는 실보유는 편입 보류 — 목표가·매도
+            # 사다리·조건주문 없음(심사 우회 방지). 승인되면 다음 실행에서 자동 편입.
+            if sym not in prev:
+                store.append_event(ts, "enroll_blocked", sym, outcome.reason)
+                _p1(f"심사 승인 없는 실보유: {sym} {h.name} {h.quantity}주 — 편입 보류"
+                    f"({outcome.reason}) · 매도 예약 없음 — 심사 승인 시 자동 편입(GUIDE-1 ③)")
+            s.lines.append(f"⚠ {sym} {h.name} {h.quantity}주 — 가이드 밖(편입 보류: {outcome.reason} · 매도 예약 없음)")
+            continue
+        line = outcome
         if line:
             store.append_event(ts, "enrolled", sym, line)
             s.lines.append(line)

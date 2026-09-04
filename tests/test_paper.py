@@ -6,11 +6,14 @@ from pathlib import Path
 import pytest
 
 from trading.paper import (
+    MIN_UPSIDE_PCT,
+    EnrollBlocked,
     PaperParams,
     PaperStore,
     current_targets,
     enroll_holding,
     mark,
+    register_block_reason,
     target_drift,
 )
 
@@ -172,16 +175,47 @@ def test_enroll_holding_uses_avg_price_and_estimated_target(tmp_path: Path) -> N
     """운영자 지시(2026-09-02): 페이퍼 편입은 실투자 — 시작가 = 실평단, 목표 = 편입 시점 추정."""
     store = PaperStore(tmp_path / "p.sqlite")
     targets = {"000001": ("20260901", 1000.0, 1500.0)}
-    line = enroll_holding(store, "000001", 950.0, targets=targets)
-    assert line is not None and "시작가 950" in line and "1,500" in line
+    ok = {"000001": "approved", "000002": "approved"}
+    line = enroll_holding(store, "000001", 950.0, targets=targets, verdicts=ok)
+    assert isinstance(line, str) and "시작가 950" in line and "1,500" in line
     pos = store.latest_positions()[0]
     assert (pos.base_price, pos.target_price, pos.opened_bas_dt) == (950.0, 1500.0, "20260901")
     # 이미 open → 중복 편입 없음 · 평단/추정 목표 결측 → 편입 불가(None, 호출자가 P1)
-    assert enroll_holding(store, "000001", 950.0, targets=targets) is None
-    assert enroll_holding(store, "000002", None, targets=targets) is None
-    assert enroll_holding(store, "000002", 900.0, targets={"000002": None}) is None
+    assert enroll_holding(store, "000001", 950.0, targets=targets, verdicts=ok) is None
+    assert enroll_holding(store, "000002", None, targets=targets, verdicts=ok) is None
+    assert enroll_holding(store, "000002", 900.0, targets={"000002": None}, verdicts=ok) is None
     assert len(store.latest_positions()) == 1
     store.close()
+
+
+def test_enroll_holding_blocks_unapproved_holding(tmp_path: Path) -> None:
+    """GUIDE-1 ③(운영자 결정 2026-09-03): 심사 승인 없는 실보유는 편입 보류 — 포지션·매도선 없음."""
+    store = PaperStore(tmp_path / "p.sqlite")
+    targets = {"000003": ("20260901", 1000.0, 1500.0)}
+    for verdict in ("hold", "vetoed", None):
+        res = enroll_holding(store, "000003", 900.0, targets=targets, verdicts={"000003": verdict})
+        assert isinstance(res, EnrollBlocked) and "심사 승인 없음" in res.reason
+        assert (verdict or "미심사") in res.reason
+    assert store.latest_positions() == []                      # 포지션 생성 없음
+    # 승인 판정 뒤 같은 호출 → 편입(승인 전 보류는 이력만 남고 재시도 가능)
+    assert isinstance(enroll_holding(store, "000003", 900.0, targets=targets,
+                                     verdicts={"000003": "approved"}), str)
+    assert len(store.latest_positions()) == 1
+    store.close()
+
+
+def test_register_block_reason_gate() -> None:
+    """등록 자격 순수 함수 — v2.12 승인 ∧ 여력 ≥ +30% · v2.15 과열 산업 제외(운영자 결정 2026-09-03)."""
+    assert register_block_reason("approved", 45.0, False) is None
+    assert register_block_reason("approved", MIN_UPSIDE_PCT, False) is None          # 경계 포함
+    assert "심사 승인 아님" in (register_block_reason("hold", 90.0, False) or "")
+    assert "심사 승인 아님(대기)" in (register_block_reason(None, 90.0, False) or "")
+    why = register_block_reason("approved", 90.0, True)                               # 여력 충분해도 과열이면 제외
+    assert why is not None and "과열 산업" in why and "승인 노출은 유지" in why
+    assert "결측" in (register_block_reason("approved", None, False) or "")
+    assert "< 하한" in (register_block_reason("approved", 10.0, False) or "")
+    # 순서: 승인 → 과열 → 여력(과열은 승인 종목에만 의미)
+    assert "심사 승인 아님" in (register_block_reason("hold", 10.0, True) or "")
 
 
 def test_current_targets_and_drift_alert(tmp_path: Path) -> None:

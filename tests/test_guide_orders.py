@@ -1,5 +1,6 @@
 """EXEC-12 — 가이드 매도 예약: 계획(내림·호가단위 올림)·저널·모드·정산·**변경 시에만 재등록**."""
 
+import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -258,15 +259,17 @@ def test_mode_env_and_kill(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
 
 def test_enroll_callback_registers_real_holding_and_plans(tmp_path: Path) -> None:
     """운영자 지시(2026-09-02): 가이드 밖 실보유는 실평단으로 편입 → 같은 실행에서 매도 예약."""
-    from trading.paper import enroll_holding
+    from trading.paper import EnrollBlocked, enroll_holding
 
     b = FakeBroker([_item("000001", "A", 13, 2720, 2770), _item("999999", "Z", 5, 100, 100)])
     store = BrokerStore(tmp_path / "b.sqlite")
     paper = _paper(tmp_path)                                          # 비어 있음
     targets = {"000001": ("20260902", 2770.0, 4000.0)}                # Z는 밸류 결측 → 편입 불가
 
-    def _enroll(sym: str, _name: str, avg: float | None) -> str | None:
-        return enroll_holding(paper, sym, avg, targets=targets)
+    ok = {"000001": "approved", "999999": "approved"}
+
+    def _enroll(sym: str, _name: str, avg: float | None) -> str | EnrollBlocked | None:
+        return enroll_holding(paper, sym, avg, targets=targets, verdicts=ok)
 
     s = run(b, mode="dry-run", store=store, paper=paper, now=T0, enroll=_enroll)
     pos = {p.symbol: p for p in paper.latest_positions()}
@@ -278,6 +281,38 @@ def test_enroll_callback_registers_real_holding_and_plans(tmp_path: Path) -> Non
     # 다음 실행: 재편입 없음 · 유지
     s2 = run(b, mode="dry-run", store=store, paper=paper, now=T0 + timedelta(days=1), enroll=_enroll)
     assert s2.kept == 1 and s2.placed == 0 and len(paper.latest_positions()) == 1
+    paper.close()
+
+
+def test_enroll_blocked_unapproved_holding_no_orders_and_p1_once(tmp_path: Path) -> None:
+    """GUIDE-1 ③(운영자 결정 2026-09-03): 심사 승인 없는 실보유는 편입 보류 — 조건주문 없음, 신규 발견 시 P1 1회."""
+    from trading.paper import EnrollBlocked, enroll_holding
+
+    b = FakeBroker([_item("000001", "A", 13, 2720, 2770)])
+    store = BrokerStore(tmp_path / "b.sqlite")
+    paper = _paper(tmp_path)
+    targets = {"000001": ("20260902", 2770.0, 4000.0)}
+
+    def _enroll(sym: str, _name: str, avg: float | None) -> str | EnrollBlocked | None:
+        return enroll_holding(paper, sym, avg, targets=targets, verdicts={"000001": "hold"})
+
+    s = run(b, mode="dry-run", store=store, paper=paper, now=T0, enroll=_enroll)
+    assert paper.latest_positions() == [] and s.guided == 0 and s.placed == 0   # 포지션·예약 없음
+    assert any("편입 보류" in ln and "매도 예약 없음" in ln for ln in s.lines or [])
+    assert sum("편입 보류" in a for a in s.anomalies or []) == 1                  # 신규 → P1
+    kinds = [r[0] for r in sqlite3.connect(tmp_path / "b.sqlite").execute("SELECT kind FROM events")]
+    assert kinds.count("enroll_blocked") == 1                                   # 사실 이벤트 1회 박제
+    s2 = run(b, mode="dry-run", store=store, paper=paper, now=T0 + timedelta(days=1), enroll=_enroll)
+    assert paper.latest_positions() == [] and s2.placed == 0
+    assert not any("편입 보류" in a for a in s2.anomalies or [])                 # 기존 보유 → P1 반복 없음
+    assert any("편입 보류" in ln for ln in s2.lines or [])                        # 표기는 매 실행
+
+    # 승인 뒤 → 자동 편입 + 첫 매도선 계획
+    def _enroll_ok(sym: str, _name: str, avg: float | None) -> str | EnrollBlocked | None:
+        return enroll_holding(paper, sym, avg, targets=targets, verdicts={"000001": "approved"})
+
+    s3 = run(b, mode="dry-run", store=store, paper=paper, now=T0 + timedelta(days=2), enroll=_enroll_ok)
+    assert len(paper.latest_positions()) == 1 and s3.placed == 1
     paper.close()
 
 

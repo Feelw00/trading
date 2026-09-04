@@ -502,25 +502,71 @@ def current_targets(
         mconn.close()
 
 
+@dataclass(frozen=True)
+class EnrollBlocked:
+    """실보유 편입의 **정책 보류**(결측에 의한 불가와 구분) — GUIDE-1 ③(운영자 결정 2026-09-03):
+    심사 승인 없는 실보유는 편입하지 않는다(목표가·매도 사다리·조건주문 없음). 승인되면 다음
+    guide-orders 실행에서 자동 편입. 호출자는 가이드 밖 ⚠ 표기 + 첫 발견 시 P1."""
+
+    reason: str
+
+
+def current_verdicts() -> dict[str, str | None]:
+    """심사 원장 현재 판정(만료분 제외) — {symbol: approved|hold|vetoed|None}."""
+    from trading.review import ReviewStore, latest_annual_year
+
+    rstore = ReviewStore()
+    try:
+        return {s: v.get("verdict") for s, v in rstore.all_current(latest_annual_year()).items()}
+    finally:
+        rstore.close()
+
+
+def register_block_reason(
+    verdict: str | None, upside_pct: float | None, cycle_caution: bool,
+) -> str | None:
+    """명시 등록(`paper register`) 자격 — 차단 사유 또는 None(자격 충족). 순수 함수.
+
+    v2.12: 심사 승인 ∧ 회귀 여력 ≥ +30%. **v2.15(운영자 결정 2026-09-03, P-20 ①(a))**: 과열 산업
+    (`CandidateRecord.cycle_caution`) 제외 — **가이드 등록 자격에만** 적용. 승인 노출·자동 심사는
+    불변(P-18: 국면은 게이트가 아니라 도구). 국면이 바뀌면 같은 명령으로 재등록 가능.
+    실보유 자동 편입(`enroll_holding`)은 이 함수를 쓰지 않는다 — 보유는 사실이며 승인만 본다.
+    """
+    if verdict != "approved":
+        return f"심사 승인 아님({verdict or '대기'})"
+    if cycle_caution:
+        return "과열 산업(⚠) — 가이드 등록 제외(v2.15: 승인 노출은 유지, 국면 전환 시 재등록 가능)"
+    if upside_pct is None:
+        return "회귀 여력 결측(지어내지 않음)"
+    if upside_pct < MIN_UPSIDE_PCT:
+        return f"여력 {upside_pct:+.0f}% < 하한 +{MIN_UPSIDE_PCT:.0f}%(손익비 미성립)"
+    return None
+
+
 def enroll_holding(
     store: PaperStore, symbol: str, avg_price: float | None, *,
     targets: Mapping[str, tuple[str, float, float] | None] | None = None,
     market_db: Path = Path("data") / "market.sqlite",
-) -> str | None:
+    verdicts: Mapping[str, str | None] | None = None,
+) -> str | EnrollBlocked | None:
     """실보유 편입 — 페이퍼는 실투자·명시 이동만(운영자 지시 2026-09-02).
 
-    시작가 = 실평단(불변 원칙 그대로), 목표가 = 편입 시점 추정 목표. 승인·여력 하한을 묻지
-    않는다 — 이미 산 종목의 사실 기록이며, 심사 외 보유는 /paper가 표기한다.
+    시작가 = 실평단(불변 원칙 그대로), 목표가 = 편입 시점 추정 목표. 여력 하한·과열은 묻지
+    않는다 — 이미 산 종목의 사실 기록. **심사 승인은 본다(GUIDE-1 ③, 2026-09-03)**: 승인 없는
+    보유는 `EnrollBlocked`(편입 보류 — 목표가·매도선 없음, 심사 우회 방지).
     편입 불가(평단·밸류에이션·시세 결측)면 None — 호출자가 P1로 올린다.
     """
     if avg_price is None or avg_price <= 0:
         return None
+    if any(p.symbol == symbol and p.status == "open" for p in store.latest_positions()):
+        return None
+    vd = (verdicts if verdicts is not None else current_verdicts()).get(symbol)
+    if vd != "approved":
+        return EnrollBlocked(f"심사 승인 없음(판정: {vd or '미심사'})")
     tg = (targets if targets is not None else current_targets([symbol], market_db=market_db)).get(symbol)
     if tg is None:
         return None
     bas_dt, _close, target = tg
-    if any(p.symbol == symbol and p.status == "open" for p in store.latest_positions()):
-        return None
     store.open_position(symbol, bas_dt, float(avg_price), target, PROPOSED_PAPER)
     return (f"{symbol} 가이드 편입 — 시작가 {avg_price:,.0f}(실평단) · "
             f"목표 {target:,.0f}({target / avg_price - 1:+.0%})")
@@ -603,8 +649,10 @@ def main() -> int:
                 sym = p.rec.symbol
                 if sym not in allow or sym in existing:
                     continue
-                if p.verdict != "approved":
-                    print(f"  {p.name}({sym}): 심사 승인 아님({p.verdict or '대기'}) — 편입 불가")
+                # 등록 자격(v2.12 승인 ∧ 여력 ≥ +30% · v2.15 과열 산업 제외) — 순수 함수 단일 경로
+                why = register_block_reason(p.verdict, p.upside_pct, p.rec.cycle_caution)
+                if why is not None:
+                    print(f"  {p.name}({sym}): {why} — 편입 불가")
                     continue
                 row = mconn.execute(
                     "SELECT bas_dt, clpr FROM daily_quotes WHERE srtn_cd=? "
@@ -612,10 +660,6 @@ def main() -> int:
                 ).fetchone()
                 if row is None or p.upside_pct is None:
                     print(f"  {sym}: 시세/회귀 여력 결측 — 등록 불가(지어내지 않음)")
-                    continue
-                if p.upside_pct < MIN_UPSIDE_PCT:
-                    print(f"  {p.name}({sym}): 여력 {p.upside_pct:+.0f}% < 하한 "
-                          f"+{MIN_UPSIDE_PCT:.0f}% — 등록 제외(손익비 미성립)")
                     continue
                 base = float(row[1])
                 target = base * (1 + p.upside_pct / 100)
