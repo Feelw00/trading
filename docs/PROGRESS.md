@@ -139,3 +139,9 @@ EXEC-9 시간손절 창, EXEC-10 아침 규율·모멘텀, EXEC-11 저잔고·�
   수익률 액면 오기재 12종 23행 가드(판정 미개입, /picks 표시 교정); 운영자 추가 매수(7종 수량 증가, 평가 61→163만원) → 조건주문
   7건 재등록(시작가 불변). 검증: pytest 전체·mypy 217 clean.
   상세 → [archive](../history/work/archive/2026-09-04-holding-status-p1-dividend-guard.md)
+- **COLLECT-5 종결 — 리츠 면제 해제·접수분별 배당 저장 · 분할 인적/물적 구분(v2.18) (9/4)** — 실측(리츠 22/23종 반기·분기 결산 →
+  접수분 2~4건, 첫 접수분만 저장돼 연간 배당 50~75% 과소 · 분할방법은 DART `cmpDvDecsn` `dv_mth` 원문으로 59개 기업 전수 분류) →
+  운영자 결재 (a)(a) → 같은 날 구현·재수집(518종·접수분 2,573건, 결정 56건). 인적분할 강등 해제로 코어 복귀 5종, 물적 배제 승격은 기각
+  (헌법 표적 = 물적분할 후 자회사 상장). 검증: pytest 709·mypy 217 clean.
+  상세 → [research](research/2026-09-04-collect5-reit-dividends-split-method.md) ·
+  [archive](../history/work/archive/2026-09-04-collect5-v218-reit-split.md)
