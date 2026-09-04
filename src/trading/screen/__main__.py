@@ -5,7 +5,7 @@
 
 from trading.cycle.store import CycleStore
 from trading.screen.rules import PROPOSED_R4, UNAPPLIED_V1
-from trading.screen.run import run_screen
+from trading.screen.run import load_status_inputs, run_screen
 from trading.screen.store import CandidateStore
 from trading.valuation.store import ValuationStore
 
@@ -13,7 +13,10 @@ from trading.valuation.store import ValuationStore
 def main() -> int:
     val_store, cycle_store, cand_store = ValuationStore(), CycleStore(), CandidateStore()
     try:
-        records, s = run_screen(val_store, cycle_store, params=PROPOSED_R4)
+        kis_flags, audits = load_status_inputs()   # SCREEN-1(v2.16) — DB-first, 없으면 미적용 고지
+        records, s = run_screen(val_store, cycle_store, params=PROPOSED_R4, kis_flags=kis_flags, audits=audits)
+        n_status = sum(1 for r in records if not any(u.startswith("관리종목·거래정지") for u in r.unapplied))
+        print(f"SCREEN-1 상태·감사의견 입력: KIS 스냅샷 {len(kis_flags)}종 · 감사의견 {len(audits)}종 · 적용 레코드 {n_status}/{len(records)}")
         print("R4 페이퍼 스크리닝 (PROPOSED_R4 — §5 결재 전 계측·보고 전용)")
         print(f"평가 {s.evaluated}종목 · 통과 {s.passed}종목")
         for r in records:

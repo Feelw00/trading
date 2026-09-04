@@ -9,18 +9,51 @@ P-18(운영자 결재 2026-08-31): 게이트는 가치·건전성만, 사이클�
 """
 
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 
+from trading.collectors.audit import AuditVerdict, current_opinion
 from trading.collectors.base import now_kst
+from trading.collectors.status import DEFAULT_DB as STATUS_DB
+from trading.collectors.status import KisFlags, StatusStore, classify_kis
 from trading.contracts.longterm import CandidateRecord, CyclePhase, CycleRecord, ValuationRecord
 from trading.cycle.policy import CURATED_GROUPS, WHITELIST
 from trading.cycle.store import CycleStore
-from trading.screen.rules import UNAPPLIED_V1, ScreenParams, evaluate
+from trading.screen.rules import UNAPPLIED_V1, ScreenParams, evaluate, status_filter
 from trading.valuation.metrics import percentile_rank
 from trading.valuation.store import ValuationStore
 
 MIN_INDUSTRY_GROUP = 3  # 산업 내 상대 위치 최소 표본(밴드 MIN_COMPOSITION과 동일 철학)
+STATUS_MAX_AGE_DAYS = 7  # KIS 상태 스냅샷 신선도 — 이보다 오래되면 미적용(오래된 상태로 탈락·통과시키지 않음)
+
+
+def load_status_inputs(
+    *, fy: str | None = None, db_path: Path = STATUS_DB, now: datetime | None = None,
+) -> tuple[dict[str, KisFlags], dict[str, AuditVerdict]]:
+    """SCREEN-1(v2.16) 입력 — data/status.sqlite의 최신 KIS 상태(신선도 가드) + FY 감사의견 요약.
+
+    DB-first: 외부 호출 없음. fy 미지정 시 재무 DB 최신 연간 사업연도(심사 원장 기준과 동일).
+    """
+    if fy is None:
+        from trading.collectors.fins import FinStore
+
+        fs = FinStore()
+        try:
+            fy = fs.latest_annual_year()
+        finally:
+            fs.close()
+    cutoff = ((now or now_kst()) - timedelta(days=STATUS_MAX_AGE_DAYS)).strftime("%Y-%m-%d")
+    store = StatusStore(db_path)
+    try:
+        flags = {
+            sym: classify_kis(row) for sym, row in store.latest_kis_all().items() if row.as_of >= cutoff
+        }
+        audits = {sym: current_opinion(store.audit_rows(sym, fy)) for sym in store.audit_symbols(fy)}
+    finally:
+        store.close()
+    return flags, audits
 
 
 @dataclass(frozen=True)
@@ -37,7 +70,11 @@ def run_screen(
     *,
     params: ScreenParams,
     now: datetime | None = None,
+    kis_flags: Mapping[str, KisFlags] | None = None,
+    audits: Mapping[str, AuditVerdict] | None = None,
 ) -> tuple[list[CandidateRecord], ScreenSummary]:
+    """``kis_flags``·``audits``: SCREEN-1(v2.16) 상태·감사의견 입력(`load_status_inputs`). None이면 해당
+    필터는 전 종목 미적용 고지(침묵 생략 금지)."""
     fetched = now or now_kst()
     latest = val_store.all_latest()
     market_pbrs = [v.pbr for v in latest if v.pbr is not None]
@@ -67,6 +104,13 @@ def run_screen(
                 market_pbr_pct=market_pct,
                 params=params,
             )
+            # v2.16 SCREEN-1 하드 필터(운영자 결재 (a) 2026-09-03) — 관리·정지·상폐 의심·감사의견 비적정
+            st_reasons, st_unapplied = status_filter(
+                kis_flags.get(val.symbol) if kis_flags is not None else None,
+                audits.get(val.symbol) if audits is not None else None,
+            )
+            reasons = reasons + st_reasons
+            passed = not reasons
             reject_counter.update(r.split("(")[0] for r in reasons)
             records.append(
                 CandidateRecord(
@@ -87,7 +131,7 @@ def run_screen(
                     industry_pbr_pct=industry_pct,
                     market_pbr_pct=market_pct,
                     cycle_caution=phase is CyclePhase.OVERHEATED,
-                    unapplied=list(UNAPPLIED_V1),
+                    unapplied=[*UNAPPLIED_V1, *st_unapplied],
                     valuation_ref=val.id,
                     cycle_ref=cyc.id if cyc else None,
                 )

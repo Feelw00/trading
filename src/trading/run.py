@@ -339,6 +339,9 @@ def _eod_v3() -> int:
         # 밸류에이션(PBR·여력은 시세 함수) + 페이퍼 트리거 재생(정의가 일별 종가)
         ("valuation-daily", _valuation_v3),
         ("paper-mark", _paper_mark),
+        # SCREEN-1(운영자 결재 (a) 2026-09-03): 관리종목·거래정지 일일 스냅샷(KIS, ≈5분) — 체인 끝에 두어
+        # 밸류에이션·페이퍼 마킹을 지연시키지 않는다. 같은 날 선행 수집분은 무호출 스킵.
+        ("status-v3", _collect_status_v3),
     ):
         step_rc = step()
         if step_rc != 0:
@@ -364,6 +367,20 @@ def _paper_mark() -> int:
         return paper_main()
     finally:
         _sys.argv = argv
+
+
+def _collect_status_v3() -> int:
+    """SCREEN-1 종목 상태 스냅샷(관리종목·거래정지·시장경고) — KIS, 재무 유니버스 전수. best-effort."""
+    from trading.collectors.status import main as status_main
+
+    return status_main([])
+
+
+def _audit_v3() -> int:
+    """SCREEN-1 감사의견 연간 수집 — DART accnutAdtorNmNdAdtOpinion, 재무 유니버스 전수."""
+    from trading.collectors.audit import main as audit_main
+
+    return audit_main([])
 
 
 def _owner_equity_v3() -> int:
@@ -411,6 +428,8 @@ def _weekly_v3() -> int:
         # 계측 → 자동 심사 → 다이제스트. 페이퍼 자동 등록은 폐지(운영자 지시 2026-09-02:
         # 페이퍼는 실투자(guide-orders 실보유 편입)·명시 이동만).
         ("owner-equity", _owner_equity_v3),
+        # SCREEN-1(운영자 결재 (a) 2026-09-03): 감사의견 연간(DART, 정정 대비 매주 재수집·같은 접수분은 무시)
+        ("audit", _audit_v3),
         ("valuation", valuation_main),
         ("cycle", cycle_main),
         ("screen", screen_main),
@@ -587,6 +606,8 @@ ROUNDS: dict[str, Callable[[], int]] = {
     "weekly-v3": _weekly_v3,
     "flows-v3": _collect_flows_v3,
     "toss-facts-v3": _collect_toss_facts_v3,
+    "status-v3": _collect_status_v3,      # SCREEN-1 종목 상태 스냅샷(KIS, 수동 실행용)
+    "audit-v3": _audit_v3,                # SCREEN-1 감사의견(DART, 수동 실행용)
     "check-eod-v3": _check_eod_v3,        # ALERT-1 미발화 감시(18:30)
     "check-weekly-v3": _check_weekly_v3,  # ALERT-1 미발화 감시(토 10:00)
     "guide-orders": _guide_orders,        # EXEC-12 가이드 매도 예약(평일 08:40)

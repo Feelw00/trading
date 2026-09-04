@@ -14,7 +14,7 @@ from trading.cycle.engine import PROPOSED_PARAMS, Assessment, assess_all
 from trading.cycle.policy import CURATED_GROUPS, FINANCIAL_PROFILE_GROUPS, POLICY_VERSION, WHITELIST
 from trading.cycle.store import CycleStore
 from trading.screen.rules import PROPOSED_R4, UNAPPLIED_V1
-from trading.screen.run import ScreenSummary, run_screen
+from trading.screen.run import ScreenSummary, load_status_inputs, run_screen
 from trading.screen.store import CandidateStore
 from trading.valuation.store import ValuationStore
 
@@ -364,7 +364,10 @@ def main() -> int:
             sector_years, at="current", params=PROPOSED_PARAMS,
             financial_groups=FINANCIAL_PROFILE_GROUPS,
         )
-        candidates, summary = run_screen(val_store, cycle_store, params=PROPOSED_R4)
+        kis_flags, audits = load_status_inputs()   # SCREEN-1(v2.16) — 스크리너 CLI와 동일 입력
+        candidates, summary = run_screen(
+            val_store, cycle_store, params=PROPOSED_R4, kis_flags=kis_flags, audits=audits
+        )
         basis = year_ends.get("current", "?")
         dossier_dir = REPORT_DIR / "dossiers"
         dossiers = {

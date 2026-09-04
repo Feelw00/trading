@@ -15,12 +15,15 @@
 v1.6(2026-08-31 P-18 — 존 게이트 제거·시장 percentile 병행)·
 v1.7(2026-09-01 운영자 결재 — 최신 ROE 하한 0→1%: PBR=ROE×PER 항등식상 deep PBR
 +명목 흑자(0<ROE<1%)는 암묵 PER 폭주 경로. 실측: 통과 545 중 22종(4.0%) 차단.
-docs/POLICY_PARAMS.md §5). 실집행 연결은 Phase 4(§6 결재 + 운영자 전환 결정) 후.
+docs/POLICY_PARAMS.md §5) · v2.16(2026-09-03 SCREEN-1 (a) — 관리종목·거래정지·감사의견
+비적정 하드 탈락 `status_filter`, 소스 실측 확정 후 적용). 실집행 연결은 Phase 4(§6 결재 + 운영자 전환 결정) 후.
 개정은 R7+결재로만.
 """
 
 from dataclasses import dataclass
 
+from trading.collectors.audit import AuditVerdict
+from trading.collectors.status import KisFlags
 from trading.contracts.longterm import CyclePhase, ValuationRecord
 
 # P-18 이후 발동 존은 게이트가 아니라 도구(우선순위·정렬)의 기준으로만 쓰인다.
@@ -30,11 +33,41 @@ ENTRY_PHASES = frozenset({CyclePhase.BOTTOMING, CyclePhase.RECOVERING})
 # P-18 전 상장 확장으로 KRX 버킷 산업명(금융·보험)도 포함.
 DEBT_EXEMPT_INDUSTRIES = frozenset({"은행", "증권", "금융", "보험"})
 
+# v2.16(운영자 결재 (a) 2026-09-03, SCREEN-1): 감사의견·관리종목·거래정지는 `status_filter`로 **적용**됨 —
+# 데이터가 없는 종목만 그 사실을 unapplied로 명시(status_filter가 종목별로 붙인다).
 UNAPPLIED_V1 = [
-    "감사의견·관리종목 필터(소스 미확보 — PIVOT-3)",
     "환원·거버넌스 가점(PIVOT-3 수집 전)",
     "수급 네거티브 스크린(60~120거래일 창 축적 전)",
 ]
+UNAPPLIED_STATUS = "관리종목·거래정지 필터(KIS 상태 스냅샷 없음/오래됨)"
+UNAPPLIED_AUDIT = "감사의견 필터(DART 수집 없음)"
+UNAPPLIED_AUDIT_MISSING = "감사의견 당기 결측(감사보고서 없음/미제출 — adtor '-') ⚠"
+
+
+def status_filter(flags: KisFlags | None, audit: AuditVerdict | None) -> tuple[list[str], list[str]]:
+    """SCREEN-1 하드 필터(v2.16, 운영자 결재 (a) 2026-09-03) — (탈락 사유, 미적용 고지). 순수 함수.
+
+    실측 의미(`collectors/status.py`·`collectors/audit.py` 주석)만 적용:
+    - 상장폐지/무자료 의심(KIS 00·None·현재가 0) → 탈락(유니버스 제외 성격)
+    - 관리종목(mang Y ∨ 51) → 탈락 · 매매거래정지(58) → 탈락 · 관측 불가(None) → 미적용 고지
+    - 감사의견 당기 ≠ 적정의견 → 탈락 · 당기 결측(adtor '-') → **미적용 ⚠ 고지(추측 탈락 금지)** ·
+      수집 없음 → 미적용 고지. 데이터 부재를 통과로 오독하지 않도록 고지는 종목별로 붙는다.
+    """
+    reasons: list[str] = []
+    unapplied: list[str] = []
+    if flags is None:
+        unapplied.append(UNAPPLIED_STATUS)
+    else:
+        reasons.extend(flags.reasons)
+        if not flags.delisted_suspect and (flags.managed is None or flags.halted is None):
+            unapplied.append("관리종목·거래정지 판독 불가(KIS 상태 필드 결측)")
+    if audit is None or audit.state == "missing":
+        unapplied.append(UNAPPLIED_AUDIT)
+    elif audit.state == "unaudited":
+        unapplied.append(UNAPPLIED_AUDIT_MISSING)
+    elif audit.state == "adverse":
+        reasons.append(f"감사의견 비적정({audit.opinion} — {audit.adtor or '감사인 미상'}, 접수 {audit.rcept_no})")
+    return reasons, unapplied
 
 
 @dataclass(frozen=True)
@@ -128,6 +161,10 @@ __all__ = [
     "ENTRY_PHASES",
     "PROPOSED_R4",
     "ScreenParams",
+    "UNAPPLIED_AUDIT",
+    "UNAPPLIED_AUDIT_MISSING",
+    "UNAPPLIED_STATUS",
     "UNAPPLIED_V1",
     "evaluate",
+    "status_filter",
 ]

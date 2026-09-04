@@ -1,6 +1,6 @@
 """R4 스크리너 — P-18 가치 코어 규칙·사이클 도구 플래그·탈락 전수 박제 테스트."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -182,3 +182,99 @@ def test_min_roe_latest_v17_nominal_profit_rejected() -> None:
         industry_pbr_pct=0.05, market_pbr_pct=0.1, params=PROPOSED_R4,
     )
     assert not any(r.startswith("가치 함정 방어") for r in reasons2)
+
+
+# --- v2.16 SCREEN-1 하드 필터(운영자 결재 (a) 2026-09-03) — 관리종목·거래정지·상폐 의심·감사의견 비적정 ---
+
+def test_status_filter_pure_rules() -> None:
+    from trading.collectors.audit import AuditVerdict
+    from trading.collectors.status import KisFlags
+    from trading.screen.rules import (
+        UNAPPLIED_AUDIT,
+        UNAPPLIED_AUDIT_MISSING,
+        UNAPPLIED_STATUS,
+        status_filter,
+    )
+
+    ok = KisFlags(managed=False, halted=False, delisted_suspect=False, warn_code="00")
+    clean = AuditVerdict(state="clean", opinion="적정의견", rcept_no="20260310002820", adtor="삼정회계법인")
+    assert status_filter(ok, clean) == ([], [])
+    # 데이터 없음 → 탈락 아님, 미적용 고지(침묵 생략 금지)
+    assert status_filter(None, None) == ([], [UNAPPLIED_STATUS, UNAPPLIED_AUDIT])
+    assert status_filter(ok, AuditVerdict("missing", None, None, None)) == ([], [UNAPPLIED_AUDIT])
+    # 당기 결측(adtor '-') → 추측 탈락 금지, ⚠ 고지
+    assert status_filter(ok, AuditVerdict("unaudited", None, "20260101000001", None)) == ([], [UNAPPLIED_AUDIT_MISSING])
+    # 관리·정지·상폐 의심 → 탈락 사유(관측 근거 명시)
+    r, u = status_filter(KisFlags(managed=True, halted=False, delisted_suspect=False, warn_code="00"), clean)
+    assert r == ["관리종목(KIS mang_issu_cls_code=Y)"] and u == []
+    r, _ = status_filter(KisFlags(managed=True, halted=True, delisted_suspect=False, warn_code="00"), clean)
+    assert len(r) == 2 and any("매매거래정지" in x for x in r)
+    r, u = status_filter(KisFlags(managed=None, halted=None, delisted_suspect=True, warn_code=None), clean)
+    assert r == ["상장폐지/무자료 의심(KIS 상태 00·현재가 0)"] and u == []
+    # 상태 필드 결측(None·None) → 판독 불가 고지
+    _, u = status_filter(KisFlags(managed=None, halted=None, delisted_suspect=False, warn_code=None), clean)
+    assert u == ["관리종목·거래정지 판독 불가(KIS 상태 필드 결측)"]
+    # 감사의견 비적정(관측 어휘 의견거절·미관측 어휘도 ≠적정의견이면 동일)
+    r, _ = status_filter(ok, AuditVerdict("adverse", "의견거절", "20260323000029", "대주회계법인"))
+    assert r == ["감사의견 비적정(의견거절 — 대주회계법인, 접수 20260323000029)"]
+
+
+def test_run_screen_applies_status_and_audit_inputs(tmp_path: Path) -> None:
+    from trading.collectors.audit import AuditVerdict
+    from trading.collectors.status import KisFlags
+
+    vs = ValuationStore(tmp_path / "v.sqlite")
+    cs = CycleStore(tmp_path / "c.sqlite")
+    for sym in ("000001", "000002", "000003", "000004", "000005"):
+        vs.append(_val(sym, sector="유통", pbr=0.5))        # 전부 가치·건전성 통과 조건
+    for i in range(10):                                      # 고PBR 대조군 — 시장 percentile 기준 성립용(가치 미달 탈락)
+        vs.append(_val(f"9{i:05d}", sector="화학", pbr=5.0))
+    ok = KisFlags(managed=False, halted=False, delisted_suspect=False, warn_code="00")
+    flags = {
+        "000001": ok,
+        "000002": KisFlags(managed=True, halted=False, delisted_suspect=False, warn_code="00"),  # 관리종목
+        "000003": ok,
+        "000004": KisFlags(managed=None, halted=None, delisted_suspect=True, warn_code=None),   # 상폐 의심
+        # 000005: 스냅샷 없음 → 미적용 고지
+    }
+    audits = {
+        "000001": AuditVerdict("clean", "적정의견", "20260310000001", "A회계법인"),
+        "000002": AuditVerdict("clean", "적정의견", "20260310000002", "A회계법인"),
+        "000003": AuditVerdict("adverse", "의견거절", "20260323000003", "B회계법인"),   # 비적정
+        "000005": AuditVerdict("unaudited", None, "20260101000005", None),           # 당기 결측
+    }
+    records, s = run_screen(vs, cs, params=PROPOSED_R4, now=TS, kis_flags=flags, audits=audits)
+    by = {r.symbol: r for r in records}
+    assert by["000001"].passed and not any("관리종목" in u or "감사의견" in u for u in by["000001"].unapplied)
+    assert not by["000002"].passed and by["000002"].reject_reasons == ["관리종목(KIS mang_issu_cls_code=Y)"]
+    assert not by["000003"].passed and by["000003"].reject_reasons[0].startswith("감사의견 비적정(의견거절")
+    assert not by["000004"].passed and "상장폐지/무자료 의심" in by["000004"].reject_reasons[0]
+    five = by["000005"]
+    assert five.passed  # 데이터 부재·당기 결측은 탈락 아님 — 고지만
+    assert any(u.startswith("관리종목·거래정지 필터") for u in five.unapplied)
+    assert any(u.startswith("감사의견 당기 결측") for u in five.unapplied)
+    assert s.passed == 2 and s.reject_counts["관리종목"] == 1 and s.reject_counts["감사의견 비적정"] == 1
+    # 입력 없이 호출(기존 경로) → 전 종목 미적용 고지, 판정 불변(대조군 10종은 가치 미달)
+    records0, _ = run_screen(vs, cs, params=PROPOSED_R4, now=TS)
+    assert all(any(u.startswith("관리종목·거래정지 필터") for u in r.unapplied) for r in records0)
+    assert sum(1 for r in records0 if r.passed) == 5
+    vs.close()
+    cs.close()
+
+
+def test_load_status_inputs_freshness_and_audit(tmp_path: Path) -> None:
+    from trading.collectors.status import StatusStore
+    from trading.screen.run import STATUS_MAX_AGE_DAYS, load_status_inputs
+
+    db = tmp_path / "status.sqlite"
+    st = StatusStore(db)
+    env = {"iscd_stat_cls_code": "51", "mang_issu_cls_code": "Y", "stck_prpr": "1000"}
+    st.append_kis("000001", "2026-09-03", env, fetched_at="t")
+    stale = (TS - timedelta(days=STATUS_MAX_AGE_DAYS + 1)).strftime("%Y-%m-%d")
+    st.append_kis("000002", stale, env, fetched_at="t")
+    rows = [{"rcept_no": "20260310000001", "bsns_year": "제10기(당기)", "adtor": "A", "adt_opinion": "적정의견"}]
+    st.append_audit("000001", "C1", "2025", "11011", rows, fetched_at="t")
+    st.close()
+    flags, audits = load_status_inputs(fy="2025", db_path=db, now=TS + timedelta(days=1))
+    assert set(flags) == {"000001"} and flags["000001"].managed is True   # 오래된 스냅샷은 미적용
+    assert audits["000001"].state == "clean" and set(audits) == {"000001"}

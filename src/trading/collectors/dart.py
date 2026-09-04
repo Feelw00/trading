@@ -5,6 +5,7 @@
   list.json     : 공시 목록(corp_code, bgn_de~end_de). 필드 report_nm/rcept_dt/rcept_no/flr_nm 등.
   fnlttSinglAcnt.json : 단일회사 주요계정 재무(연결/별도, 당기 thstrm_amount/전기 frmtrm_amount).
   company.json  : 회사개황(단일 객체, list 아님). induty_code=KSIC 업종코드(3~5자리)·corp_cls 등.
+  accnutAdtorNmNdAdtOpinion.json : 회계감사인 명칭·감사의견(정기보고서, 2026-09-03 실측 — SCREEN-1).
 응답 status: "000"=정상, "013"=데이터없음(→빈), 그 외(020 한도초과·100 키오류 등)=CollectError.
 무료·공개(설계서 🟢). LLM은 여기서 가져온 실데이터만 근거로 판단(추측 금지).
 """
@@ -147,6 +148,23 @@ class DartClient:
             }
         )
         return self._rows(self._json(f"{DART_BASE}/tesstkAcqsDspsSttus.json?{q}"))
+
+    def audit_opinion(
+        self, corp_code: str, bsns_year: str, reprt_code: str = "11011"
+    ) -> list[dict[str, Any]]:
+        """회계감사인의 명칭 및 감사의견(accnutAdtorNmNdAdtOpinion) — 공식 가이드 DS002 #13(apiId 2020009),
+        실호출 관측 확정(2026-09-03, 삼성전자·보유 7종·대조군 8종): 6행 = 당기·전기·전전기 × 2(연결/별도 추정,
+        구분 필드 없음), 행 필드 rcept_no·corp_cls·bsns_year("제57기 (당기)" 라벨)·adtor·adt_opinion
+        ('적정의견'·'의견거절'·None=adtor '-')·emphs_matter·core_adt_matter·adt_reprt_spcmnt_matter·stlm_dt."""
+        q = urlencode(
+            {
+                "crtfc_key": self._key,
+                "corp_code": corp_code,
+                "bsns_year": bsns_year,
+                "reprt_code": reprt_code,
+            }
+        )
+        return self._rows(self._json(f"{DART_BASE}/accnutAdtorNmNdAdtOpinion.json?{q}"))
 
     def company_profile(self, corp_code: str) -> dict[str, Any]:
         """회사개황(업종코드 induty_code·corp_cls 등). 단일 객체 응답. 데이터 없으면 빈 dict.
