@@ -370,17 +370,57 @@ def _paper_mark() -> int:
 
 
 def _collect_status_v3() -> int:
-    """SCREEN-1 종목 상태 스냅샷(관리종목·거래정지·시장경고) — KIS, 재무 유니버스 전수. best-effort."""
+    """SCREEN-1 종목 상태 스냅샷(관리종목·거래정지·시장경고) — KIS, 재무 유니버스 전수. best-effort.
+    끝에 보유 종목 상태 전이 감시(정상 → 관리·정지·상폐 의심 = P1, 운영자 결정 2026-09-04)."""
     from trading.collectors.status import main as status_main
 
-    return status_main([])
+    rc = status_main([])
+    _holding_status_check("kis")
+    return rc
 
 
 def _audit_v3() -> int:
-    """SCREEN-1 감사의견 연간 수집 — DART accnutAdtorNmNdAdtOpinion, 재무 유니버스 전수."""
+    """SCREEN-1 감사의견 연간 수집 — DART accnutAdtorNmNdAdtOpinion, 재무 유니버스 전수.
+    끝에 보유 종목 감사의견 비적정 감시(접수분당 P1 1회, 운영자 결정 2026-09-04)."""
     from trading.collectors.audit import main as audit_main
 
-    return audit_main([])
+    rc = audit_main([])
+    _holding_status_check("audit")
+    return rc
+
+
+def _holding_status_check(kind: str) -> None:
+    """보유 종목 상태 전이 → P1 적재(ALERT-1 실행 보고 꼬리 동봉). 감시 실패가 수집 rc를 바꾸지 않는다."""
+    try:
+        from trading.alerts import Alert, AlertDispatcher, Severity
+        from trading.collectors.base import now_kst
+        from trading.collectors.status import StatusStore
+        from trading.holding_status import ACTION, DEADLINE, RULE, check_audit, check_kis, held_names
+
+        held = held_names()
+        if not held:
+            return
+        d = AlertDispatcher()
+        store = StatusStore()
+        try:
+            def _p1(what: str) -> None:
+                d.notify(Alert(severity=Severity.P1, what=what, rule=RULE, action=ACTION, deadline=DEADLINE))
+
+            now_iso = now_kst().isoformat()
+            if kind == "kis":
+                lines = check_kis(store, held, now_iso=now_iso, notify=_p1)
+            else:
+                from trading.review import latest_annual_year
+
+                lines = check_audit(store, held, fy=latest_annual_year(), now_iso=now_iso, notify=_p1)
+        finally:
+            store.close()
+            d.store.close()
+        print(f"보유 종목 상태 전이 감시({kind}): 보유 {len(held)} · 새 P1 {len(lines)}")
+        for ln in lines:
+            print(f"  ⚠️ {ln}")
+    except Exception as exc:  # noqa: BLE001 — 감시는 best-effort(수집·체인 rc 불변)
+        print(f"보유 종목 상태 전이 감시 실패(무시): {exc!r}", file=sys.stderr)
 
 
 def _owner_equity_v3() -> int:

@@ -68,6 +68,11 @@ CREATE TABLE IF NOT EXISTS audit_fetch_log (
   symbol TEXT NOT NULL, fy TEXT NOT NULL, reprt_code TEXT NOT NULL,
   fetched_at TEXT NOT NULL, status TEXT NOT NULL, n_rows INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS holding_status_alerts (
+  symbol TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL,
+  as_of TEXT NOT NULL, note TEXT NOT NULL, created_at TEXT NOT NULL,
+  UNIQUE(symbol, kind, key)
+);
 """
 
 
@@ -229,6 +234,26 @@ class StatusStore:
             "(SELECT MAX(as_of) FROM kis_status WHERE symbol=k.symbol)"
         ).fetchall()
         return {str(r[0]): self._kis_row(r) for r in rows}
+
+    def kis_previous(self, symbol: str, before_as_of: str) -> KisStatusRow | None:
+        """``before_as_of`` 이전의 가장 최근 스냅샷 — 상태 전이(직전 → 최신) 판정용."""
+        r = self._conn.execute(
+            f"SELECT {self._KIS_COLS} FROM kis_status WHERE symbol=? AND as_of < ? ORDER BY as_of DESC LIMIT 1",
+            (symbol, before_as_of),
+        ).fetchone()
+        return self._kis_row(r) if r else None
+
+    def mark_holding_alert(
+        self, symbol: str, kind: str, key: str, *, as_of: str, note: str, created_at: str,
+    ) -> bool:
+        """보유 종목 상태 전이 알림 로그(append-only) — 같은 (symbol, kind, key)는 1회만 True."""
+        before = self._conn.total_changes
+        self._conn.execute(
+            "INSERT OR IGNORE INTO holding_status_alerts VALUES (?,?,?,?,?,?)",
+            (symbol, kind, key, as_of, note, created_at),
+        )
+        self._conn.commit()
+        return self._conn.total_changes > before
 
     def kis_coverage(self) -> tuple[int, int, str | None]:
         r = self._conn.execute("SELECT COUNT(DISTINCT symbol), COUNT(DISTINCT as_of), MAX(as_of) FROM kis_status").fetchone()

@@ -51,6 +51,21 @@ CREATE TABLE IF NOT EXISTS ret_attempts (
 """
 
 
+def _normalize_stock_kind(knd: str) -> str:
+    """stock_knd 라벨 정규화 — 공백 제거 · '보통주식' → '보통주'. 그 외는 원문 유지(해석 금지)."""
+    k = knd.strip()
+    return "보통주" if k in ("보통주", "보통주식") else k
+
+
+def is_par_based_yield(yield_pct: float | None, dps: float | None, par: float | None) -> bool:
+    """'현금배당수익률' 값이 실은 액면 배당률(DPS ÷ 액면가 × 100)인지 — 순수 판정.
+
+    DART 공시값은 소수 첫째 자리까지라 0.05 허용. 세 값 중 하나라도 없으면 판정 불가(False)."""
+    if yield_pct is None or dps is None or par is None or par <= 0 or dps <= 0:
+        return False
+    return abs(yield_pct - dps / par * 100.0) < 0.05
+
+
 class ReturnsStore:
     def __init__(self, db_path: Path = DEFAULT_DB) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,14 +150,24 @@ class ReturnsStore:
 
         stock_knd는 보통주 우선, **'-'(단일 주식 종류 기재) 폴백** — 실관측 2026-09-01:
         신세계I&C가 2024년부터 '-'로 기재해 배당 430·560원이 0으로 오독됐던 버그 수정.
-        우선주 행은 무시한다."""
+        우선주 행은 무시한다. 라벨 정규화(2026-09-04, P-20 ⑥): 공백·'보통주식'(황금에스티 등
+        46행)은 보통주로 읽는다 — 그 외 어휘(종류주·소액주주·중간 배당 …)는 해석하지 않는다.
+
+        **액면 배당률 오기재 가드(P-20 ⑥, 2026-09-04 전수 스캔):** 일부 공시가 '현금배당수익률(%)'
+        행에 시가 수익률이 아니라 **액면가 대비 배당률**(DPS ÷ 액면가)을 기재한다 — 흥국 2021~2025
+        40·44·48·44·56%, 유에스티 100%, 브이엠·황금에스티·376290 등 6종 관측. 수익률이 DPS÷액면가와
+        소수 첫째 자리까지 일치하면 시가 기준이 아니라고 보고 **None(지어내지 않음)** — 배당 지급
+        여부(`quality.dividend_streak`)는 dps로 여전히 판정된다. 시가≈액면가인 종목은 두 값이
+        우연히 같아 None이 되지만, 그 경우도 표시만 비고 판정은 불변이다."""
         out: dict[str, dict[str, float | None]] = {}
+        par_by_year: dict[str, float] = {}
         for year, se, knd, v in self._conn.execute(
             "SELECT bsns_year, se, stock_knd, thstrm FROM alot_facts WHERE srtn_cd=?",
             (srtn_cd,),
         ):
-            y = out.setdefault(str(year), {"dps": None, "yield_pct": None, "payout_pct": None})
-            se_s, knd_s = str(se), str(knd)
+            y_s = str(year)
+            y = out.setdefault(y_s, {"dps": None, "yield_pct": None, "payout_pct": None})
+            se_s, knd_s = str(se), _normalize_stock_kind(str(knd))
             key: str | None = None
             if se_s.startswith("주당 현금배당금"):
                 key = "dps"
@@ -155,9 +180,16 @@ class ReturnsStore:
                 key = "yield_pct"
             elif se_s.startswith("(연결)현금배당성향"):
                 y["payout_pct"] = v
+            elif se_s.startswith("주당액면가액"):
+                # 액면가는 주식 종류와 무관하게 1행(보통주 우선 — 먼저 본 값 유지)
+                if v is not None and v > 0 and (knd_s == "보통주" or y_s not in par_by_year):
+                    par_by_year[y_s] = float(v)
             if key is not None and v is not None:
                 if knd_s == "보통주" or (knd_s == "-" and y[key] is None):
                     y[key] = v
+        for y_s, y in out.items():
+            if is_par_based_yield(y["yield_pct"], y["dps"], par_by_year.get(y_s)):
+                y["yield_pct"] = None
         return out
 
     def buyback_series(self, srtn_cd: str) -> dict[str, dict[str, float]]:
@@ -279,6 +311,7 @@ def collect_splits(
 
 
 __all__ = [
+    "is_par_based_yield",
     "DEFAULT_DB",
     "ReturnsStore",
     "collect_returns",

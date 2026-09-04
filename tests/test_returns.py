@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from trading.collectors.dart import DartClient
-from trading.collectors.returns import ReturnsStore, collect_returns, collect_splits
+from trading.collectors.returns import ReturnsStore, collect_returns, collect_splits, is_par_based_yield
 
 FIX = Path(__file__).resolve().parent.parent / "fixtures"
 ALOT = json.loads((FIX / "alotMatter_005930_2025.json").read_text())
@@ -93,3 +93,49 @@ def test_dividend_series_single_class_dash_fallback(tmp_path: Path) -> None:
     assert div["2025"]["dps"] == 560.0 and div["2025"]["yield_pct"] == 3.1
     assert div["2023"]["dps"] == 350.0  # 우선주 무시, 보통주 우선
     store.close()
+
+
+def test_dividend_series_par_based_yield_is_dropped(tmp_path: Path) -> None:
+    """P-20 ⑥(2026-09-04): '현금배당수익률' 행에 액면 배당률(DPS÷액면가)을 적은 공시 — 흥국 2025 실관측
+    (280원 ÷ 액면 500원 = 56.0%). 시가 수익률이 아니므로 None, dps는 유지(지급 판정 불변)."""
+    store = ReturnsStore(tmp_path / "r.sqlite")
+    store.upsert_alot("010240", "2025", [
+        {"se": "주당액면가액(원)", "stock_knd": "-", "thstrm": "500"},
+        {"se": "주당 현금배당금(원)", "stock_knd": "보통주", "thstrm": "280"},
+        {"se": "현금배당수익률(%)", "stock_knd": "보통주", "thstrm": "56.0"},
+    ])
+    # 정상 공시(삼성전자형): 수익률 1.5 ≠ 1668/100 → 유지
+    store.upsert_alot("010240", "2024", [
+        {"se": "주당액면가액(원)", "stock_knd": "-", "thstrm": "100"},
+        {"se": "주당 현금배당금(원)", "stock_knd": "보통주", "thstrm": "1,668"},
+        {"se": "현금배당수익률(%)", "stock_knd": "보통주", "thstrm": "1.5"},
+    ])
+    div = store.dividend_series("010240")
+    assert div["2025"]["dps"] == 280.0 and div["2025"]["yield_pct"] is None
+    assert div["2024"]["dps"] == 1668.0 and div["2024"]["yield_pct"] == 1.5
+    store.close()
+
+
+def test_dividend_series_normalizes_common_stock_labels(tmp_path: Path) -> None:
+    """'보통주식'·공백 라벨(황금에스티 등 실관측)은 보통주로 읽는다. 그 외 어휘는 해석하지 않는다."""
+    store = ReturnsStore(tmp_path / "r.sqlite")
+    store.upsert_alot("032560", "2022", [
+        {"se": "주당 현금배당금(원)", "stock_knd": "보통주식", "thstrm": "150"},
+        {"se": "현금배당수익률(%)", "stock_knd": "보통주 ", "thstrm": "4.2"},
+    ])
+    store.upsert_alot("032560", "2021", [
+        {"se": "주당 현금배당금(원)", "stock_knd": "종류주식", "thstrm": "999"},
+    ])
+    div = store.dividend_series("032560")
+    assert div["2022"]["dps"] == 150.0 and div["2022"]["yield_pct"] == 4.2
+    assert div["2021"]["dps"] is None
+    store.close()
+
+
+def test_is_par_based_yield_pure() -> None:
+    assert is_par_based_yield(56.0, 280.0, 500.0)          # 흥국 2025
+    assert is_par_based_yield(100.0, 100.0, 100.0)         # 유에스티
+    assert not is_par_based_yield(25.6, 8750.0, 5000.0)    # 예스코홀딩스 2023 — 액면 175% ≠ 25.6(시가 기준)
+    assert not is_par_based_yield(None, 280.0, 500.0)
+    assert not is_par_based_yield(56.0, 280.0, None)
+    assert not is_par_based_yield(0.0, 0.0, 500.0)
