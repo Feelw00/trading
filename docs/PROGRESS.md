@@ -154,3 +154,6 @@ EXEC-9 시간손절 창, EXEC-10 아침 규율·모멘텀, EXEC-11 저잔고·�
 - **P-19 ④ KRX 업종 없음 129종 박제 (9/4 오후)** — 재시도 소진(cron 3회 129/129) + 실호출로 "정상 응답·업종명 공백" 확인 →
   `classify_krx`가 정상 응답+업종 없음을 `source="none"`으로 박제(호출 실패는 재시도 유지) · `--retry-pinned`. 수동 실행 129 박제,
   재실행 KIS 콜 0. pytest +3·mypy clean. 상세 → [archive](../history/work/archive/2026-09-04-p19-4-tagging-pin-none.md)
+- **EXEC-14 영구 — 매수 자동화 영구 누락 (9/7)** — 운영자 결정("자금이 언제 추가될지 모른다"). 설계서 헤더·§1·§3 R5·§5·§6·
+  §10 Phase 4·§11·부록 B 개정 주석, `portfolio/` 신설 취소, POLICY_PARAMS §6 매수 파라미터 폐기. Phase 4 잔여 = 분기 R7·
+  논제 붕괴 청산 경로(별도 결재). 같은 날 policy v2.21(보유 상태 해제 P2·weekly 업종 박제분 재시도, pytest 725·mypy clean).

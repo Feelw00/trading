@@ -63,7 +63,7 @@ src/trading/
   valuation/        # R2 — 밸류에이션·환원 계산기 (순수 코드, Phase 1 신설)
   cycle/            # R3 — 산업 사이클 온도계 (순수 코드, Phase 2 신설)
   screener/         # R4 — 편입·제외 스크리너 (순수 코드, Phase 3 신설)
-  portfolio/        # R5 — 포트폴리오·DCA 주문 초안 (순수 코드, Phase 3 신설)
+  portfolio/        # R5 — ❌ 신설 취소(EXEC-14 영구, 2026-09-07: 자동 매수 없음, 매수는 운영자 재량)
   rounds/           # LLM 서술 라운드(R4.5 심사 패킷, R7 서술) — v0.2 유산은 개보수·정리 대상
   reports/          # R6 — 주간 다이제스트/월간 결재 렌더링 (Jinja2 — 템플릿 교체 예정)
   market_calendar/  # 시장일·KRX 휴장일·미국 DST 가드 (각 잡의 가드)
