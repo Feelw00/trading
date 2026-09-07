@@ -11,6 +11,9 @@ ALERT-1에 따라 다음 실행 보고 꼬리에 동봉된다. **자동 청산�
 - DART: 보유 종목의 최신 접수분이 비적정이면 접수번호당 1회. 주간 재수집은 같은 접수분을 무시해 "직전"이 없으므로
   전이 대신 `holding_status_alerts`(symbol, kind, key) 로그로 1회를 보장한다. KIS도 같은 로그로 같은 날 재실행 시
   중복을 막는다.
+- KIS 해제(v2.21, 운영자 위임 2026-09-07): 직전 플래그 → 최신 정상은 **P2**(정보 — 행동 없음, 푸시 없음). P2는 꼬리 경로가
+  없으므로 배선(`run._holding_status_check`)이 최상위 줄로 출력해 실행 보고 요약에 싣는다. 같은 (symbol, 'kis-clear', as_of)
+  1회. 감사의견 해제는 없다(다음 FY 적정 접수분이 자연 해소 — 비적정 P1은 접수분당이라 재발 시 다시 울린다). 자동 재편입 없음.
 """
 
 from collections.abc import Callable, Iterable, Mapping
@@ -21,7 +24,9 @@ from trading.collectors.status import KisStatusRow, StatusStore, classify_kis
 
 KIND_KIS = "kis"
 KIND_AUDIT = "audit"
+KIND_KIS_CLEAR = "kis-clear"  # v2.21 해제(플래그 → 정상) — P2
 RULE = "SCREEN-1 보유 종목 상태 전이(운영자 결정 2026-09-04: P1 — 실행 보고 꼬리 동봉)"
+RULE_CLEAR = "SCREEN-1 보유 종목 상태 해제(운영자 위임 2026-09-07: P2 — 정보, 실행 보고 요약 포함)"
 ACTION = "자동 청산 없음 — 정리 여부는 운영자 판단(앱에서 직접, v2.15 ⑥). 가이드 매도 예약은 그대로 유지"
 DEADLINE = "다음 거래일 08:40 guide-orders 전"
 
@@ -52,6 +57,23 @@ def kis_transitions(
     return out
 
 
+def kis_clearances(
+    held: Iterable[str],
+    latest: Mapping[str, KisStatusRow],
+    previous: Mapping[str, KisStatusRow],
+) -> list[Transition]:
+    """플래그(직전) → 정상(최신) 해제만 — 순수(v2.21, P2). 직전 없음·직전도 정상·최신도 플래그는 제외."""
+    out: list[Transition] = []
+    for sym in sorted(set(held)):
+        cur, prev = latest.get(sym), previous.get(sym)
+        if cur is None or prev is None or prev.as_of >= cur.as_of:
+            continue
+        prev_reasons = classify_kis(prev).reasons
+        if prev_reasons and not classify_kis(cur).reasons:
+            out.append(Transition(sym, KIND_KIS_CLEAR, cur.as_of, cur.as_of, " · ".join(prev_reasons)))
+    return out
+
+
 def audit_adverse(held: Iterable[str], verdicts: Mapping[str, AuditVerdict], fy: str) -> list[Transition]:
     """보유 종목 중 최신 접수분 감사의견 비적정 — 순수. 접수번호가 키(정정 공시는 새 접수번호 = 새 알림)."""
     out: list[Transition] = []
@@ -78,19 +100,40 @@ def _emit(
     return lines
 
 
+def _kis_latest_previous(
+    store: StatusStore, held: Mapping[str, str],
+) -> tuple[dict[str, KisStatusRow], dict[str, KisStatusRow]]:
+    """실보유의 최신 KIS 스냅샷과 그 직전 스냅샷(있는 것만)."""
+    latest = {s: r for s, r in store.latest_kis_all().items() if s in held}
+    previous = {s: p for s, r in latest.items() if (p := store.kis_previous(s, r.as_of)) is not None}
+    return latest, previous
+
+
 def check_kis(
     store: StatusStore, held: Mapping[str, str], *, now_iso: str,
     notify: Callable[[str], None] | None = None,
 ) -> list[str]:
     """실보유 {symbol: name}의 KIS 상태 전이 → P1(콜백) + 로그. 반환 = 새로 울린 문구."""
-    latest = {s: r for s, r in store.latest_kis_all().items() if s in held}
-    previous = {s: p for s, r in latest.items() if (p := store.kis_previous(s, r.as_of)) is not None}
-    trs = kis_transitions(held, latest, previous)
+    latest, previous = _kis_latest_previous(store, held)
     out: list[str] = []
-    for t in trs:
+    for t in kis_transitions(held, latest, previous):
         prev = previous[t.symbol]
         tagged = Transition(t.symbol, t.kind, t.key, t.as_of, f"{t.reasons} ({prev.as_of} 정상 → {t.as_of})")
         out.extend(_emit(store, [tagged], held, now_iso=now_iso, notify=notify, prefix="보유 종목 상태 전이"))
+    return out
+
+
+def check_kis_clear(
+    store: StatusStore, held: Mapping[str, str], *, now_iso: str,
+    notify: Callable[[str], None] | None = None,
+) -> list[str]:
+    """실보유의 KIS 플래그 해제(직전 플래그 → 최신 정상) → P2(콜백) + 로그(as_of당 1회). 반환 = 새로 울린 문구."""
+    latest, previous = _kis_latest_previous(store, held)
+    out: list[str] = []
+    for t in kis_clearances(held, latest, previous):
+        prev = previous[t.symbol]
+        tagged = Transition(t.symbol, t.kind, t.key, t.as_of, f"{t.reasons} 해제 ({prev.as_of} → {t.as_of} 정상)")
+        out.extend(_emit(store, [tagged], held, now_iso=now_iso, notify=notify, prefix="보유 종목 상태 해제"))
     return out
 
 
@@ -122,11 +165,15 @@ __all__ = [
     "DEADLINE",
     "KIND_AUDIT",
     "KIND_KIS",
+    "KIND_KIS_CLEAR",
     "RULE",
+    "RULE_CLEAR",
     "Transition",
     "audit_adverse",
     "check_audit",
     "check_kis",
+    "check_kis_clear",
     "held_names",
+    "kis_clearances",
     "kis_transitions",
 ]

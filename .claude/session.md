@@ -43,7 +43,8 @@
 - **cron list의 `error`는 Python 실패가 아닐 수 있다** — 9/1·9/3 eod-v3 error = 트리거 모델 빈 답변(Python rc=0·보고 발송·감시 ok).
   진단은 `runs.sqlite` → `.runtime/openclaw/agents/main/sessions/<run>.jsonl`(stopReason·usage) 순, 쿼터 추측 금지. 9/4 exec stdio
   분리+고정 답변으로 교정(sync.py) — 재발 시 트랜스크립트부터
-- **보유 종목 상태 전이 = P1**(v2.17, 9/4): eod `status-v3`·weekly `audit` 끝에 `holding_status` 감시, 자동 청산 없음
+- **보유 종목 상태 전이 = P1**(v2.17, 9/4): eod `status-v3`·weekly `audit` 끝에 `holding_status` 감시, 자동 청산 없음 ·
+  **해제(플래그→정상)는 P2**(v2.21, 9/7) — 실행 보고 요약 `ℹ️` 줄, 푸시 없음, 자동 재편입 없음
 - **배당은 `alot_reports` 접수분 합산**(v2.18, 9/4): 리츠 등 반기·분기 결산은 연도당 접수분 2~4건 — 옛 `alot_facts` 첫 접수분만 보면 과소.
   리츠 환원 면제 없음. **분할은 인적=강등 없음, 물적·혼합·미상·미수록=강등**(`SplitAssessment.downgrade`), 배제 아님 — 물적분할 후
   자회사 상장 사실 소스는 미확정(결재거리)
@@ -52,7 +53,8 @@
   `owner-equity` 600콜/회 — 서두르려면 `python -m trading.collect_owner_equity --years 7 --max-calls 5000`(DART 일 20,000 한도 안에서).
   `_build_picks`는 밸류에이션을 자동 재산출(append)하므로 효과 계량 시 비교 기준 버전에 주의
 - **KRX 업종 태깅 박제(P-19 ④, 9/4)**: `stock_sectors` `source="none"` = KIS 정상 응답인데 업종 없음(KONEX·외국기업·신형 코드 129종) —
-  재시도 안 함. eod-v3 로그 "박제(업종 없음→none)"·"신규 대상 없음"이 정상. 되살리려면 `python -m trading.sectors --retry-pinned`
+  재시도 안 함. eod-v3 로그 "박제(업종 없음→none)"·"신규 대상 없음"이 정상. 되살리려면 `python -m trading.sectors --retry-pinned` ·
+  **weekly-v3 첫 단계가 주 1회 자동 재시도**(v2.21, 9/7 — 로그 "박제분 재시도 대상 없음"이 정상, 첫 cron 9/12)
 - 지시 인코딩 시 **결과를 지시자 언어로 에코백**(7/14 규칙)
 
 ### next

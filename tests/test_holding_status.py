@@ -2,9 +2,10 @@
 
 from pathlib import Path
 
+from trading.alerts import Alert, Severity
 from trading.collectors.audit import AuditVerdict
 from trading.collectors.status import KisStatusRow, StatusStore
-from trading.holding_status import audit_adverse, check_kis, kis_transitions
+from trading.holding_status import RULE_CLEAR, audit_adverse, check_kis, check_kis_clear, kis_clearances, kis_transitions
 
 
 def _row(symbol: str, as_of: str, *, stat: str = "55", mang: str | None = "N", price: float | None = 1000.0) -> KisStatusRow:
@@ -67,4 +68,41 @@ def test_check_kis_emits_once_and_dedupes(tmp_path: Path) -> None:
     assert check_kis(store, {"A": "알파"}, now_iso="2026-09-04T18:20:00+09:00", notify=got.append) == []
     assert len(got) == 1
     assert store.kis_previous("A", "2026-09-04") is not None and store.kis_previous("A", "2026-09-03") is None
+    store.close()
+
+
+def test_kis_clearances_only_flagged_to_normal() -> None:
+    """v2.21(운영자 위임 2026-09-07): 직전 플래그 → 최신 정상만 해제(P2). 전이(P1)와 겹치지 않는다."""
+    held = ["A", "B", "C", "D", "E"]
+    latest = {
+        "A": _row("A", "2026-09-04"),                     # 관리 → 정상: 해제
+        "B": _row("B", "2026-09-04"),                     # 정지 → 정상: 해제
+        "C": _row("C", "2026-09-04"),                     # 직전도 정상: 아님
+        "D": _row("D", "2026-09-04", mang="Y"),           # 정상 → 관리: 전이(해제 아님)
+        "E": _row("E", "2026-09-04"),                     # 직전 없음: 침묵
+    }
+    previous = {
+        "A": _row("A", "2026-09-03", mang="Y"), "B": _row("B", "2026-09-03", stat="58"),
+        "C": _row("C", "2026-09-03"), "D": _row("D", "2026-09-03"),
+    }
+    trs = kis_clearances(held, latest, previous)
+    assert [(t.symbol, t.kind, t.key) for t in trs] == [("A", "kis-clear", "2026-09-04"), ("B", "kis-clear", "2026-09-04")]
+    assert "관리종목" in trs[0].reasons and "매매거래정지" in trs[1].reasons
+    assert [t.symbol for t in kis_transitions(held, latest, previous)] == ["D"]
+    # P2 계약(§8): action/deadline 없이 생성 가능해야 배선(_p2)이 통한다
+    assert Alert(severity=Severity.P2, what="x", rule=RULE_CLEAR).action == ""
+
+
+def test_check_kis_clear_emits_once_and_dedupes(tmp_path: Path) -> None:
+    """저장소 배선: 직전 관리종목 → 최신 정상이면 P2 1회, 전이 경로는 침묵, 같은 날 재실행은 중복 없음."""
+    store = StatusStore(tmp_path / "status.sqlite")
+    store.append_kis("A", "2026-09-03", {"iscd_stat_cls_code": "51", "mang_issu_cls_code": "Y", "stck_prpr": "900"}, fetched_at="t")
+    store.append_kis("A", "2026-09-04", {"iscd_stat_cls_code": "55", "mang_issu_cls_code": "N", "stck_prpr": "1000"}, fetched_at="t")
+    got: list[str] = []
+    lines = check_kis_clear(store, {"A": "알파"}, now_iso="2026-09-04T18:10:00+09:00", notify=got.append)
+    assert len(lines) == 1 and lines == got
+    assert lines[0].startswith("보유 종목 상태 해제: A 알파 — 관리종목") and "2026-09-03 → 2026-09-04 정상" in lines[0]
+    assert check_kis(store, {"A": "알파"}, now_iso="2026-09-04T18:10:00+09:00", notify=got.append) == []
+    assert check_kis_clear(store, {"A": "알파"}, now_iso="2026-09-04T18:20:00+09:00", notify=got.append) == []
+    assert len(got) == 1
     store.close()

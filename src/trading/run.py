@@ -395,20 +395,28 @@ def _holding_status_check(kind: str) -> None:
         from trading.alerts import Alert, AlertDispatcher, Severity
         from trading.collectors.base import now_kst
         from trading.collectors.status import StatusStore
-        from trading.holding_status import ACTION, DEADLINE, RULE, check_audit, check_kis, held_names
+        from trading.holding_status import (
+            ACTION, DEADLINE, RULE, RULE_CLEAR, check_audit, check_kis, check_kis_clear, held_names,
+        )
 
         held = held_names()
         if not held:
             return
         d = AlertDispatcher()
         store = StatusStore()
+        cleared: list[str] = []
         try:
             def _p1(what: str) -> None:
                 d.notify(Alert(severity=Severity.P1, what=what, rule=RULE, action=ACTION, deadline=DEADLINE))
 
+            def _p2(what: str) -> None:  # 정보 — action/deadline 없음(§8), 푸시 없음
+                d.notify(Alert(severity=Severity.P2, what=what, rule=RULE_CLEAR))
+
             now_iso = now_kst().isoformat()
             if kind == "kis":
                 lines = check_kis(store, held, now_iso=now_iso, notify=_p1)
+                # v2.21(운영자 위임 2026-09-07): 해제(플래그→정상)는 P2 원장 + 아래 최상위 줄로 실행 보고 요약에 동봉
+                cleared = check_kis_clear(store, held, now_iso=now_iso, notify=_p2)
             else:
                 from trading.review import latest_annual_year
 
@@ -416,11 +424,26 @@ def _holding_status_check(kind: str) -> None:
         finally:
             store.close()
             d.store.close()
-        print(f"보유 종목 상태 전이 감시({kind}): 보유 {len(held)} · 새 P1 {len(lines)}")
+        extra = f" · 해제 P2 {len(cleared)}" if kind == "kis" else ""
+        print(f"보유 종목 상태 전이 감시({kind}): 보유 {len(held)} · 새 P1 {len(lines)}{extra}")
         for ln in lines:
             print(f"  ⚠️ {ln}")
+        for ln in cleared:  # 최상위 줄(들여쓰기 없음) — P2는 꼬리 경로가 없어 요약(_summarize)에 직접 실린다
+            print(f"ℹ️ {ln}")
     except Exception as exc:  # noqa: BLE001 — 감시는 best-effort(수집·체인 rc 불변)
         print(f"보유 종목 상태 전이 감시 실패(무시): {exc!r}", file=sys.stderr)
+
+
+def _sectors_retry_pinned_v3() -> int:
+    """P-19 ⑥(운영자 위임 2026-09-07, v2.21 ②): KRX '업종 없음' 박제분(none) 주 1회 재시도 — ≈129콜/주, best-effort.
+    성공분은 kis-bstp-v1 행이 생겨 이후 제외(first-wins). 실패해도 주간 계측을 막지 않는다."""
+    try:
+        from trading import sectors
+
+        sectors.main(["--retry-pinned"])
+    except Exception as exc:  # noqa: BLE001 — 재시도는 best-effort(체인 rc 불변)
+        print(f"KRX 업종 박제분 재시도 실패(무시): {exc!r}", file=sys.stderr)
+    return 0
 
 
 def _owner_equity_v3() -> int:
@@ -468,6 +491,8 @@ def _weekly_v3() -> int:
         # v2.6: 판정·유니버스 추종은 주간 — 지배주주지분/환원 증분(멱등) →
         # 계측 → 자동 심사 → 다이제스트. 페이퍼 자동 등록은 폐지(운영자 지시 2026-09-02:
         # 페이퍼는 실투자(guide-orders 실보유 편입)·명시 이동만).
+        # v2.21(P-19 ⑥, 운영자 위임 2026-09-07): KRX '업종 없음' 박제분 주 1회 재시도(≈129콜, best-effort)
+        ("sectors-retry", _sectors_retry_pinned_v3),
         ("owner-equity", _owner_equity_v3),
         # SCREEN-1(운영자 결재 (a) 2026-09-03): 감사의견 연간(DART, 정정 대비 매주 재수집·같은 접수분은 무시)
         ("audit", _audit_v3),
